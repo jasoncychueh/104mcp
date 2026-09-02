@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from mcp104.config import get_config, resolve_data_dir
+from mcp104.config import ConfigError, get_config, resolve_data_dir
 
 
 def _configure_env(monkeypatch, data_dir, label="tester@104.com"):
@@ -48,6 +48,37 @@ def test_config_from_env(monkeypatch, tmp_path):
     assert cfg.activity_streak_limit_minutes == 10
     assert cfg.rest_duration_minutes == 5
     assert cfg.min_call_interval_seconds == 8
+
+
+# ── I2-I: a non-numeric value for any of the numeric knobs is a startup
+# failure naming the offending variable and value, same pattern as T-104's
+# MCP104_ACCOUNT_LABEL coverage ────────────────────────────────────────────
+
+@pytest.mark.parametrize("var_name", [
+    "MAX_DAILY_MESSAGES",
+    "LOGIN_TIMEOUT_SECONDS",
+    "MAX_REQUESTS_PER_HOUR",
+    "MAX_INLINE_WAIT_SECONDS",
+    "ACTIVITY_STREAK_LIMIT_MINUTES",
+    "REST_DURATION_MINUTES",
+    "MIN_CALL_INTERVAL_SECONDS",
+    "MCP104_AUTH_BIND_PORT",
+])
+def test_i2i_non_numeric_env_value_is_startup_failure_naming_var_and_value(monkeypatch, tmp_path, var_name):
+    _configure_env(monkeypatch, tmp_path)
+    if var_name == "MCP104_AUTH_BIND_PORT":
+        # MCP104_AUTH_BIND_PORT is only parsed when paired with
+        # MCP104_AUTH_BASE_URL (§ Server §stdio 模式) -- without the pair set,
+        # config.py never reaches this variable's parsing at all.
+        monkeypatch.setenv("MCP104_AUTH_BASE_URL", "http://localhost:9000")
+    monkeypatch.setenv(var_name, "abc")
+
+    with pytest.raises(ConfigError) as exc_info:
+        get_config()
+
+    message = str(exc_info.value)
+    assert var_name in message, f"message must name {var_name}: {message!r}"
+    assert "'abc'" in message, f"message must quote the bad value: {message!r}"
 
 
 # ── T-29 (R5.2): no data path comes from a hardcoded absolute path ─────────

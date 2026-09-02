@@ -121,11 +121,16 @@ def test_t032_selftest_browser_stdout_flag_writes_nothing_to_stdout():
         capture_output=True,
         timeout=60,
     )
-    if proc.returncode != 0 and (
-        b"Executable doesn't exist" in proc.stderr
-        or b"playwright" in proc.stderr.lower()
-        or b"patchright" in proc.stderr.lower()
-    ):
+    if proc.returncode != 0:
+        # I2-M: skip ONLY for the one documented cause (CLAUDE.md "已知坑與
+        # 解法" #1: patchright's browser cache missing) -- any other
+        # non-zero exit is a real failure and must not be swallowed by a
+        # broad "looks browser-related" skip.
+        assert b"Executable doesn't exist" in proc.stderr, (
+            f"non-zero exit for a reason other than the missing-browser-binary "
+            f"pitfall must fail, not skip: returncode={proc.returncode}, "
+            f"stderr={proc.stderr!r}"
+        )
         pytest.skip(
             "browser not installed in this environment "
             f"(stderr: {proc.stderr[:500]!r})"
@@ -443,3 +448,235 @@ def test_t111_package_imports_succeed_on_requires_python_floor(tmp_path):
         f"console-script entry point mcp104.main:run failed to import/resolve "
         f"on {version}:\nstdout={entry_probe.stdout!r}\nstderr={entry_probe.stderr!r}"
     )
+
+
+# -- T-121 (R9.4): process-shutdown teardown, in-process against a fake
+# AppContext -- main.py's _shutdown_globals is the ONLY teardown entry point
+# among the four the lifecycle table lists (handed_off/abandoned's shared
+# entry points) that none of T-8/T-93/T-98/T-120/test_auth.py's own
+# _finalize_pending_login cases go through. Reuses the fake-AppContext shape
+# tests/test_auth.py already established for _finalize_pending_login
+# (_FakeSessionPool/_FakeStream/_FakeBrowserResource/_FakeConfig) rather than
+# inventing a second one, per the case's own instruction. No real browser,
+# no subprocess -- this calls mcp104.main._shutdown_globals() directly
+# against module-global _app_ctx, monkeypatched to the fake.
+
+import asyncio as _asyncio  # noqa: E402
+from dataclasses import dataclass as _dataclass  # noqa: E402
+
+import mcp104.main as main_module  # noqa: E402
+from mcp104.tools.auth import LoginState, PendingLoginResources  # noqa: E402
+
+
+class _T121Calls(list):
+    """Shared order-recording sink every fake below appends its own marker
+    into, so (c)'s ordering assertion reads one flat timeline instead of
+    reconciling several independent logs."""
+
+
+class _T121SessionPool:
+    def __init__(self, calls, *, raise_for_token=None):
+        self.discarded = []
+        self.cleanup_all_called = False
+        self._calls = calls
+        self._raise_for_token = raise_for_token
+
+    def discard_pending(self, token):
+        self.discarded.append(token)
+        self._calls.append(f"discard:{token}")
+        if token == self._raise_for_token:
+            raise RuntimeError(f"boom on discard_pending({token!r})")
+
+    def cleanup_all(self):
+        self.cleanup_all_called = True
+        self._calls.append("cleanup_all")
+
+
+class _T121Stream:
+    def __init__(self, calls, name):
+        self.stopped = False
+        self._calls = calls
+        self._name = name
+
+    async def stop(self):
+        self.stopped = True
+        self._calls.append(f"stream-stop:{self._name}")
+
+
+class _T121Resource:
+    """Stand-in for both Browser and BrowserContext."""
+
+    def __init__(self, calls, name):
+        self.closed = False
+        self._calls = calls
+        self._name = name
+
+    async def close(self):
+        self.closed = True
+        self._calls.append(f"resource-close:{self._name}")
+
+
+class _T121AuthSite:
+    def __init__(self, calls):
+        self.close_count = 0
+        self._calls = calls
+
+    async def close(self):
+        self.close_count += 1
+        self._calls.append("auth_site-close")
+
+
+class _T121Db:
+    def __init__(self, calls):
+        self.closed = False
+        self._calls = calls
+
+    async def close(self):
+        self.closed = True
+        self._calls.append("db-close")
+
+
+@_dataclass
+class _T121Config:
+    auth_bind_port: int | None = None
+
+
+class _T121App:
+    def __init__(self, calls, *, raise_for_token=None):
+        self._watcher_tasks = {}
+        self._pending_logins = {}
+        self._finished_logins = {}
+        self.session_pool = _T121SessionPool(calls, raise_for_token=raise_for_token)
+        self.config = _T121Config()
+        self.auth_site = _T121AuthSite(calls)
+        self.db = _T121Db(calls)
+
+
+async def _t121_never_finishes():
+    try:
+        await _asyncio.sleep(100)
+    except _asyncio.CancelledError:
+        pass
+
+
+def _t121_add_pending(app, calls, token, state):
+    task = _asyncio.ensure_future(_t121_never_finishes())
+    app._watcher_tasks[token] = task
+    stream = _T121Stream(calls, token)
+    context = _T121Resource(calls, f"{token}-context")
+    browser = _T121Resource(calls, f"{token}-browser")
+    app._pending_logins[token] = PendingLoginResources(
+        browser=browser, context=context, page=object(), stream=stream, state=state,
+    )
+    return task, stream, context, browser
+
+
+@pytest.mark.asyncio
+async def test_t121_shutdown_globals_tears_down_every_pending_login(monkeypatch):
+    calls = _T121Calls()
+    app = _T121App(calls)
+    task1, stream1, context1, browser1 = _t121_add_pending(
+        app, calls, "tok-awaiting", LoginState.AWAITING_HUMAN
+    )
+    task2, stream2, context2, browser2 = _t121_add_pending(
+        app, calls, "tok-settling", LoginState.SETTLING
+    )
+
+    monkeypatch.setattr(main_module, "_app_ctx", app)
+
+    playwright_stopped = []
+
+    async def fake_stop_playwright():
+        calls.append("playwright-stop")
+        playwright_stopped.append(True)
+
+    monkeypatch.setattr(main_module, "stop_playwright", fake_stop_playwright)
+
+    await _asyncio.wait_for(main_module._shutdown_globals(), timeout=5)
+
+    # (a) both items torn down, each asserted independently.
+    assert task1.cancelled() or task1.done()
+    assert stream1.stopped is True
+    assert context1.closed is True
+    assert browser1.closed is True
+    assert app._finished_logins.get("tok-awaiting") == "abandoned"
+
+    assert task2.cancelled() or task2.done()
+    assert stream2.stopped is True
+    assert context2.closed is True
+    assert browser2.closed is True
+    # SETTLING -> early handed_off does not write _finished_logins (matches
+    # _finalize_pending_login's own contract, exercised directly in
+    # test_auth.py).
+    assert "tok-settling" not in app._finished_logins
+
+    assert app._pending_logins == {}
+
+    # (b) auth_site released exactly once -- not once per torn-down item.
+    assert app.auth_site is None or app.auth_site.close_count == 1
+    assert calls.count("auth_site-close") == 1
+
+    # (c) the playwright driver stop is ordered strictly after both items'
+    # own teardown calls (their stream/context/browser close markers) --
+    # the reverse order would mean main.py is asking an already-stopped
+    # driver to close browsers it no longer has a handle on.
+    assert playwright_stopped == [True]
+    driver_stop_index = calls.index("playwright-stop")
+    for marker in (
+        "stream-stop:tok-awaiting", "resource-close:tok-awaiting-context",
+        "resource-close:tok-awaiting-browser", "stream-stop:tok-settling",
+        "resource-close:tok-settling-context", "resource-close:tok-settling-browser",
+        "auth_site-close",
+    ):
+        assert calls.index(marker) < driver_stop_index, (
+            f"{marker!r} must be recorded before playwright-stop; got order {list(calls)}"
+        )
+
+
+@pytest.mark.asyncio
+async def test_t121_one_items_teardown_raising_does_not_strand_the_other_or_the_driver(monkeypatch):
+    calls = _T121Calls()
+    # tok-awaiting's own teardown fails inside _finalize_pending_login (its
+    # discard_pending call, the one call in that function's body NOT wrapped
+    # in its own try/except) -- Requirement 9.4's failure mode is exactly a
+    # leaked browser process, so tok-settling and the shared driver must
+    # still be handled despite tok-awaiting's finalize blowing up.
+    app = _T121App(calls, raise_for_token="tok-awaiting")
+    task1, stream1, context1, browser1 = _t121_add_pending(
+        app, calls, "tok-awaiting", LoginState.AWAITING_HUMAN
+    )
+    task2, stream2, context2, browser2 = _t121_add_pending(
+        app, calls, "tok-settling", LoginState.SETTLING
+    )
+
+    monkeypatch.setattr(main_module, "_app_ctx", app)
+
+    playwright_stopped = []
+
+    async def fake_stop_playwright():
+        calls.append("playwright-stop")
+        playwright_stopped.append(True)
+
+    monkeypatch.setattr(main_module, "stop_playwright", fake_stop_playwright)
+
+    try:
+        await _asyncio.wait_for(main_module._shutdown_globals(), timeout=5)
+    except Exception:
+        # _shutdown_globals itself is not required by this case to swallow
+        # the raising item's exception -- only that the OTHER item and the
+        # driver are still handled. If it propagates, that is asserted on
+        # below via the surviving item's own state, not via this call
+        # returning cleanly.
+        pass
+
+    # tok-settling must still have been fully torn down despite
+    # tok-awaiting's finalize raising.
+    assert task2.cancelled() or task2.done()
+    assert stream2.stopped is True
+    assert context2.closed is True
+    assert browser2.closed is True
+    assert "tok-settling" not in app._pending_logins
+
+    # The shared playwright driver must still have been stopped.
+    assert playwright_stopped == [True]
+    assert calls.count("playwright-stop") == 1

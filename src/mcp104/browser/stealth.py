@@ -19,7 +19,16 @@ _playwright = None
 # Playwright instance's driver process. The lock only protects the
 # start-once decision, not every call — once _playwright is set, further
 # calls return immediately without ever acquiring it.
-_playwright_lock = asyncio.Lock()
+#
+# Created lazily, on first entry into get_playwright()/stop_playwright(),
+# rather than at module import time. The lock object itself is created by
+# a check-then-create on this module-level variable, same shape as the
+# _playwright check-then-start it guards — but that inner check-then-create
+# needs no lock of its own: under single-threaded asyncio, nothing can
+# preempt between the `is None` check and the assignment except an `await`,
+# and there is none in between, so no other coroutine can observe the
+# half-initialized state.
+_playwright_lock: asyncio.Lock | None = None
 
 _MISSING_BROWSER_MARKER = "Executable doesn't exist"
 
@@ -31,8 +40,10 @@ _MISSING_BROWSER_MESSAGE = (
 
 
 async def get_playwright():
-    global _playwright
+    global _playwright, _playwright_lock
     if _playwright is None:
+        if _playwright_lock is None:
+            _playwright_lock = asyncio.Lock()
         async with _playwright_lock:
             # Re-check inside the lock: another caller may have finished
             # start()-ing between the check above and acquiring the lock.
@@ -48,7 +59,9 @@ async def stop_playwright() -> None:
     responsible for closing any Browser/BrowserContext they hold BEFORE
     calling this — stopping the driver out from under a still-open
     browser is not this function's job to prevent."""
-    global _playwright
+    global _playwright, _playwright_lock
+    if _playwright_lock is None:
+        _playwright_lock = asyncio.Lock()
     async with _playwright_lock:
         if _playwright is not None:
             await _playwright.stop()

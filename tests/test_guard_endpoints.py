@@ -25,7 +25,6 @@ in the test).
 """
 from __future__ import annotations
 
-import asyncio
 import dataclasses
 import time
 
@@ -33,7 +32,6 @@ import pytest
 
 from mcp104.browser.api_client import ENDPOINTS, Endpoint, hostname_for
 from mcp104.browser.session import SessionInfo, SessionPool
-from mcp104.browser.throttle import ThrottleState
 from mcp104.config import get_config
 import mcp104.tools.helpers as helpers_mod
 from mcp104.tools.helpers import SessionUnavailable, ToolAbort, get_session_id, guarded_api

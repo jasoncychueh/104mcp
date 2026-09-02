@@ -43,10 +43,9 @@ from typing import NamedTuple
 # Bundled datasets live here, not under data/ (the runtime persistence directory whose
 # ignore rules cover data files) — see src/mcp104/assets/104-categories/README.md.
 # `files("mcp104")` addresses the INSTALLED package tree (chained `/`, `.is_file()`
-# verified to work on the container interpreter, Python 3.10.12 — see
-# .spec/steering/tech.md), not the source tree by repo-root arithmetic: production code
-# must read what actually shipped, which for a non-editable install is under
-# site-packages, not this file's own directory.
+# verified to work on the container interpreter, Python 3.10.12), not the source tree
+# by repo-root arithmetic: production code must read what actually shipped, which for a
+# non-editable install is under site-packages, not this file's own directory.
 ASSETS_DIR = files("mcp104") / "assets" / "104-categories"
 
 # Branch-code acceptance is measured per (dataset FILE, CONDITION) pair, not per file

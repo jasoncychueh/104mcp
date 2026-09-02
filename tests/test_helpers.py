@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 
 import pytest
 
@@ -9,7 +8,6 @@ from mcp104.config import get_config
 from mcp104.browser.api_client import ENDPOINTS, RawResponse
 from mcp104.tools.helpers import (
     ERROR_API_REQUEST_FAILED,
-    GuardAbort,
     SessionUnavailable,
     ToolAbort,
     get_session_id,

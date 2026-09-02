@@ -487,10 +487,16 @@ async def guarded_api(
         # needs matches_auth_host — a dependency classify() deliberately
         # does not carry (it depends on nothing beyond the endpoint
         # declaration). classify() separately checks the same redirect's
-        # Location for the company-switch marker string, so a redirect
-        # that is neither an auth host NOR that marker still falls through
-        # to classify()'s empty-body non_json branch and is reported
-        # loudly rather than silently.
+        # Location for the company-switch marker string, so a family A/B
+        # redirect that is neither an auth host NOR that marker still
+        # falls through to classify()'s empty-body "non_json" failure kind
+        # and is reported loudly rather than silently. This does not
+        # describe logout_session (family="opaque"): its only measured
+        # redirect target is boidc.104.com.tw, an auth host, so this very
+        # check — which runs before classify() in call order — always
+        # intercepts it first; classify()'s own opaque branch (which
+        # returns success unconditionally) is never reached in practice,
+        # see that endpoint's own comment.
         if raw.location is not None:
             hostname = urlparse(raw.location).hostname or ""
             if matches_auth_host(hostname):
