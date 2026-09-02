@@ -695,6 +695,32 @@ async def test_t100_input_is_gated_by_completion_and_the_gate_is_push_independen
     await stream.stop()
 
 
+@pytest.mark.asyncio
+async def test_announce_completed_is_bounded_by_a_sink_whose_send_str_never_returns(monkeypatch):
+    # I2-H follow-up: announce_completed() fans out over asyncio.gather, so a
+    # single sink whose send_str() never returns must not hang the whole
+    # call forever -- it is bounded by VIEWER_TEARDOWN_TIMEOUT_SECONDS, and
+    # the other, well-behaved sink must still receive the push (gather
+    # dispatches both concurrently, so the hanging one does not block it).
+    monkeypatch.setattr(cdp_stream_module, "VIEWER_TEARDOWN_TIMEOUT_SECONDS", 0.05)
+
+    session = FakeCdpSession()
+    stream = CdpLoginStream(FakePage(session))
+    await stream.start()
+    hanging = HangingSendSink()
+    good = FakeSink()
+    stream.add_viewer(hanging)
+    stream.add_viewer(good)
+
+    stream.mark_completed()
+    await asyncio.wait_for(stream.announce_completed(), timeout=1.0)
+
+    completed_values = [m["value"] for m in _messages(good) if m.get("type") == "state"]
+    assert "completed" in completed_values
+
+    await asyncio.wait_for(stream.stop(), timeout=1.0)
+
+
 # ---------------------------------------------------------------------------
 # Self-healing stall recovery (R1.9). Per the coordinator's Mode 2 direction,
 # §C4 now names the two watchdog constants used below:
@@ -789,7 +815,7 @@ async def test_t099_settling_period_still_refreshes_frames_and_reasserts_complet
 
 @pytest.mark.asyncio
 async def test_stop_closes_every_registered_viewer_sink():
-    # (case I2-H) design.md Sec.C4's stop() teardown closes each fanned-out sink, not
+    # I2-H: design.md Sec.C4's stop() teardown closes each fanned-out sink, not
     # just this stream's own CDP session. Two viewers registered, one stop()
     # call, both must be closed and the viewer set left empty.
     session = FakeCdpSession()
@@ -809,7 +835,7 @@ async def test_stop_closes_every_registered_viewer_sink():
 
 @pytest.mark.asyncio
 async def test_stop_bounds_wait_on_a_sink_whose_close_never_returns(monkeypatch):
-    # (case I2-H) a single uncooperative viewer must not hang stop() forever --
+    # I2-H: a single uncooperative viewer must not hang stop() forever --
     # VIEWER_TEARDOWN_TIMEOUT_SECONDS bounds the total viewer-teardown wait,
     # and the other sink must still get a chance to close within that budget.
     monkeypatch.setattr(cdp_stream_module, "VIEWER_TEARDOWN_TIMEOUT_SECONDS", 0.05)
@@ -836,7 +862,7 @@ async def test_stop_bounds_wait_on_a_sink_whose_close_never_returns(monkeypatch)
 
 @pytest.mark.asyncio
 async def test_stop_bounds_wait_on_a_never_finishing_pending_send_task(monkeypatch):
-    # (case I2-H) a per-frame sink send that never returns (queued into
+    # I2-H: a per-frame sink send that never returns (queued into
     # self._pending_tasks by the frame fan-out path) must not hang stop()
     # forever either -- it is drained under the same
     # VIEWER_TEARDOWN_TIMEOUT_SECONDS budget as the viewer-close loop, and
