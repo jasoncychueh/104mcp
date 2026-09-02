@@ -15,17 +15,21 @@ created.
 
 Cases: T-7, T-46, T-62, T-63, T-64, T-65, T-85, T-92, T-102, T-105, T-117.
 
-Scope note on T-7/T-46/T-105 (the four-screen distinguishability trio): the actual
-*rendering* of the four screens is inline client-side JS shipped inside the served
-HTML page, which this suite does not execute (no browser — that's T-32's job, and
-it isn't in this file's case list). What is tested here is the server-observable
-half of the contract that the client-side rendering logic depends on: (a) the two
-live `state` values ("waiting"/"completed") are distinct and delivered over the
-WebSocket, and (b) the two copy strings the design names for the two close-time
-screens are present, verbatim, in the served page (design.md §C5: "登入已完成，可以
-關閉本頁" / "連線中斷，請重新呼叫 login()") so that the client-side branch has both
-messages available to choose between. Whether the client-side JS picks the right one
-is out of this file's reach.
+Scope note on T-7/T-46/T-105 (the four-screen distinguishability trio): which of
+the four screens the client actually renders for a given connection (the
+render-precedence rule) is not in this suite's automated coverage — client-side
+rendering logic runs as inline JS shipped inside the served HTML page, and this
+suite never executes it (no browser). That is Phase 5's manual visual acceptance
+checklist item 2, a real human looking at the page, not a case in this file. What
+these three cases pin down instead is the server-observable half of the contract
+the client-side rendering logic depends on: all four screen copy strings exist,
+pairwise distinct as full sentences (not just by shared prefix); the two live
+`state` values ("waiting"/"completed") are distinct and delivered over the
+WebSocket, with no third "ended"-shaped value ever appearing online; and the two
+close-time screens' own server-side drivers — a connection that never saw
+"completed" gets its socket closed by the server when the source ends (not left
+dangling), a connection that DID see "completed" gets that message delivered
+strictly before its own socket close.
 """
 from __future__ import annotations
 
@@ -33,6 +37,7 @@ import asyncio
 import logging
 import socket
 
+import aiohttp
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
@@ -93,6 +98,20 @@ class FakeStream:
         for sink in list(self.viewers):
             await sink.send_json({"type": "frame", "data": "", "metadata": {}})
             await sink.send_json({"type": "state", "value": self._state})
+
+    async def stop(self) -> None:
+        """Models the one documented effect of the real CdpLoginStream.stop()
+        that this suite can observe without a browser (§C4/§Data Models: no
+        online value ever carries "closed" — the only server-observable
+        signal that the source ended is the socket itself closing): it
+        closes every registered viewer sink. auth_server.py registers the
+        live WebSocketResponse as that sink via add_viewer, so calling this
+        closes the real WS connection from the server side, exactly as the
+        real stream's stop() does via `await sink.close()` on each viewer."""
+        self._state = "closed"
+        for sink in list(self.viewers):
+            await sink.close()
+        self.viewers.clear()
 
 
 def _stream_lookup(streams: dict):
@@ -318,9 +337,24 @@ async def _receive_state(ws, timeout=5):
     raise AssertionError("no 'state' message arrived within 10 frames")
 
 
-# ── T-7 — the view page's four screens are pairwise distinguishable, and
+_SCREEN_1_WAITING = "請在下方畫面中完成 104 登入。"
+_SCREEN_2_COMPLETED_CONNECTED = "登入已完成，這段期間不需要做任何事，頁面即將自動關閉。"
+_SCREEN_3_COMPLETED_THEN_CLOSED = "登入已完成，可以關閉本頁。"
+_SCREEN_4_NEVER_COMPLETED_CLOSED = "連線中斷，請重新呼叫 login()。"
+
+_ONLINE_STATE_VOCABULARY = {"waiting", "completed"}
+
+
+# ── T-7 ─ the view page's four screens are pairwise distinguishable, and
 #    the two ways of driving them (online `state` value vs. socket close)
-#    are separate mechanisms ────────────────────────────────────────────
+#    are separate mechanisms. Which screen the client actually RENDERS for
+#    a given connection (the render-precedence rule) is client-side JS this
+#    suite never executes (no browser) -- that is Phase 5's manual visual
+#    acceptance checklist item 2, not an automated case. This case only
+#    pins the server-observable half: the four copy strings all exist,
+#    pairwise differ as full sentences, and are driven by two disjoint
+#    mechanisms (state pushes vs. socket close) with no third
+#    "ended"-like online value ────────────────────────────────────────────────
 
 @pytest.mark.asyncio
 async def test_t007_four_screens_are_pairwise_distinguishable():
@@ -343,44 +377,87 @@ async def test_t007_four_screens_are_pairwise_distinguishable():
 
         assert waiting_payload["value"] != completed_payload["value"]
 
-        # Screens 3 vs 4 are driven by socket close, not an online value —
-        # design.md is explicit that no online value ever carries "closed".
-        # The two close-time copy strings must both exist in the served page
-        # for the client-side branch (which decides using "did I ever see
-        # state=='completed' before I closed") to choose between.
+        # Negative: the online vocabulary is exactly {"waiting", "completed"}
+        # -- no "closed"/"ended"/"disconnected"-shaped value is ever pushed.
+        observed_values = {waiting_payload["value"], completed_payload["value"]}
+        assert observed_values <= _ONLINE_STATE_VOCABULARY
+        assert "closed" not in observed_values
+        assert "ended" not in observed_values
+
+        # Screens 3 vs 4 are driven by socket close, not an online value.
+        # The four screen copy strings must all exist, verbatim, in the
+        # served page, and must be pairwise distinct as full sentences,
+        # not merely by their shared completion-notice prefix (screens 2
+        # and 3 both start with it).
         page_resp = await client.get("/auth/waiting-token")
         page_text = await page_resp.text()
-    assert "登入已完成" in page_text and "可以關閉本頁" in page_text
-    assert "連線中斷" in page_text and "login()" in page_text
+
+    screens = [
+        _SCREEN_1_WAITING,
+        _SCREEN_2_COMPLETED_CONNECTED,
+        _SCREEN_3_COMPLETED_THEN_CLOSED,
+        _SCREEN_4_NEVER_COMPLETED_CLOSED,
+    ]
+    for screen_text in screens:
+        assert screen_text in page_text, f"screen copy missing from served page: {screen_text!r}"
+    for i in range(len(screens)):
+        for j in range(i + 1, len(screens)):
+            assert screens[i] != screens[j], (
+                f"screens {i + 1} and {j + 1} must be distinct full sentences: "
+                f"{screens[i]!r} == {screens[j]!r}"
+            )
 
 
-# ── T-46 — a connection that never received "completed" shows the
-#    disconnect copy on close; the precondition (never having received
-#    "completed") is load-bearing ───────────────────────────────────────
+# ── T-46 ─ "stream stopped" and "just no new frames" are two different
+#    events on the server side. (c) the disconnect copy is present in the
+#    served page for the never-completed precondition -- the CLIENT-side
+#    choice of which copy actually renders is out of scope here (client JS,
+#    no browser in this suite; Phase 5 manual visual acceptance item 2) ───
 
 @pytest.mark.asyncio
 async def test_t046_never_completed_connection_carries_disconnect_copy_precondition():
     streams = {"stalled-token": FakeStream(state="waiting")}
+    stream = streams["stalled-token"]
     app = create_auth_app(_stream_lookup(streams))
 
     async with TestClient(TestServer(app)) as client:
         received = []
         async with client.ws_connect("/auth/stalled-token/ws") as ws:
             received.append(await _receive_state(ws))
-        # The connection closed (context exit) having never seen "completed" —
-        # this is the precondition T-46 requires, distinct from T-105's case.
+
+            # (b) frames stop but the source is still alive (stream.stop()
+            # is NOT called) -- the socket must NOT close. A "close on any
+            # pause in frames" implementation would turn an ordinary lull
+            # into a spurious disconnect.
+            await asyncio.sleep(0.2)
+            assert ws.closed is False
+
+            # (a) now the source actually ends -- the socket must close,
+            # positively (an event actually fires), not merely "the
+            # connection is left dangling and we happen to exit the
+            # context manager afterward".
+            await stream.stop()
+            close_msg = await asyncio.wait_for(ws.receive(), timeout=5)
+            assert close_msg.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSED)
+            assert ws.closed is True
+
+        # The connection closed having never seen "completed" -- this is
+        # the precondition T-46 requires, distinct from T-105's case.
         assert all(m["value"] != "completed" for m in received)
 
         page_resp = await client.get("/auth/stalled-token")
         page_text = await page_resp.text()
-    # The disconnect copy the client renders for exactly this precondition
-    # must be present and must be the string that names re-calling login().
-    assert "連線中斷" in page_text
-    assert "login()" in page_text
+    # (c) The disconnect copy the client would render for exactly this
+    # precondition must be present, verbatim, in the served page.
+    assert _SCREEN_4_NEVER_COMPLETED_CLOSED in page_text
 
 
-# ── T-105 — a successful login ends with the completion message, not the
-#    disconnect message; renders while the connection is still alive ──────
+# ── T-105 ─ a successful login leaves a different trace online than an
+#    abandoned one: whether the completion message arrived before close.
+#    Which screen the client then renders from that trace is out of scope
+#    here (client JS, no browser; Phase 5 manual visual acceptance item 2);
+#    (b) "close happens after the settle window elapses" is pinned by
+#    T-8/T-120, not repeated here ───────────────────────────────────
 
 @pytest.mark.asyncio
 async def test_t105_successful_login_shows_completion_not_disconnect():
@@ -398,12 +475,38 @@ async def test_t105_successful_login_shows_completion_not_disconnect():
             await stream.push_state_frame()  # next screencast frame reasserts state
             received.append(await _receive_state(ws))
 
-        assert received[-1]["type"] == "state"
-        assert received[-1]["value"] == "completed"
-        # Distinct precondition from T-46: this connection DID see "completed"
-        # before closing.
-        assert any(m["value"] == "completed" for m in received)
+            assert received[-1]["type"] == "state"
+            assert received[-1]["value"] == "completed"
+            # Distinct precondition from T-46: this connection DID see
+            # "completed" before closing.
+            assert any(m["value"] == "completed" for m in received)
+
+            # (a) the completion message's delivery is ordered strictly
+            # before the socket close -- proven by reading the NEXT message
+            # off this same live connection after the completed state and
+            # observing it is the close frame, not by code-sequencing alone
+            # (a message pushed after close has no receiver to prove it
+            # reached).
+            await stream.stop()
+            close_msg = await asyncio.wait_for(ws.receive(), timeout=5)
+            assert close_msg.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSED)
 
         page_resp = await client.get("/auth/success-token")
         page_text = await page_resp.text()
-    assert "登入已完成" in page_text
+    assert _SCREEN_3_COMPLETED_THEN_CLOSED in page_text
+
+    # (c) Negative control, from the opposite precondition: a connection
+    # that never receives "completed" must have delivered NO "completed"
+    # message before its own close -- this is T-105's own reverse case
+    # (distinct from T-46's copy-string focus), proving the ordering
+    # guarantee above does not leak into the un-completed path.
+    never_completed_stream = FakeStream(state="waiting")
+    streams["never-completed-token"] = never_completed_stream
+    async with TestClient(TestServer(app)) as client:
+        received2 = []
+        async with client.ws_connect("/auth/never-completed-token/ws") as ws:
+            received2.append(await _receive_state(ws))
+            await never_completed_stream.stop()
+            close_msg2 = await asyncio.wait_for(ws.receive(), timeout=5)
+            assert close_msg2.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSED)
+        assert all(m["value"] != "completed" for m in received2)

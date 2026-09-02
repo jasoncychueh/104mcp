@@ -1107,7 +1107,7 @@ async def test_t042_hostname_alone_is_not_enough_keeps_waiting(tmp_path, monkeyp
     from mcp104.tools import auth
 
     app_ctx = make_app_ctx(tmp_path)
-    app_ctx.config = make_config(tmp_path, login_timeout_seconds=0.1)
+    app_ctx.config = make_config(tmp_path, login_timeout_seconds=2.0)
     monkeypatch.setattr(auth, "COOKIE_POLL_INTERVAL", 0.01, raising=False)
 
     token = "tok-t042"
@@ -1138,7 +1138,7 @@ async def test_t043_browser_session_only_cookie_is_not_enough(tmp_path, monkeypa
     from mcp104.tools import auth
 
     app_ctx = make_app_ctx(tmp_path)
-    app_ctx.config = make_config(tmp_path, login_timeout_seconds=0.1)
+    app_ctx.config = make_config(tmp_path, login_timeout_seconds=2.0)
     monkeypatch.setattr(auth, "COOKIE_POLL_INTERVAL", 0.01, raising=False)
 
     token = "tok-t043"
@@ -2226,16 +2226,19 @@ async def test_t109_reverse_without_logout_watcher_writes_normally(tmp_path, mon
 # --- T-120 (R1.13): logout() during `settling` is the handed_off 4th path ---
 
 @pytest.mark.asyncio
-async def test_t120_logout_during_settling_closes_early_and_next_login_reads_cookie_file(
+async def test_t120_logout_during_settling_closes_early_and_next_login_is_a_fresh_human_login(
     tmp_path, monkeypatch
 ):
     """R1.13: calling logout() while a login is `settling` takes the 4th
     handed_off path, distinct from the other three in two ways:
     (a) the stream/socket close early -- the caller does not wait out the
     remainder of POST_SUCCESS_SETTLE_SECONDS;
-    (b) the next login() call takes the cookie-file branch, not the pool
-    branch -- this logout() already emptied the pool (Architecture
-    lifecycle table, handed_off row)."""
+    (b) the next login() call is neither the pool branch nor a
+    restored-from-disk login -- this logout() both emptied the pool AND
+    deleted the credential file (its own Step 3, clear_cookies), so it
+    opens a brand-new human login: {"login_url", "token"} is returned (not
+    a {"status": ...} shape), and that token is byte-for-byte different
+    from the one minted before this logout()."""
     from mcp104.tools import auth
 
     app_ctx = make_app_ctx(tmp_path)
@@ -2289,6 +2292,7 @@ async def test_t120_logout_during_settling_closes_early_and_next_login_reads_coo
     result = await auth.login(ctx)
     assert result.get("status") not in ("already_logged_in", "restored")
     assert "token" in result and "login_url" in result
+    assert result["token"] != token
 
 
 # --- T-8 (R1.11): settle survives for exactly the named constant ----------

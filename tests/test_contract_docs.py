@@ -325,11 +325,18 @@ def test_env_var_regex_extraction_does_not_miss_a_fourth_call_form():
     If `get_config()`/`resolve_data_dir()` ever read an environment variable
     through a fourth shape the regex does not match (e.g. `os.environ["X"]`,
     an f-string built name, or a new helper), the regex-based extraction
-    above would silently miss it rather than fail loudly — since the
-    variable's own literal name still has to appear SOMEWHERE in the source
-    as an ENV_VAR-shaped string constant, walking the AST for every such
-    string constant and checking each is one the regex already accounted for
-    catches that miss.
+    above would silently miss it rather than fail loudly. This check only
+    covers the literal string constants that appear directly in these two
+    functions' own bodies (via `inspect.getsource` + `ast.walk`) — it walks
+    for every such string constant and checks each is one the regex already
+    accounted for. Two shapes it cannot see, and does not claim to: a
+    variable name held in a module-level constant read through a level of
+    indirection (`_VAR = "MCP104_X"` elsewhere in the module, then
+    `os.environ[_VAR]` inside the function — the literal string never
+    appears in the function's own source) and an f-string-built name
+    (`os.getenv(f"MCP104_{suffix}")` — no literal name exists to find at
+    all). Either of those would need a different check (or a rewrite of
+    `_ENV_VAR_CALL_RE` to name the indirection).
     """
     env_name_re = re.compile(r"^[A-Z][A-Z0-9_]+$")
     for func in (config_module.get_config, config_module.resolve_data_dir):
