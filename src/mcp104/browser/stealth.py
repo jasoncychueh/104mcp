@@ -1,9 +1,17 @@
-from patchright.async_api import async_playwright, Browser, BrowserContext
+from patchright.async_api import async_playwright, Browser, BrowserContext, Error as PatchrightError
 
 from mcp104.browser.fingerprint import ACCEPT_LANGUAGE, USER_AGENT
 
 
 _playwright = None
+
+_MISSING_BROWSER_MARKER = "Executable doesn't exist"
+
+_MISSING_BROWSER_MESSAGE = (
+    "找不到 Chromium 執行檔。patchright 的瀏覽器快取是 user-level 的 "
+    "ms-playwright 目錄，唯一會被讀取的環境變數是 PLAYWRIGHT_BROWSERS_PATH——"
+    "任何一種方式在這台機器上裝過一次瀏覽器之後，這裡都會找得到。"
+)
 
 
 async def get_playwright():
@@ -13,28 +21,29 @@ async def get_playwright():
     return _playwright
 
 
-async def launch_browser(headless: bool = True, display: str | None = None) -> Browser:
+async def launch_browser(headless: bool = True) -> Browser:
     """Launch a stealth patchright Chromium browser.
 
     Args:
-        headless: If False, requires DISPLAY env var (Xvfb).
-        display: X11 display (e.g. ":99"). Only used when headless=False.
+        headless: If False, launches with a visible window (still no
+            display-server dependency — the CDP login stream carries the
+            picture, not an X11 display).
     """
-    import os
-    env = None
-    if not headless and display:
-        env = {**os.environ, "DISPLAY": display}
-
     pw = await get_playwright()
-    browser = await pw.chromium.launch(
-        headless=headless,
-        args=[
-            "--disable-blink-features=AutomationControlled",
-            "--no-sandbox",
-            "--disable-dev-shm-usage",
-        ],
-        env=env if not headless else None,
-    )
+    try:
+        browser = await pw.chromium.launch(
+            headless=headless,
+            channel="chromium",
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+            ],
+        )
+    except Exception as e:
+        if _MISSING_BROWSER_MARKER in str(e):
+            raise PatchrightError(_MISSING_BROWSER_MESSAGE) from e
+        raise
     return browser
 
 

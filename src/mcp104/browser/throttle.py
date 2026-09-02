@@ -67,6 +67,7 @@ import logging
 import time
 from collections import deque
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
@@ -135,6 +136,14 @@ class ThrottleState:
         last_call_finished_at (below), which drives the pacing floor and is
         committed at a different point in the call (before the request is
         issued, not after note_request runs).
+    unpersisted_timestamps: timestamps that note_request counted in-memory
+        but failed to append to the on-disk state file (see note_request's
+        own docstring for why that failure is swallowed rather than raised
+        or silently dropped). load_throttle_state's result is unioned with
+        this list rather than replacing it, so a request that never made it
+        to disk is still counted by every subsequent decision made by this
+        same process. evaluate() never reads it directly — only the merge
+        step in enforce_throttle folds it into request_timestamps.
     """
     request_timestamps: deque[float] = field(default_factory=deque)
     last_call_finished_at: float | None = None
@@ -143,6 +152,7 @@ class ThrottleState:
     resting_until: float | None = None
     counter_attached: bool = False
     last_request_logged_at: float | None = None
+    unpersisted_timestamps: list[float] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -150,6 +160,56 @@ class ThrottleDecision:
     proceed: bool
     wait_seconds: float = 0.0
     reason: str = ""  # "" | "rest" | "budget" | "pacing" — meaningful only when proceed is False
+
+
+@dataclass(frozen=True)
+class ThrottleAbort:
+    """What enforce_throttle returns instead of raising when a call must not
+    proceed. `kind` selects one of the caller-facing error shapes the guard
+    (tools/helpers.py) already knows how to raise as a ToolAbort — this
+    module never raises the abort itself, only builds the value describing
+    one.
+
+    This is a two-mode type, and the legality of a given (kind, payload,
+    detail) combination is a relationship BETWEEN the fields, decided by
+    kind in both directions, not a property of any one field alone:
+
+        kind == "throttled"  => payload is not None and detail == ""
+        every other kind     => payload is None     and detail != ""
+
+    Writing the rule as "exactly one of payload/detail is set" would look
+    equivalent but isn't: it also accepts kind="throttled" with no payload,
+    which reaches the caller as a retry-after refusal with no
+    retry_after_seconds — indistinguishable from an internal error. The
+    property above is checked in both directions at construction time
+    (__post_init__) precisely to rule that combination out, not just its
+    mirror image.
+
+    payload, when present, is `_retry_after_payload`'s product — that
+    wording belongs to this module, since it's this module's own notion of
+    "try again in N seconds". detail, when present, is a plain description
+    of which file and which kind of read failure; the caller-facing wording
+    around it belongs to the guard, not here — this module never imports
+    from tools/ (steering/structure.md) and never writes Agent-facing
+    prose.
+    """
+    kind: str
+    payload: dict | None
+    detail: str
+
+    def __post_init__(self) -> None:
+        if self.kind == "throttled":
+            if self.payload is None or self.detail != "":
+                raise ValueError(
+                    "ThrottleAbort(kind='throttled') requires a non-None "
+                    "payload and an empty detail"
+                )
+        else:
+            if self.payload is not None or self.detail == "":
+                raise ValueError(
+                    f"ThrottleAbort(kind={self.kind!r}) requires payload=None "
+                    "and a non-empty detail"
+                )
 
 
 def evaluate(
@@ -256,26 +316,244 @@ def _retry_after_payload(wait_seconds: float) -> dict:
     }
 
 
+# --- Cross-run persistence ---------------------------------------------
+#
+# The state file is one timestamp per line, plain text, append-only. One
+# line per entry keeps an append a single short write; plain text keeps a
+# damaged file readable by a human instead of a total loss.
+
+
+def _parse_timestamp_line(line: str) -> float | None:
+    try:
+        return float(line.strip())
+    except ValueError:
+        return None
+
+
+def _dated_timestamps(lines: list[str], mtime: float) -> list[float]:
+    """One timestamp per line, in file order. A parseable line contributes
+    its own value. An unparseable line is dated at the nearest parseable
+    timestamp that comes AFTER it in the file (an append is ordered, so the
+    line was written before whatever follows it — dating it off that later
+    entry never underestimates its age) or, when nothing parseable follows
+    it (it sits at the very end of the file), the file's mtime.
+
+    Never "now": a line re-dated to the current time on every read would
+    never age out of the rolling window, and the volume budget would jam
+    permanently once enough bad lines accumulated.
+    """
+    ages: list[float] = [0.0] * len(lines)
+    next_parseable: float | None = None
+    for i in range(len(lines) - 1, -1, -1):
+        value = _parse_timestamp_line(lines[i])
+        if value is not None:
+            ages[i] = value
+            next_parseable = value
+        else:
+            ages[i] = next_parseable if next_parseable is not None else mtime
+    return ages
+
+
+def _derive_streak_start(ordered_timestamps: list[float]) -> float:
+    """Walk from the newest timestamp backward, extending the streak while
+    the gap to the next-older entry stays under ACTIVITY_GAP_RESET_SECONDS.
+    `ordered_timestamps` must already be sorted ascending and non-empty.
+    """
+    streak_start = ordered_timestamps[-1]
+    for i in range(len(ordered_timestamps) - 2, -1, -1):
+        gap = ordered_timestamps[i + 1] - ordered_timestamps[i]
+        if gap >= ACTIVITY_GAP_RESET_SECONDS:
+            break
+        streak_start = ordered_timestamps[i]
+    return streak_start
+
+
+def load_throttle_state(path: Path) -> ThrottleState:
+    """Read `path` into a ThrottleState determined ONLY by the file's
+    content: fields the file can't speak to are left at their dataclass
+    defaults. The only caller is enforce_throttle, once per throttling
+    decision — this is not a one-time startup hydration step (see the
+    module's cross-run-persistence notes for why there is deliberately no
+    such step).
+
+    A missing file returns an empty state — that's the ordinary first-run
+    case, not an error. An EXISTING file this can't read (permission
+    changed, disk fault, corrupt encoding) raises instead of returning an
+    empty state: silently falling back to "no requests on record" is
+    exactly the undercount this module exists to refuse. The caller
+    (enforce_throttle) is the one that turns that raise into a reportable
+    value — this function's own contract is unchanged by that: it still
+    never swallows a read failure into an empty result.
+    """
+    if not path.exists():
+        return ThrottleState()
+
+    stat_result = path.stat()
+    text = path.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    if not lines:
+        return ThrottleState()
+
+    ages = _dated_timestamps(lines, stat_result.st_mtime)
+    ordered = sorted(ages)
+
+    loaded = ThrottleState()
+    loaded.request_timestamps = deque(ordered)
+    latest = ordered[-1]
+    loaded.last_call_finished_at = latest
+    loaded.last_action_at = latest
+    loaded.activity_streak_start = _derive_streak_start(ordered)
+    return loaded
+
+
+def _merge_loaded_state(state: ThrottleState, loaded: ThrottleState, now: float) -> None:
+    """Fold a freshly loaded ThrottleState into the in-memory `state` ahead
+    of a throttling decision, per the field-by-field merge rules: some
+    fields are replaced outright, some take the earlier/later of the two
+    values, and some are deliberately left untouched by a read. See
+    load_throttle_state and note_request for what each field means and why
+    it crosses (or doesn't cross) a process boundary this way.
+    """
+    # request_timestamps: the file is the sole truth for this field — this
+    # process's own successfully-written requests are already in it.
+    # unpersisted_timestamps (requests counted in-memory that failed to
+    # reach disk) is unioned back in rather than being replaced away.
+    state.request_timestamps = deque(
+        sorted(list(loaded.request_timestamps) + state.unpersisted_timestamps)
+    )
+
+    # last_call_finished_at / last_action_at: derived from the file, never
+    # earlier than the in-memory value, and clamped so a clock skew or a
+    # file from another machine can't push the pacing wait past the
+    # interval floor itself.
+    if loaded.last_call_finished_at is not None:
+        merged = loaded.last_call_finished_at
+        if state.last_call_finished_at is not None:
+            merged = max(merged, state.last_call_finished_at)
+        state.last_call_finished_at = min(merged, now)
+    if loaded.last_action_at is not None:
+        merged = loaded.last_action_at
+        if state.last_action_at is not None:
+            merged = max(merged, state.last_action_at)
+        state.last_action_at = min(merged, now)
+
+    # activity_streak_start: earlier of the two when both are known — the
+    # process that has been running longer is the one whose streak start
+    # should win.
+    if loaded.activity_streak_start is not None:
+        if state.activity_streak_start is not None:
+            state.activity_streak_start = min(
+                state.activity_streak_start, loaded.activity_streak_start
+            )
+        else:
+            state.activity_streak_start = loaded.activity_streak_start
+
+    # resting_until, counter_attached, last_request_logged_at: a read never
+    # touches these — see ThrottleState's docstring / this module's
+    # cross-run-persistence notes for why each one is exempt.
+
+
+def compact_state_file(path: Path, *, now_fn=time.time) -> None:
+    """Run once, at startup, by the process's startup sequence (not by this
+    module). Drops only entries older than the longest rolling window this
+    module enforces (REQUEST_WINDOW_SECONDS) — anything inside any window
+    stays. When nothing is expired, the file is not touched AT ALL, not
+    even its mtime: a rewrite would re-date a trailing unparseable line's
+    age (which falls back to the file's mtime) to "just now" on every
+    single process start, pinning the two derived fields to that moment
+    forever and making every process's first call pay an interval-floor
+    wait it wouldn't otherwise owe.
+
+    A read failure propagates — this step doubles as the startup
+    precondition check for load_throttle_state, and an unreadable-but-
+    present file is a startup failure, not something to route around.
+
+    A WRITE failure is different and does not propagate: it only means the
+    file wasn't shortened this time, which harms none of the three
+    mechanisms, so it's logged and swallowed. The same non-propagating
+    treatment applies when the file is found to have changed (size or
+    mtime) since it was read — rewriting over a concurrent append would
+    lose the timestamp that append just wrote, which is an undercount, so
+    the compaction is abandoned instead. No lock is taken to prevent that
+    race; abandoning cleanly when it's detected is the chosen alternative.
+    """
+    if not path.exists():
+        return
+
+    stat_before = path.stat()
+    text = path.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    if not lines:
+        return
+
+    ages = _dated_timestamps(lines, stat_before.st_mtime)
+    cutoff = now_fn() - REQUEST_WINDOW_SECONDS
+    keep = [age >= cutoff for age in ages]
+    if all(keep):
+        return
+
+    kept_lines = [line for line, keep_it in zip(lines, keep) if keep_it]
+    new_content = "".join(f"{line}\n" for line in kept_lines)
+
+    try:
+        stat_after = path.stat()
+        if (
+            stat_after.st_size != stat_before.st_size
+            or stat_after.st_mtime != stat_before.st_mtime
+        ):
+            log.warning(
+                "throttle: %s changed since it was read; abandoning compaction",
+                path,
+            )
+            return
+        path.write_text(new_content, encoding="utf-8")
+    except OSError as exc:
+        log.warning("throttle: could not rewrite %s: %s", path, exc)
+
+
 async def enforce_throttle(
     state: ThrottleState,
     *,
+    path: Path,
     max_requests_per_hour: int,
     max_inline_wait_seconds: float,
     activity_streak_limit_minutes: float,
     rest_duration_minutes: float,
     min_call_interval_seconds: float,
     now_fn=time.time,
-) -> dict | None:
-    """Async boundary around evaluate(): performs the actual inline sleep
-    (only ever a real sleep in production — now_fn is the injection point
-    tests use instead) and turns a deferred verdict into the retry-after
-    payload guarded_page/guarded_api return to the Agent via ToolAbort.
+) -> ThrottleAbort | None:
+    """Async boundary around evaluate(): rereads `path` and folds it into
+    `state` (see load_throttle_state / _merge_loaded_state), performs the
+    actual inline sleep (only ever a real sleep in production — now_fn is
+    the injection point tests use instead), and turns a deferred verdict
+    into a ThrottleAbort the guard (tools/helpers.py) raises as a
+    ToolAbort.
 
-    Returns None to mean "proceed, already paced" — never raises.
+    Rereading on every call — rather than hydrating `state` once and
+    reusing it — is deliberate: it's the only way this process sees a
+    request a concurrently-running process just wrote, and overlap between
+    runs is exactly what cross-run persistence exists to handle. The cost
+    is one small local file read ahead of every 104 request, negligible
+    next to the network call itself.
+
+    This function still never raises — that contract predates this
+    revision and is explicitly preserved here: the one new dependency that
+    CAN raise (load_throttle_state, on an existing-but-unreadable state
+    file) is caught here and turned into a returned ThrottleAbort instead
+    of being let through. Returns None to mean "proceed, already paced".
     """
+    now = now_fn()
+    try:
+        loaded = load_throttle_state(path)
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        detail = f"讀取節流狀態檔失敗：{path}（{exc}）"
+        return ThrottleAbort(kind="internal_config", payload=None, detail=detail)
+
+    _merge_loaded_state(state, loaded, now)
+
     decision = evaluate(
         state,
-        now=now_fn(),
+        now=now,
         max_requests_per_hour=max_requests_per_hour,
         max_inline_wait_seconds=max_inline_wait_seconds,
         activity_streak_limit_seconds=activity_streak_limit_minutes * 60,
@@ -287,7 +565,11 @@ async def enforce_throttle(
             "throttle: deferring call, reason=%s wait_seconds=%.1f",
             decision.reason, decision.wait_seconds,
         )
-        return _retry_after_payload(decision.wait_seconds)
+        return ThrottleAbort(
+            kind="throttled",
+            payload=_retry_after_payload(decision.wait_seconds),
+            detail="",
+        )
 
     if decision.wait_seconds > 0:
         await _sleep(decision.wait_seconds)
@@ -327,9 +609,11 @@ def attach_request_counter(context: BrowserContext, state: ThrottleState) -> Non
     state.counter_attached = True
 
 
-def note_request(state: ThrottleState, *, now_fn=time.time) -> None:
-    """Count one API request toward the rolling-window volume cap, and log
-    the interval observed since the previous call on this session.
+def note_request(state: ThrottleState, *, path: Path, now_fn=time.time) -> None:
+    """Count one API request toward the rolling-window volume cap, log the
+    interval observed since the previous call on this session, and append
+    the request's timestamp to the on-disk state file so it survives past
+    this process.
 
     Called once per call from guarded_api (tools/helpers.py), regardless
     of whether that call ultimately succeeds — attach_request_counter's
@@ -346,6 +630,22 @@ def note_request(state: ThrottleState, *, now_fn=time.time) -> None:
     them, so they would arrive back-to-back and the logged interval would
     reflect the lock's queue rather than the caller's own rhythm. Nothing
     reacts to the logged value automatically; it exists to be read later.
+
+    Called from guarded_api's `finally`, so this never raises — an
+    exception here would clobber the outcome of the request it's just
+    finishing recording. That means an append failure can't be handled by
+    aborting the call it belongs to (the request has already gone out by
+    this point). It's also not handled by a bare warning-and-drop: reads
+    are REPLACE semantics (load_throttle_state), so a timestamp that never
+    reached the file would be erased on the very next read — an undercount,
+    which this module refuses everywhere else. So a failed append instead
+    goes into state.unpersisted_timestamps, which the next read unions back
+    in (see _merge_loaded_state), and a warning is logged — not silence,
+    but also not a lost count. A persistent failure (disk full, permission
+    revoked) isn't swallowed forever by this path: it also breaks reads,
+    and reads DO report — the next enforce_throttle call surfaces it as
+    ThrottleAbort(kind="internal_config"). Only genuinely one-off append
+    failures are absorbed here.
     """
     now = now_fn()
     if state.last_request_logged_at is not None:
@@ -355,3 +655,9 @@ def note_request(state: ThrottleState, *, now_fn=time.time) -> None:
         )
     state.last_request_logged_at = now
     state.request_timestamps.append(now)
+    try:
+        with path.open("a", encoding="utf-8") as f:
+            f.write(f"{now:.6f}\n")
+    except OSError as exc:
+        log.warning("throttle: could not append to state file %s: %s", path, exc)
+        state.unpersisted_timestamps.append(now)
