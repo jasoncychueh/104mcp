@@ -39,8 +39,8 @@ import mcp104.tools.filters as filters_mod
 # The SINGLE conversion `tools/search.py`'s `_convert_resume_row` applies to every row
 # field — moved here (not merely referenced from it) because `describe_result_fields()`
 # below must key its payload on the SAME delivered names `_convert_resume_row` actually
-# produces (Bug B, Round I1: a gloss keyed on 104's raw camelCase names described fields
-# an Agent holding a converted row can never look up — the intersection was 4 of 35).
+# produces — a gloss keyed on 104's raw camelCase names describes fields an Agent holding
+# a converted row can never look up (measured once: the intersection was 4 of 35).
 # `tools/search.py` imports this back (`from mcp104.tools.discovery import _snake_case`)
 # rather than keeping its own copy, so the two can never independently drift on what
 # "the delivered name" means for a given raw field. No cycle: this module has no
@@ -62,8 +62,8 @@ def _row_facing_key(camel_key: str) -> str:
     """The key a caller actually finds on a DELIVERED row — `_snake_case` plus the one
     rename `tools/search.py`'s `_convert_resume_row` applies (`idNo` -> `candidate_id`).
     Must never diverge from `_convert_resume_row`'s own logic (same helper, same rename
-    condition), which is the whole fix for Bug A/B: a payload describing raw 104 names
-    is not useful to a caller who only ever sees the converted row.
+    condition): a payload describing raw 104 names is not useful to a caller who only
+    ever sees the converted row.
     """
     converted = _snake_case(camel_key)
     return "candidate_id" if converted == "id_no" else converted
@@ -85,8 +85,8 @@ def _row_facing_key(camel_key: str) -> str:
 # a plausible-sounding guess here is worse than an admitted gap, because a guess reads as
 # fact once it is in a tool's published output. `docs/104-site-facts.md` §6b.2 lists every
 # row field BY NAME only, with no meaning recorded for most of them — the boundary below
-# (Smell F, Round I1) is drawn from that same evidence class, not from which fields merely
-# "look" self-evident: `remoteWork` asserting "是否可遠端工作" would be a semantic claim
+# is drawn from that same evidence class, not from which fields merely "look"
+# self-evident: `remoteWork` asserting "是否可遠端工作" would be a semantic claim
 # nothing measured, and `readStatus` is ALSO a search *parameter* (`readStatus=all`), so
 # its row meaning cannot be assumed from the name alone either.
 RESUME_ROW_FIELD_GLOSS: dict[str, str] = {
@@ -203,8 +203,8 @@ INBOX_ROW_FIELD_GLOSS: dict[str, str] = {
 
 # Excluded from a delivered inbox row entirely — never published under ANY name, row-
 # facing or raw. Kept as dict entries above (not simply omitted) so the exclusion is
-# documented rather than silent, per design.md/plan §5: "the gloss payload says the row
-# carries them and why they are not surfaced."
+# documented rather than silent: the gloss payload says the row carries them and why
+# they are not surfaced.
 INBOX_ROW_EXCLUDED_FIELDS: frozenset[str] = frozenset({"idNo", "hid"})
 
 
@@ -304,7 +304,7 @@ def _event_label_gloss() -> dict[str, str]:
 # ── browse_filter_values ─────────────────────────────────────────────────────────────
 
 _COMPLETENESS_NOTES: dict[str, str] = {
-    # Fixed (Smell G, Round I2): the earlier text bolted `sex`/`empStatus`'s own
+    # An earlier revision of this text bolted `sex`/`empStatus`'s own
     # CERTIFICATION METHOD (exhaustive-sum against baseline) onto every "certified"
     # row, plus a claim that every listed code "actually filters" — both false for
     # most of the 14 certified rows today: the two date keys' codes are NESTED
@@ -383,8 +383,8 @@ def _browse_enum_key(condition: filters_mod.Condition) -> dict:
 
 def _browse_composite_key(condition: filters_mod.Condition) -> dict:
     """`structure` is `condition.caller_shape` — a REAL caller-facing dict shape
-    (field names, required-ness, nesting), never `condition.value_domain` (Bug A,
-    Round I1): `value_domain` for a composite row is prose CAVEATS about the shape
+    (field names, required-ness, nesting), never `condition.value_domain`:
+    `value_domain` for a composite row is prose CAVEATS about the shape
     (unmeasured sub-domains, dotted-key annotations like `"month.mode"`), not a shape a
     caller could build a request from — using it here produced an invalid `filters`
     dict on every single composite call. `caller_shape` is derived directly from each
@@ -393,8 +393,8 @@ def _browse_composite_key(condition: filters_mod.Condition) -> dict:
     """
     # `sub_domains` is `value_domain` — the same prose the paragraph above refuses to
     # use as `structure`, surfaced under its own key because the two answer different
-    # questions. Bug A's fix correctly stopped `value_domain` MASQUERADING as a shape;
-    # it then dropped it entirely, and that silently cost the caller the only record of
+    # questions. Simply dropping `value_domain` once it stopped masquerading as a shape
+    # would silently cost the caller the only record of
     # which sub-fields are still unmeasured. `language_skills` shows the damage: its
     # structure says `'language': <代碼>` and, without this key, nothing anywhere in
     # the tool's output tells a caller that only 1=英文 and 2=日文 are known or that
@@ -513,7 +513,7 @@ def _describe_resume_fields() -> dict:
     payload cannot silently fall out of step with the allow-list it describes.
 
     Keyed on `_row_facing_key(raw_key)`, NOT the raw camelCase key `RESUME_ROW_FIELD_
-    GLOSS` itself uses (Bug B, Round I1): the allow-list is keyed camelCase because
+    GLOSS` itself uses: the allow-list is keyed camelCase because
     `tools/search.py` filters the RAW pre-conversion dict against it, but a caller of
     THIS tool is holding an already-converted row and can only look fields up by the
     name actually printed on it. `_row_facing_key` is the exact same transform
@@ -541,7 +541,7 @@ def _describe_inbox_fields() -> dict:
     """Excluded fields (`idNo`/`hid`) are published under their OWN raw 104 field name
     — never a row-facing name, since they never appear on a delivered row under any
     spelling — so the gloss states the row carries them and why they are excluded,
-    per design.md/plan §5, rather than silently omitting them. `event_progress`/
+    rather than silently omitting them. `event_progress`/
     `event_polarity` are appended from `_event_label_gloss()`, generated from
     `EVENT_LABELS` rather than retyped."""
     fields = {}

@@ -334,13 +334,33 @@ async def _start_human_login(app, ctx: Context, session_id: str) -> dict:
         app.auth_site = await start_auth_site(auth_app, app.config)
 
     token = secrets.token_urlsafe(32)
-    browser = await launch_browser(headless=True)
-    context = await create_stealth_context(browser)
-    page = await context.new_page()
-    await page.goto(LOGIN_URL)
+    browser: "Browser | None" = None
+    context: "BrowserContext | None" = None
+    try:
+        browser = await launch_browser(headless=True)
+        context = await create_stealth_context(browser)
+        page = await context.new_page()
+        await page.goto(LOGIN_URL)
 
-    stream = CdpLoginStream(page)
-    await stream.start()
+        stream = CdpLoginStream(page)
+        await stream.start()
+    except Exception:
+        # Nothing below this point has registered a pending-login entry
+        # yet, so no one else owns these resources — this function must
+        # close whatever it managed to create before the failure, in
+        # narrowest-scope-first order, each step swallowing its own
+        # exception so one failed close does not hide another.
+        if context is not None:
+            try:
+                await context.close()
+            except Exception:
+                log.exception("Failed closing context after a failed login start")
+        if browser is not None:
+            try:
+                await browser.close()
+            except Exception:
+                log.exception("Failed closing browser after a failed login start")
+        raise
 
     app.session_pool.add_pending(token, PendingLogin(mcp_session_id=session_id))
     app._pending_logins[token] = PendingLoginResources(
@@ -480,7 +500,7 @@ async def _watch_for_login(app, token: str, watcher_epoch: int) -> None:
     login_detected = asyncio.Event()
 
     try:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         overall_deadline = loop.time() + app.config.login_timeout_seconds
 
         page.on("framenavigated", on_frame_navigated)
@@ -551,13 +571,21 @@ async def _watch_for_login(app, token: str, watcher_epoch: int) -> None:
         await _finalize_pending_login(app, token, "settle window elapsed")
 
     except asyncio.CancelledError:
+        # Cancellation is the one path where someone else may already own
+        # teardown: a task is only cancelled from the outside, and the only
+        # caller that cancels this watcher (_finalize_pending_login) is
+        # already mid-teardown for this token when it does so. Any other
+        # exception below has no such other owner and must always finalize,
+        # `succeeded` or not — a resource that failed after the atomic
+        # block completed (e.g. removing the logout_unconfirmed marker)
+        # would otherwise leave the pending entry stuck in `settling`
+        # forever with no one left to clean it up.
         if not succeeded:
             await _finalize_pending_login(app, token, "watcher task cancelled")
         raise
     except Exception:
         log.exception("Login watcher for token %s crashed", token[:8])
-        if not succeeded:
-            await _finalize_pending_login(app, token, "unexpected exception in watcher")
+        await _finalize_pending_login(app, token, "unexpected exception in watcher")
 
 
 # ── MCP tools ──────────────────────────────────────────────────────────
@@ -583,7 +611,7 @@ async def login(ctx: Context) -> dict:
             return result
         # verdict.kind == "expired": pool session removed and the
         # credential file cleared above — fall through to a fresh
-        # human login below (R3.4).
+        # human login below.
     else:
         for pending_token in app.session_pool.find_pending_tokens_for_session(session_id):
             resource = app._pending_logins.get(pending_token)

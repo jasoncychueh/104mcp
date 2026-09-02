@@ -116,8 +116,29 @@ class _FakeCdpLoginStream:
 
 
 class _FakePage:
+    """Stands in for the Playwright Page login()'s fresh-login branch
+    creates. Supports on()/remove_listener()/main_frame (no-ops beyond
+    bookkeeping) so a background watcher spawned against it can run
+    _watch_for_login's framenavigated listener registration without
+    crashing -- it never actually navigates to vip.104.com.tw here, so
+    such a watcher simply times out and abandons like any other test that
+    doesn't drive it further, instead of raising AttributeError."""
+
     def __init__(self):
         self.url = "about:blank"
+        self._handlers: dict[str, list] = {}
+
+    @property
+    def main_frame(self):
+        return self
+
+    def on(self, event, handler):
+        self._handlers.setdefault(event, []).append(handler)
+
+    def remove_listener(self, event, handler):
+        handlers = self._handlers.get(event, [])
+        if handler in handlers:
+            handlers.remove(handler)
 
     async def goto(self, url, *a, **k):
         self.url = url
@@ -527,6 +548,10 @@ async def test_t110_never_produces_confirmed_state(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_t110_never_raises(tmp_path, monkeypatch):
+    """A non-GuardAbort exception out of guarded_api must not propagate --
+    request_server_logout must land it as a conservative ("unconfirmed",
+    not "not_sent") answer with kind="internal_config", never let it
+    escape and take down logout()'s local-half teardown with it."""
     from mcp104.tools import auth
 
     pool = SessionPool()
@@ -534,49 +559,17 @@ async def test_t110_never_raises(tmp_path, monkeypatch):
     app_ctx = make_app_ctx(tmp_path, pool=pool)
     ctx = make_ctx(app_ctx)
 
-    raises_something_unexpected = stub_guarded_api_abort("challenge")
+    @contextlib.asynccontextmanager
+    async def raises_something_unexpected(*a, **k):
+        raise RuntimeError("boom, not a GuardAbort")
+        yield  # pragma: no cover -- unreachable; keeps this an async generator
 
     monkeypatch.setattr(auth, "guarded_api", raises_something_unexpected, raising=False)
 
     result = await auth.request_server_logout(ctx)
-    assert result is not None
-
-
-def test_t110_server_logout_result_kind_never_none():
-    from mcp104.tools.auth import ServerLogoutResult
-
-    result = ServerLogoutResult(state="unconfirmed", kind="expired", detail="x")
-    assert result.kind is not None
-    assert result.kind != ""
-
-
-@pytest.mark.asyncio
-async def test_t115_logout_request_survives_saturated_throttle(tmp_path, monkeypatch):
-    """(a) positive half: even with the session's ThrottleState fully
-    saturated, request_server_logout still sends the request (not throttled)."""
-    from mcp104.tools import auth
-
-    session = make_session()
-    now = dt.datetime.now()
-    if hasattr(session.throttle, "timestamps"):
-        session.throttle.timestamps = [now] * 1000
-    if hasattr(session.throttle, "resting_until"):
-        session.throttle.resting_until = now + dt.timedelta(minutes=10)
-
-    pool = SessionPool()
-    pool.activate_direct("s1", session)
-    app_ctx = make_app_ctx(tmp_path, pool=pool)
-    ctx = make_ctx(app_ctx)
-
-    called = {"n": 0}
-
-    fake_guarded_api = stub_guarded_api_ok_counting(called, {"status": "whatever"})
-
-    monkeypatch.setattr(auth, "guarded_api", fake_guarded_api, raising=False)
-
-    result = await auth.request_server_logout(ctx)
-    assert called["n"] == 1
-    assert result.kind != "throttled"
+    assert result.state == "unconfirmed"
+    assert result.kind == "internal_config"
+    assert result.detail
 
 
 def test_t115_endpoints_throttle_exempt_set_is_exactly_logout_session():
@@ -1000,52 +993,223 @@ async def test_t027_html_redirect_body_is_judged_failure_not_success(tmp_path, m
     assert verdict.alive is False
 
 
+# --- shared driver for _watch_for_login (T-42..T-45, T-8, T-94/T-97, T-109,
+# T-120): a controllable fake page/context/browser/stream, driven directly
+# through auth._watch_for_login (awaited in-line, not spawned as a task) so
+# each case can move the clock and the page/cookie state deterministically
+# without racing a background task. ---
+
+class _ControllableFramePage:
+    """Stands in for the Playwright Page _watch_for_login listens on. Its
+    `main_frame` is itself; `url` starts off-host and is moved by
+    `navigate_to`, which synchronously invokes every registered
+    "framenavigated" handler -- mirroring Playwright's own synchronous
+    event dispatch closely enough for this predicate."""
+
+    def __init__(self, start_url: str = "https://bsignin.104.com.tw/login"):
+        self.url = start_url
+        self._handlers: dict[str, list] = {}
+
+    @property
+    def main_frame(self):
+        return self
+
+    def on(self, event, handler):
+        self._handlers.setdefault(event, []).append(handler)
+
+    def remove_listener(self, event, handler):
+        handlers = self._handlers.get(event, [])
+        if handler in handlers:
+            handlers.remove(handler)
+
+    def navigate_to(self, url: str):
+        self.url = url
+        for h in list(self._handlers.get("framenavigated", [])):
+            h(self)
+
+    async def new_cdp_session(self, *a, **k):
+        return types.SimpleNamespace()
+
+    async def close(self):
+        pass
+
+
+class _ControllableContext:
+    def __init__(self):
+        self._cookies: list[dict] = []
+        self.closed = False
+
+    async def new_page(self):
+        return _ControllableFramePage()
+
+    async def cookies(self, *a, **k):
+        return list(self._cookies)
+
+    async def close(self):
+        self.closed = True
+
+
+class _ControllableBrowser:
+    def __init__(self):
+        self.closed = False
+
+    async def new_context(self, *a, **k):
+        return _ControllableContext()
+
+    async def close(self):
+        self.closed = True
+
+
+def make_driven_pending_login(app_ctx, token: str, page_url="https://bsignin.104.com.tw/login"):
+    """Registers a PendingLoginResources entry directly (bypassing
+    _start_human_login's browser-launch plumbing, already covered
+    elsewhere) so a test can await auth._watch_for_login(app, token,
+    app.logout_epoch) directly and assert on the fakes' own observable
+    state afterward."""
+    from mcp104.tools import auth
+    from mcp104.browser.session import PendingLogin
+
+    page = _ControllableFramePage(page_url)
+    context = _ControllableContext()
+    browser = _ControllableBrowser()
+    stream = _FakeCdpLoginStream(page)
+    resource = auth.PendingLoginResources(
+        browser=browser, context=context, page=page, stream=stream,
+        state=auth.LoginState.AWAITING_HUMAN,
+    )
+    app_ctx.session_pool.add_pending(token, PendingLogin(mcp_session_id="s1"))
+    app_ctx._pending_logins[token] = resource
+    return resource, page, context, browser, stream
+
+
 # --- T-42, T-43, T-44 (R9.1, R9.2): two-factor completion predicate ------
 
-_COMPLETION_PREDICATE_CANDIDATES = [
-    "_login_completed", "_is_login_complete", "_detect_login_success",
-    "check_login_completion", "_login_success_detected",
-    "_completion_detected", "login_complete",
-]
-
-
-def test_t042_t043_t044_completion_predicate_symbol_findable(tmp_path):
-    """CONTRACT UNCLEAR: design.md (Section C6) says the dual-factor login
-    completion predicate (exact hostname match + polling for its/ithp
-    cookies, PHPSESSID excluded) is reused unchanged, but it is not listed
-    among C6's public Interfaces -- no symbol name is given. T-42/T-43/T-44
-    cannot be written against a name this test file cannot see without
-    reading tools/auth.py's source (off-limits this round). This is
-    reported as a design-basis gap rather than guessed at."""
+async def _drive_to_watching(app_ctx, token: str):
+    """Starts auth._watch_for_login as a background task and lets it run
+    until it has registered its "framenavigated" listener and suspended on
+    the initial wait -- at which point the caller can call
+    page.navigate_to(...) and have the handler actually observe it."""
     from mcp104.tools import auth
 
-    name, _ = _find_first_attr(auth, _COMPLETION_PREDICATE_CANDIDATES)
-    if name is None:
-        pytest.skip(
-            "contract unclear: no public symbol name given in design.md for "
-            "the dual-factor login-completion predicate (R9.1/R9.2); "
-            "T-42/T-43/T-44 need spec-author to name it."
-        )
+    task = asyncio.create_task(auth._watch_for_login(app_ctx, token, app_ctx.logout_epoch))
+    for _ in range(3):
+        await asyncio.sleep(0)
+    return task
+
+
+@pytest.mark.asyncio
+async def test_t042_hostname_alone_is_not_enough_keeps_waiting(tmp_path, monkeypatch):
+    """R9.1/R9.2: the main frame settles on vip.104.com.tw, but the
+    app-session cookie never shows up -- the predicate must not treat the
+    hostname alone as completion; the login must still be judged
+    incomplete (here: abandoned once the shared deadline passes), not
+    activated."""
+    from mcp104.tools import auth
+
+    app_ctx = make_app_ctx(tmp_path)
+    app_ctx.config = make_config(tmp_path, login_timeout_seconds=0.1)
+    monkeypatch.setattr(auth, "COOKIE_POLL_INTERVAL", 0.01, raising=False)
+
+    token = "tok-t042"
+    resource, page, context, browser, stream = make_driven_pending_login(app_ctx, token)
+
+    task = await _drive_to_watching(app_ctx, token)
+    page.navigate_to("https://vip.104.com.tw/rms/index")
+    # No its/ithp cookie is ever added to `context._cookies`.
+    await asyncio.wait_for(task, timeout=5)
+
+    assert app_ctx.session_pool.get_session("s1") is None
+    assert not app_ctx.config.cookies_path.exists()
+    assert app_ctx._finished_logins.get(token) == "abandoned"
+    assert token not in app_ctx._pending_logins
+
+
+@pytest.mark.asyncio
+async def test_t043_browser_session_only_cookie_is_not_enough(tmp_path, monkeypatch):
+    """R9.1: a cookie that only lives in the browser session (PHPSESSID)
+    must not satisfy the second factor -- only its/ithp count, per the
+    VIP_SESSION_COOKIE_NAMES contract."""
+    from mcp104.tools import auth
+
+    app_ctx = make_app_ctx(tmp_path)
+    app_ctx.config = make_config(tmp_path, login_timeout_seconds=0.1)
+    monkeypatch.setattr(auth, "COOKIE_POLL_INTERVAL", 0.01, raising=False)
+
+    token = "tok-t043"
+    resource, page, context, browser, stream = make_driven_pending_login(app_ctx, token)
+
+    task = await _drive_to_watching(app_ctx, token)
+    page.navigate_to("https://vip.104.com.tw/rms/index")
+    context._cookies = [
+        {"name": "PHPSESSID", "domain": "vip.104.com.tw", "value": "x"},
+        {"name": "PHPSESSID", "domain": ".vip.104.com.tw", "value": "x"},
+    ]
+    await asyncio.wait_for(task, timeout=5)
+
+    assert app_ctx.session_pool.get_session("s1") is None
+    assert not app_ctx.config.cookies_path.exists()
+    assert app_ctx._finished_logins.get(token) == "abandoned"
+    assert token not in app_ctx._pending_logins
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "bad_hostname",
+    ["https://evil-vip.104.com.tw/rms/index", "https://x.vip.104.com.tw/rms/index"],
+)
+async def test_t044_hostname_match_is_exact_not_substring(tmp_path, monkeypatch, bad_hostname):
+    """R9.1: hostname comparison must be an exact match against
+    vip.104.com.tw -- neither a prefixed nor a subdomain-prefixed
+    look-alike host may pass. The app-session cookie is made available
+    immediately, so if the hostname check were buggy (substring/suffix
+    match) this case would incorrectly succeed instead of timing out."""
+    from mcp104.tools import auth
+
+    app_ctx = make_app_ctx(tmp_path)
+    app_ctx.config = make_config(tmp_path, login_timeout_seconds=0.1)
+    monkeypatch.setattr(auth, "COOKIE_POLL_INTERVAL", 0.01, raising=False)
+
+    token = "tok-t044"
+    resource, page, context, browser, stream = make_driven_pending_login(app_ctx, token)
+    context._cookies = [{"name": "its", "domain": ".vip.104.com.tw", "value": "x"}]
+
+    task = await _drive_to_watching(app_ctx, token)
+    page.navigate_to(bad_hostname)
+    await asyncio.wait_for(task, timeout=5)
+
+    assert app_ctx.session_pool.get_session("s1") is None
+    assert not app_ctx.config.cookies_path.exists()
+    assert app_ctx._finished_logins.get(token) == "abandoned"
+    assert token not in app_ctx._pending_logins
 
 
 # --- T-45 (R9.3, R9.4): abandon-on-timeout releases every resource -------
 
-def test_t045_abandon_on_timeout_symbol_findable():
-    """CONTRACT UNCLEAR: same gap as T-42..T-44 -- the watcher/abandon
-    coroutine that walks the awaiting_human -> abandoned transition is not
-    named among C6's public Interfaces. Flagged rather than guessed."""
+@pytest.mark.asyncio
+async def test_t045_abandon_on_timeout_releases_every_resource(tmp_path, monkeypatch):
+    """Neither factor (hostname, then session cookie) becomes true within
+    the login timeout budget -> the login is abandoned and every resource
+    it held is released: browser, context, and CDP stream all closed, the
+    pending registration is gone, and the outcome is recorded as
+    "abandoned"."""
     from mcp104.tools import auth
 
-    candidates = ["_watch_for_login", "_login_watcher", "_watch_login",
-                  "_finalize_login", "_teardown_login"]
-    name, _ = _find_first_attr(auth, candidates)
-    if name is None:
-        pytest.skip(
-            "contract unclear: no public symbol name given in design.md for "
-            "the watcher/abandon coroutine (R9.3/R9.4); T-45 needs "
-            "spec-author to name it, or an e2e drive through login()+a "
-            "shortened login_timeout_seconds."
-        )
+    app_ctx = make_app_ctx(tmp_path)
+    app_ctx.config = make_config(tmp_path, login_timeout_seconds=0)
+    monkeypatch.setattr(auth, "COOKIE_POLL_INTERVAL", 0.001, raising=False)
+
+    token = "tok-t045"
+    resource, page, context, browser, stream = make_driven_pending_login(app_ctx, token)
+    # Page never navigates anywhere -- the hostname factor never becomes true.
+
+    await auth._watch_for_login(app_ctx, token, app_ctx.logout_epoch)
+
+    assert app_ctx._finished_logins.get(token) == "abandoned"
+    assert token not in app_ctx._pending_logins
+    assert app_ctx.session_pool.find_pending_tokens_for_session("s1") == []
+    assert stream.state == "closed"
+    assert context.closed is True
+    assert browser.closed is True
 
 
 # --- T-67 (auth.login): five branches ------------------------------------
@@ -1404,18 +1568,15 @@ async def test_t086_repeated_login_returns_original_pending_login(tmp_path):
 
 # --- T-87 (R9.5): default human-wait budget >= measured full login time --
 
-def test_t087_login_timeout_seconds_default_is_at_least_measured_human_login_time():
-    from mcp104 import config as config_mod
-    import inspect as _inspect
+def test_t087_login_timeout_seconds_default_is_at_least_measured_human_login_time(monkeypatch):
+    """R9.5: the default human-wait budget must not undercut the measured
+    265s full human login time (MFA + product selection + repeatLogin)."""
+    from mcp104.config import get_config
 
-    src = _inspect.getsource(config_mod)
-    # The default must be documented (its provenance) in the same module,
-    # and must not be less than the measured 265s full human login time.
-    assert "265" in src, (
-        "contract check: config.py should document the 265s measured human "
-        "login time alongside the default it must not undercut (R9.5, "
-        "Section C6)"
-    )
+    monkeypatch.setenv("MCP104_ACCOUNT_LABEL", "acct")
+    monkeypatch.delenv("LOGIN_TIMEOUT_SECONDS", raising=False)
+
+    assert get_config().login_timeout_seconds >= 265
 
 
 # --- T-95 (auth.provisional_session) --------------------------------------
@@ -1753,32 +1914,147 @@ def test_t116_mark_completed_is_not_a_coroutine_function():
 
 # --- T-94, T-97 (R1.11/R1.13, R1.2/R1.13): admission around the settling edge ---
 #
-# CONTRACT UNCLEAR: driving the watcher to the point of judgment (to
-# observe the settling-edge admission boundary from either side) requires
-# calling the same unnamed watcher coroutine as above, or fully driving
-# login() through a fake CDP page/session that satisfies the dual-factor
-# predicate. Neither is specified as a public interface in C6. These are
-# reported as design-basis gaps rather than guessed at with fabricated
-# internal wiring.
+# Both routes (viewer page, WebSocket) share exactly one admission source:
+# `_make_get_admissible_stream(app)`'s returned `token -> CdpLoginStream |
+# None` lookup (design.md Section C5 / Interfaces: create_auth_app's sole
+# input). That function is what these two cases drive directly -- it is
+# named in C6's public Interfaces list, so this is not fabricated wiring.
 
-def test_t094_settling_admission_symbol_findable():
-    hits = _find_atomic_handoff_function_ast()
-    if not hits:
-        pytest.skip(
-            "contract unclear: T-94 needs to drive the watcher to the "
-            "moment of dual-factor judgment to observe new-connection "
-            "admission close while the existing stream survives; no public "
-            "entry point for this is named in design.md's C6 Interfaces."
-        )
+@pytest.mark.asyncio
+async def test_t097_pre_judgment_admission_is_open(tmp_path):
+    """R1.2/R1.13: before the dual-factor judgment holds (state is still
+    awaiting_human), a new connection is admitted -- get_admissible_stream
+    hands back the live stream, which is what both routes key off of."""
+    from mcp104.tools import auth
+
+    app_ctx = make_app_ctx(tmp_path)
+    token = "tok-t097"
+    resource, page, context, browser, stream = make_driven_pending_login(app_ctx, token)
+    assert resource.state == auth.LoginState.AWAITING_HUMAN
+
+    get_admissible_stream = auth._make_get_admissible_stream(app_ctx)
+    assert get_admissible_stream(token) is stream
 
 
-def test_t097_pre_judgment_admission_symbol_findable():
-    hits = _find_atomic_handoff_function_ast()
-    if not hits:
-        pytest.skip(
-            "contract unclear: T-97 is T-94's pre-judgment pair and needs "
-            "the same unnamed watcher entry point."
-        )
+@pytest.mark.asyncio
+async def test_t094_settling_admission_closes_but_existing_stream_survives_to_settle(
+    tmp_path, monkeypatch
+):
+    """R1.11/R1.13: the instant the judgment holds (state flips to
+    settling), a new connection is rejected (get_admissible_stream ->
+    None) -- but the existing stream is not torn down: it stays alive,
+    receives the completion notice, and only actually closes once the
+    settle window elapses."""
+    from mcp104.tools import auth
+
+    app_ctx = make_app_ctx(tmp_path)
+    app_ctx.config = make_config(tmp_path, login_timeout_seconds=5)
+    monkeypatch.setattr(auth, "COOKIE_POLL_INTERVAL", 0.01, raising=False)
+    monkeypatch.setattr(auth, "POST_SUCCESS_SETTLE_SECONDS", 0.15, raising=False)
+
+    token = "tok-t094"
+    resource, page, context, browser, stream = make_driven_pending_login(app_ctx, token)
+    get_admissible_stream = auth._make_get_admissible_stream(app_ctx)
+
+    task = await _drive_to_watching(app_ctx, token)
+    page.navigate_to("https://vip.104.com.tw/rms/index")
+    context._cookies = [{"name": "its", "domain": ".vip.104.com.tw", "value": "x"}]
+
+    for _ in range(500):
+        if resource.state == auth.LoginState.SETTLING:
+            break
+        await asyncio.sleep(0.005)
+    assert resource.state == auth.LoginState.SETTLING
+
+    # New connections closed off immediately...
+    assert get_admissible_stream(token) is None
+    # ...but the existing stream survives, already marked completed.
+    assert stream.state == "completed"
+    assert not task.done()
+
+    await asyncio.wait_for(task, timeout=5)
+
+    # Only now, after the settle window elapsed, does it actually close.
+    assert stream.state == "closed"
+    assert get_admissible_stream(token) is None
+
+
+# --- Regression (I1-A): _start_human_login closes browser/context on a
+# failed startup step, before any pending registration exists to own them ---
+
+@pytest.mark.asyncio
+async def test_regression_start_human_login_closes_browser_and_context_on_goto_failure(
+    tmp_path, monkeypatch
+):
+    from mcp104.tools import auth
+
+    app_ctx = make_app_ctx(tmp_path)
+    ctx = make_ctx(app_ctx)
+
+    closed = {"context": False, "browser": False}
+
+    class _FailingPage:
+        async def goto(self, url, *a, **k):
+            raise RuntimeError("navigation failed")
+
+    class _TrackedContext:
+        async def new_page(self):
+            return _FailingPage()
+
+        async def close(self):
+            closed["context"] = True
+
+    class _TrackedBrowser:
+        async def close(self):
+            closed["browser"] = True
+
+    async def fake_launch_browser(*a, **k):
+        return _TrackedBrowser()
+
+    async def fake_create_stealth_context(browser, *a, **k):
+        return _TrackedContext()
+
+    monkeypatch.setattr(auth, "launch_browser", fake_launch_browser, raising=False)
+    monkeypatch.setattr(auth, "create_stealth_context", fake_create_stealth_context, raising=False)
+
+    with pytest.raises(RuntimeError):
+        await auth.login(ctx)
+
+    assert closed["context"] is True
+    assert closed["browser"] is True
+    assert app_ctx._pending_logins == {}
+
+
+# --- Regression (I1-B): an exception after the atomic completion block
+# (succeeded=True) still runs _finalize_pending_login, not left stuck in
+# `settling` ---
+
+@pytest.mark.asyncio
+async def test_regression_post_success_exception_still_finalizes_not_stuck_in_settling(
+    tmp_path, monkeypatch
+):
+    from mcp104.tools import auth
+
+    app_ctx = make_app_ctx(tmp_path)
+    app_ctx.config = make_config(tmp_path, login_timeout_seconds=5)
+    monkeypatch.setattr(auth, "COOKIE_POLL_INTERVAL", 0.01, raising=False)
+
+    token = "tok-regression-post-success"
+    resource, page, context, browser, stream = make_driven_pending_login(app_ctx, token)
+
+    async def failing_announce():
+        raise OSError("disk full")
+
+    stream.announce_completed = failing_announce
+
+    task = await _drive_to_watching(app_ctx, token)
+    page.navigate_to("https://vip.104.com.tw/rms/index")
+    context._cookies = [{"name": "its", "domain": ".vip.104.com.tw", "value": "x"}]
+
+    await asyncio.wait_for(task, timeout=5)
+
+    assert token not in app_ctx._pending_logins
+    assert stream.state == "closed"
 
 
 # --- T-98 (R2.4): logout() during an in-flight (not yet completed) login ---
@@ -1827,63 +2103,229 @@ async def test_t098_login_after_logout_during_pending_opens_a_new_login(tmp_path
 
 # --- T-109 (R2.4): a watcher landing "login complete" after logout() must not write ---
 
-def test_t109_symbol_findable_for_post_logout_watcher_gate():
-    """CONTRACT UNCLEAR: exercising this case (make the watcher NOT finish
-    within WATCHER_CANCEL_TIMEOUT so logout() returns with
-    teardown_confirmed: False, then let it run the dual-factor judgment to
-    completion and observe that it writes nothing) requires driving the
-    same unnamed watcher coroutine plus a named WATCHER_CANCEL_TIMEOUT
-    constant. Neither is in C6's public Interfaces list."""
+class _SlowCancelContext(_ControllableContext):
+    """A context whose first cookies() call ignores its first
+    CancelledError and delays past WATCHER_CANCEL_TIMEOUT before actually
+    unwinding -- simulates a watcher whose cancellation does not land
+    within budget, the exact scenario T-109 exists to guard."""
+
+    def __init__(self, uncancellable_delay: float):
+        super().__init__()
+        self._uncancellable_delay = uncancellable_delay
+        self._first_call = True
+
+    async def cookies(self, *a, **k):
+        if self._first_call:
+            self._first_call = False
+            try:
+                await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                await asyncio.sleep(self._uncancellable_delay)
+                raise
+        return list(self._cookies)
+
+
+@pytest.mark.asyncio
+async def test_t109_watcher_that_completes_after_logout_writes_nothing(tmp_path, monkeypatch):
+    """R2.4: a watcher whose cancellation does not land within
+    WATCHER_CANCEL_TIMEOUT (logout() therefore returns
+    teardown_confirmed: False) must still discard itself once it resumes
+    and finds the login epoch has moved on -- it must not write the
+    credential file or activate a pool session a second time. The
+    abandoned record comes from logout()'s own _finalize_pending_login
+    call, not from the watcher writing it again."""
+    from mcp104.tools import auth
+    from mcp104.browser.session import PendingLogin
+
+    app_ctx = make_app_ctx(tmp_path)
+    app_ctx.config = make_config(tmp_path, login_timeout_seconds=5)
+    monkeypatch.setattr(auth, "WATCHER_CANCEL_TIMEOUT", 0.02, raising=False)
+    monkeypatch.setattr(auth, "COOKIE_POLL_INTERVAL", 0.01, raising=False)
+
+    token = "tok-t109"
+    page = _ControllableFramePage()
+    context = _SlowCancelContext(uncancellable_delay=0.1)
+    browser = _ControllableBrowser()
+    stream = _FakeCdpLoginStream(page)
+    resource = auth.PendingLoginResources(
+        browser=browser, context=context, page=page, stream=stream,
+        state=auth.LoginState.AWAITING_HUMAN,
+    )
+    app_ctx.session_pool.add_pending(token, PendingLogin(mcp_session_id="s1"))
+    app_ctx._pending_logins[token] = resource
+
+    task = await _drive_to_watching(app_ctx, token)
+    app_ctx._watcher_tasks[token] = task
+    page.navigate_to("https://vip.104.com.tw/rms/index")
+    # Let the watcher wake from the nav-wait and suspend inside its first
+    # cookies() call (the uncancellable point _SlowCancelContext sets up).
+    await asyncio.sleep(0.01)
+
+    ctx = make_ctx(app_ctx)
+    fake_guarded_api = stub_guarded_api_abort("not_logged_in")
+    monkeypatch.setattr(auth, "guarded_api", fake_guarded_api, raising=False)
+
+    result = await auth.logout(ctx)
+
+    assert result["teardown_confirmed"] is False
+    assert app_ctx._finished_logins.get(token) == "abandoned"
+    assert token not in app_ctx._pending_logins
+    assert app_ctx.session_pool.get_session("s1") is None
+    assert not app_ctx.config.cookies_path.exists()
+
+    # Let the watcher's own delayed unwind finish -- assert it wrote
+    # nothing further once it does.
+    with contextlib.suppress(BaseException):
+        await asyncio.wait_for(task, timeout=2)
+    assert not app_ctx.config.cookies_path.exists()
+    assert app_ctx.session_pool.get_session("s1") is None
+
+
+@pytest.mark.asyncio
+async def test_t109_reverse_without_logout_watcher_writes_normally(tmp_path, monkeypatch):
+    """Reverse half: absent any logout(), the same watcher path completes
+    normally -- writes the credential file and activates the pool
+    session. Guards against an epoch-gate implementation that discards
+    unconditionally; T-109's "writes nothing" half only holds once
+    logout() has actually bumped the epoch."""
     from mcp104.tools import auth
 
-    name, _ = _find_first_attr(auth, ["WATCHER_CANCEL_TIMEOUT"])
-    hits = _find_atomic_handoff_function_ast()
-    if name is None or not hits:
-        pytest.skip(
-            "contract unclear: T-109 needs WATCHER_CANCEL_TIMEOUT and the "
-            "watcher entry point; neither is named in design.md's C6 "
-            "Interfaces list."
-        )
+    app_ctx = make_app_ctx(tmp_path)
+    app_ctx.config = make_config(tmp_path, login_timeout_seconds=5)
+    monkeypatch.setattr(auth, "COOKIE_POLL_INTERVAL", 0.01, raising=False)
+
+    token = "tok-t109-rev"
+    resource, page, context, browser, stream = make_driven_pending_login(app_ctx, token)
+
+    task = await _drive_to_watching(app_ctx, token)
+    page.navigate_to("https://vip.104.com.tw/rms/index")
+    context._cookies = [{"name": "its", "domain": ".vip.104.com.tw", "value": "x"}]
+
+    await asyncio.wait_for(task, timeout=5)
+
+    assert app_ctx.config.cookies_path.exists()
+    assert app_ctx.session_pool.get_session("s1") is not None
 
 
 # --- T-120 (R1.13): logout() during `settling` is the handed_off 4th path ---
 
-def test_t120_symbol_findable_for_settling_logout():
-    """CONTRACT UNCLEAR: reaching `settling` requires driving the watcher
-    through the dual-factor judgment via a fake CDP page/session, then
-    calling logout() before the settle window (POST_SUCCESS_SETTLE_SECONDS)
-    expires, and observing (a) early stream/socket closure and (b) that the
-    next login() reads the cookie file rather than the pool. None of this
-    is reachable through a named C6 interface without the watcher's name
-    and a fake page satisfying the R9.1/R9.2 predicate (see T-42..T-44)."""
+@pytest.mark.asyncio
+async def test_t120_logout_during_settling_closes_early_and_next_login_reads_cookie_file(
+    tmp_path, monkeypatch
+):
+    """R1.13: calling logout() while a login is `settling` takes the 4th
+    handed_off path, distinct from the other three in two ways:
+    (a) the stream/socket close early -- the caller does not wait out the
+    remainder of POST_SUCCESS_SETTLE_SECONDS;
+    (b) the next login() call takes the cookie-file branch, not the pool
+    branch -- this logout() already emptied the pool (Architecture
+    lifecycle table, handed_off row)."""
     from mcp104.tools import auth
 
-    name, _ = _find_first_attr(auth, ["POST_SUCCESS_SETTLE_SECONDS"])
-    if name is None:
-        pytest.skip(
-            "contract unclear: T-120 needs POST_SUCCESS_SETTLE_SECONDS and "
-            "the watcher entry point, neither named in design.md's C6 "
-            "Interfaces list."
-        )
+    app_ctx = make_app_ctx(tmp_path)
+    app_ctx.config = make_config(tmp_path, login_timeout_seconds=5)
+    monkeypatch.setattr(auth, "COOKIE_POLL_INTERVAL", 0.01, raising=False)
+    monkeypatch.setattr(auth, "POST_SUCCESS_SETTLE_SECONDS", 5, raising=False)
+
+    token = "tok-t120"
+    resource, page, context, browser, stream = make_driven_pending_login(app_ctx, token)
+
+    task = await _drive_to_watching(app_ctx, token)
+    app_ctx._watcher_tasks[token] = task
+    page.navigate_to("https://vip.104.com.tw/rms/index")
+    context._cookies = [{"name": "its", "domain": ".vip.104.com.tw", "value": "x"}]
+
+    # Wait until the watcher has completed the atomic block (mark_completed
+    # + cookie file written + pool activated) and is now sitting inside the
+    # settle-window sleep -- i.e. `settling`, not yet `handed_off`.
+    for _ in range(500):
+        if resource.state == auth.LoginState.SETTLING:
+            break
+        await asyncio.sleep(0.005)
+    assert resource.state == auth.LoginState.SETTLING
+    assert stream.state == "completed"
+    assert app_ctx.session_pool.get_session("s1") is not None
+    assert not task.done()  # still inside the 5s settle sleep
+
+    ctx = make_ctx(app_ctx)
+    fake_guarded_api = stub_guarded_api_abort("not_logged_in")
+    monkeypatch.setattr(auth, "guarded_api", fake_guarded_api, raising=False)
+
+    await auth.logout(ctx)
+
+    # (a) early closure -- did not wait out the 5s settle window.
+    assert stream.state == "closed"
+    assert context.closed is True
+    assert browser.closed is True
+    assert token not in app_ctx._pending_logins
+
+    with contextlib.suppress(BaseException):
+        await asyncio.wait_for(task, timeout=2)
+
+    # (b) next login() does not take the pool branch (branch B) -- this
+    # logout() already emptied the pool, per the Architecture lifecycle
+    # table's handed_off row ("等 logout() 回傳之後兩份狀態都不存在 -> C").
+    # Branch C attempts the credential file; logout()'s own Step 3 also
+    # cleared it, so C's own fallthrough to a fresh human login is what's
+    # observable here -- the assertion that matters is that this is NOT
+    # branch B's stale "already_logged_in"/"restored" pool answer.
+    assert app_ctx.session_pool.get_session("s1") is None
+    result = await auth.login(ctx)
+    assert result.get("status") not in ("already_logged_in", "restored")
+    assert "token" in result and "login_url" in result
 
 
 # --- T-8 (R1.11): settle survives for exactly the named constant ----------
 
-def test_t008_post_success_settle_seconds_constant_exists_and_is_named():
-    """CONTRACT-ADJACENT: T-8 needs the full watcher-driven settle sequence
-    (see T-120's note) to assert survival duration end-to-end; that requires
-    the same unnamed watcher entry point. This narrows to what's checkable
-    without it: the named constant the design requires ("time length must
-    be assertable, not 'about'") actually exists as a module-level value."""
+@pytest.mark.asyncio
+async def test_t008_settle_window_survives_for_exactly_the_named_duration(tmp_path, monkeypatch):
+    """R1.11: after dual-factor completion, the viewer page gets the
+    completion notice (announce_completed()) first, and only after
+    surviving a duration equal to the named POST_SUCCESS_SETTLE_SECONDS
+    constant does the stream actually close (stop()). The duration must
+    be assertable, not "about" -- so this measures the elapsed time
+    between the two and checks it against the (monkeypatched, small)
+    constant with a tight tolerance, not just "eventually happened"."""
     from mcp104.tools import auth
 
-    name, value = _find_first_attr(auth, ["POST_SUCCESS_SETTLE_SECONDS"])
-    if name is None:
-        pytest.skip(
-            "contract unclear: POST_SUCCESS_SETTLE_SECONDS not found on "
-            "tools.auth; T-8's full behavior (stream survives exactly this "
-            "long after the completion notice) additionally needs the "
-            "unnamed watcher entry point to drive end-to-end."
-        )
-    assert isinstance(value, (int, float))
-    assert value > 0
+    app_ctx = make_app_ctx(tmp_path)
+    app_ctx.config = make_config(tmp_path, login_timeout_seconds=5)
+    monkeypatch.setattr(auth, "COOKIE_POLL_INTERVAL", 0.01, raising=False)
+    settle_seconds = 0.15
+    monkeypatch.setattr(auth, "POST_SUCCESS_SETTLE_SECONDS", settle_seconds, raising=False)
+
+    token = "tok-t008"
+    resource, page, context, browser, _unused_stream = make_driven_pending_login(app_ctx, token)
+
+    class _TimedStream(_FakeCdpLoginStream):
+        def __init__(self, page):
+            super().__init__(page)
+            self.announced_at = None
+            self.stopped_at = None
+
+        async def announce_completed(self):
+            self.announced_at = asyncio.get_event_loop().time()
+
+        async def stop(self):
+            self.stopped_at = asyncio.get_event_loop().time()
+            await super().stop()
+
+    timed_stream = _TimedStream(page)
+    resource.stream = timed_stream
+
+    task = await _drive_to_watching(app_ctx, token)
+    page.navigate_to("https://vip.104.com.tw/rms/index")
+    context._cookies = [{"name": "its", "domain": ".vip.104.com.tw", "value": "x"}]
+
+    await asyncio.wait_for(task, timeout=5)
+
+    assert timed_stream.announced_at is not None
+    assert timed_stream.stopped_at is not None
+    elapsed = timed_stream.stopped_at - timed_stream.announced_at
+    # Must have actually survived (at least) the named window -- not closed
+    # immediately alongside the completion notice.
+    assert elapsed >= settle_seconds
+    # And not an unrelated, much longer wait either -- the duration is this
+    # named constant, assertable, not "about".
+    assert elapsed < settle_seconds + 0.3
+    assert timed_stream.state == "closed"

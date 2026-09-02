@@ -2,12 +2,12 @@
 進）。這一層完全不知道 CDP 概念——它拿到的只有一個查表函式
 `token -> CdpLoginStream | None`（`get_admissible_stream`），對外只做兩件事：把幀轉發給
 瀏覽器、把瀏覽器的輸入事件轉發給那個查表函式回傳的串流物件。哪個 token 在哪個狀態可以
-拿到串流，是呼叫端（`tools/auth.py`）的決定，不是這一層的（design.md §C5）。
+拿到串流，是呼叫端（`tools/auth.py`）的決定，不是這一層的。
 
 **admission 是查表函式自己的事**：本模組不維護任何登入狀態，`get_admissible_stream(token)`
 回傳 `None` 一律視為「這個 token 現在不能連」，兩條路由（檢視頁、WebSocket）對此給出完全
 相同的 404（既有那句固定字串、相同狀態碼與標頭），不依成因而改變說法——一個依狀態產生的
-說明會把這個回應變成 token 狀態的預言機（Requirement 1.15）。
+說明會把這個回應變成 token 狀態的預言機。
 
 **只綁 `127.0.0.1`**（安全性需求，兩種形態皆然）。埠的取得方式：自建 socket、
 `bind()` 之後立刻讀出實際生效的埠，再把它交給 aiohttp 的 `web.SockSite`——這樣送出
@@ -15,7 +15,7 @@
 
 **存取記錄關閉**：aiohttp 預設的 access log 會記下請求細節（含 WebSocket upgrade 請求）。
 `start_auth_site` 建立 `AppRunner` 時明確傳 `access_log=None`，寧可完全沒有存取記錄，
-也不要冒著記到不該記的東西的風險——stdio 下任何未經設定的輸出都是風險（Requirement 6）。
+也不要冒著記到不該記的東西的風險——stdio 下任何未經設定的輸出都是風險。
 
 檢視頁是單一自足頁面（inline CSS/JS、零外部資源）。座標換算**不**在這裡的 Python 端做
 ——那是 `browser/cdp_stream.py` 的 `page_coords()` 的職責；這裡的 JS 只送原始偏移量、
@@ -24,8 +24,7 @@
 
 **收場訊息依渲染優先序決定，規則寫在檢視頁 JS 裡，而不是靠伺服器再送一個線上值**：
 串流關閉時 WebSocket 可能已經不可用，一則「正常結束」的訊息本來就不保證送得到；「有沒有
-收到過 `"completed"`」是檢視頁自己手上、不依賴任何後續訊息的事實（design.md §Architecture
-生命週期狀態表底下那條規則）。收到過就顯示「登入已完成，可以關閉本頁」，沒收到過才顯示
+收到過 `"completed"`」是檢視頁自己手上、不依賴任何後續訊息的事實。收到過就顯示「登入已完成，可以關閉本頁」，沒收到過才顯示
 「連線中斷，請重新呼叫 login()」。
 
 輸入路徑的隱私規則與 `cdp_stream.dispatch_input` 相同：這裡的 WebSocket 處理常式把收到的
@@ -45,16 +44,16 @@ from typing import TYPE_CHECKING
 import aiohttp
 from aiohttp import web
 
-from mcp104.browser.cdp_stream import CdpLoginStream
 from mcp104.config import ConfigError
 
 if TYPE_CHECKING:
+    from mcp104.browser.cdp_stream import CdpLoginStream
     from mcp104.config import Config
 
 log = logging.getLogger("104-mcp.auth_server")
 
 # 未知、已完成或已放棄的 token，三種成因兩條路由回應完全相同的固定字串與狀態碼
-# ——不依成因改變說法（Requirement 1.15，design.md 情境 9）。沿用既有措辭。
+# ——不依成因改變說法。沿用既有措辭。
 _NOT_FOUND_TEXT = "無效或已過期的登入連結"
 
 _GET_ADMISSIBLE_STREAM_KEY = "get_admissible_stream"
@@ -79,7 +78,7 @@ def resolve_auth_binding(config: "Config") -> Binding:
     不同機時兩者都要設定（執行環境負責把 `auth_base_url` 接到本行程的
     `127.0.0.1:auth_bind_port`）。**只給一半在這裡就是設定錯誤**：那會產生一個結構完全
     正常、卻接不到任何東西的登入位址，而 Agent 那一側看不出跟「真人還在打字」有什麼分別
-    ——寧可在設定解析階段就大聲失敗（design.md §C5、§Error Handling 情境 7）。
+    ——寧可在設定解析階段就大聲失敗。
     """
     has_port = config.auth_bind_port is not None
     has_url = config.auth_base_url is not None
@@ -98,9 +97,9 @@ def resolve_auth_binding(config: "Config") -> Binding:
 class AuthEndpoint:
     """`start_auth_site` 的回傳值：一個控制代碼，不是純值。除了 `base_url`／`port`
     兩個對外欄位，呼叫端唯一能做的事就是 `await close()`——關掉這個監聽端所需的內部物件
-    （aiohttp 的 runner 與那個自建 socket）刻意不出現在宣告的介面表面上（design.md §C5）。
+    （aiohttp 的 runner 與那個自建 socket）刻意不出現在宣告的介面表面上。
 
-    `close()` 冪等（已經關過就什麼都不做）且依定義不拋出：它的兩個呼叫時機（§C1，臨時埠
+    `close()` 冪等（已經關過就什麼都不做）且依定義不拋出：它的兩個呼叫時機（臨時埠
     形態在 `_pending_logins` 清空時、固定埠形態到行程關閉）都不存在一個「關不掉就中止」
     的合理處置。
     """
@@ -138,7 +137,7 @@ async def start_auth_site(app: web.Application, config: "Config") -> AuthEndpoin
 
     設定指定的固定埠已被占用時，`bind()` 失敗，以一個指名該埠號的 `OSError` 結束，且不
     留下任何已建立的資源（socket 已關閉、`AppRunner` 從未 `setup()`）；臨時埠的那條路徑
-    不受影響（design.md §Error Handling 情境 15、T-102）。
+    不受影響。
     """
     binding = resolve_auth_binding(config)
 
@@ -236,7 +235,7 @@ async def _handle_auth_ws(request: web.Request) -> web.StreamResponse:
 # 缺漏，伺服器會拒絕並記錄，這裡不做 1:1 猜測。
 #
 # 收場訊息的規則寫在這裡：`receivedCompleted` 記錄這條連線先前有沒有收到過
-# `"completed"`，socket 關閉時依它二選一（design.md §Architecture 生命週期狀態表底下
+# `"completed"`，socket 關閉時依它二選一（生命週期狀態表底下
 # 那條渲染優先序）——這是唯一出處，這裡是它的執行點。
 _PAGE_HTML = """<!doctype html>
 <html lang="zh-TW">

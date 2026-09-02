@@ -56,6 +56,39 @@ class Config:
     # through from the environment.
 
 
+def _parse_int_env(name: str, default: int) -> int:
+    """Read an integer environment variable, falling back to `default` when
+    it is unset or blank. A value that IS set but does not parse as an
+    integer is a startup configuration error, not a silent fallback to
+    `default` — a typo'd env var should fail loudly at startup, not have
+    this process quietly run with a value the operator never intended."""
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        raise ConfigError(
+            f"{name} 的值 {raw!r} 不是合法整數，請設定為一個整數（或不設定以使用"
+            f"預設值 {default}）。"
+        ) from None
+
+
+def _parse_optional_int_env(name: str) -> int | None:
+    """Same contract as `_parse_int_env`, for a variable whose unset/blank
+    state is meaningful on its own (`None`) rather than falling back to a
+    default value."""
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        raise ConfigError(
+            f"{name} 的值 {raw!r} 不是合法整數，請設定為一個整數（或不設定）。"
+        ) from None
+
+
 def resolve_data_dir() -> Path:
     """Pure: reads the environment only, never creates the directory. Callers
     on the startup path are responsible for creating it and treating failure
@@ -103,12 +136,7 @@ def get_config() -> Config:
             "different one."
         )
 
-    auth_bind_port_raw = os.getenv("MCP104_AUTH_BIND_PORT")
-    auth_bind_port = (
-        int(auth_bind_port_raw)
-        if auth_bind_port_raw is not None and auth_bind_port_raw.strip()
-        else None
-    )
+    auth_bind_port = _parse_optional_int_env("MCP104_AUTH_BIND_PORT")
 
     auth_base_url_raw = os.getenv("MCP104_AUTH_BASE_URL")
     auth_base_url = (
@@ -128,8 +156,8 @@ def get_config() -> Config:
         # "already signed in elsewhere" dialog. A live login measured at
         # 265s; the old hard-coded 300s left almost no margin and two
         # earlier attempts timed out before the user could finish.
-        login_timeout_seconds=int(os.getenv("LOGIN_TIMEOUT_SECONDS", "900")),
-        max_daily_messages=int(os.getenv("MAX_DAILY_MESSAGES", "50")),
+        login_timeout_seconds=_parse_int_env("LOGIN_TIMEOUT_SECONDS", 900),
+        max_daily_messages=_parse_int_env("MAX_DAILY_MESSAGES", 50),
         # Lowered from 1800: sized for a client that issues 1 HTTP request per
         # tool call, so the old value (sized for ~44 DOM requests per page
         # load) would never bind. After the JSON-API messaging migration this
@@ -139,11 +167,11 @@ def get_config() -> Config:
         # numbers are still a conservative guess, not a derived safe
         # threshold, and why the migration makes that caveat apply MORE
         # broadly rather than retiring it.
-        max_requests_per_hour=int(os.getenv("MAX_REQUESTS_PER_HOUR", "300")),
-        max_inline_wait_seconds=int(os.getenv("MAX_INLINE_WAIT_SECONDS", "20")),
-        activity_streak_limit_minutes=int(os.getenv("ACTIVITY_STREAK_LIMIT_MINUTES", "20")),
-        rest_duration_minutes=int(os.getenv("REST_DURATION_MINUTES", "3")),
-        min_call_interval_seconds=int(os.getenv("MIN_CALL_INTERVAL_SECONDS", "5")),
+        max_requests_per_hour=_parse_int_env("MAX_REQUESTS_PER_HOUR", 300),
+        max_inline_wait_seconds=_parse_int_env("MAX_INLINE_WAIT_SECONDS", 20),
+        activity_streak_limit_minutes=_parse_int_env("ACTIVITY_STREAK_LIMIT_MINUTES", 20),
+        rest_duration_minutes=_parse_int_env("REST_DURATION_MINUTES", 3),
+        min_call_interval_seconds=_parse_int_env("MIN_CALL_INTERVAL_SECONDS", 5),
         throttle_state_path=data_dir / "throttle_state.log",
         logout_unconfirmed_path=data_dir / "logout_unconfirmed",
         auth_bind_port=auth_bind_port,
