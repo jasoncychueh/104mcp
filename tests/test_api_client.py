@@ -16,10 +16,11 @@ Cases: T-19, T-20, T-21, T-22, T-23, T-24, T-25, T-44, T-45, T-46, T-54, T-55, T
 
 Seams substituted per Testing Strategy ("not mocked: the pure decision functions...
 The HTTP transport and the browser context are the seams that are substituted"):
-`fetch` is monkeypatched to return canned `RawResponse`s built from tests/fixtures/,
-and `SessionInfo.browser_context` is a stub exposing the async `cookies()` Playwright's
-BrowserContext provides. `classify`, `select_cookies_for_host` and `matches_auth_host`
-are exercised directly and are never mocked.
+`fetch` is monkeypatched to return canned `RawResponse`s built from tests/fixtures/.
+There is no BrowserContext seam left post-login (§C7) — `guarded_api` reads
+credentials straight off `SessionInfo.cookies`, so a session under test is built
+by handing that field a cookie list directly. `classify`, `select_cookies_for_host`
+and `matches_auth_host` are exercised directly and are never mocked.
 """
 from __future__ import annotations
 
@@ -38,6 +39,7 @@ from mcp104.browser.api_client import (
     select_cookies_for_host,
 )
 from mcp104.browser.session import SessionInfo, SessionPool, matches_auth_host
+from mcp104.browser.throttle import ThrottleAbort
 from mcp104.config import get_config
 from mcp104.tools.helpers import ERROR_CHALLENGE, GuardAbort, ToolAbort, get_session_id, guarded_api
 
@@ -69,24 +71,6 @@ def _raw_from_bare_json(fixture_name: str, http_status: int = 200) -> RawRespons
     body_json = _load(fixture_name)
     return _raw(http_status, "application/json; charset=utf-8",
                 json.dumps(body_json, ensure_ascii=False), body_json)
-
-
-class _FakeApiBrowserContext:
-    """Stand-in for Playwright's BrowserContext on the API path. design.md
-    Components §3: "Cookies are read from the live BrowserContext on every call,
-    inside the held lock" — Playwright exposes that as an async `cookies()` call.
-    `.pages`/`.on()` are harmless placeholders in case shared SessionInfo plumbing
-    still probes for them; nothing here asserts on their use.
-    """
-    def __init__(self, cookies=None):
-        self._cookies = cookies if cookies is not None else []
-        self.pages = []
-
-    async def cookies(self):
-        return self._cookies
-
-    def on(self, event, handler):
-        pass
 
 
 class FakeSessionObj:
@@ -140,7 +124,9 @@ def _new_ctx_and_session():
     pool = SessionPool()
     ctx = FakeCtx(pool)
     sid = get_session_id(ctx)
-    info = SessionInfo(browser_context=_FakeApiBrowserContext())
+    # guarded_api reads credentials straight off SessionInfo.cookies now —
+    # there is no BrowserContext left to fake post-login (§C7).
+    info = SessionInfo(cookies=[], account_label="test@104.com")
     pool.activate_direct(sid, info)
     return pool, ctx, info
 
@@ -282,13 +268,13 @@ def test_classify_family_selected_by_endpoint_declaration_not_body_shape():
                  json.dumps(family_b_body, ensure_ascii=False), family_b_body)
 
     ep_a = Endpoint(key="t46_probe_a", host="vip", path="/api/probe", method="GET", family="A",
-                     extra_headers=(), family_b_shape=None)
+                     extra_headers=(), family_b_shape=None, throttle_gated=True)
     # inner_key="resume", is_list=False mirrors resume_unrestricted.json's
     # real shape ({"data": {"resume": {...}, ...}, "metadata": {...}}) and the
     # real get_resume_detail endpoint's own declared shape.
     ep_b = Endpoint(key="t46_probe_b", host="vip", path="/api/probe", method="GET", family="B",
                      extra_headers=(),
-                     family_b_shape=FamilyBShape(is_list=False, inner_key="resume"))
+                     family_b_shape=FamilyBShape(is_list=False, inner_key="resume"), throttle_gated=True)
 
     # Correct family declared for each body: both succeed.
     assert classify(ep_a, raw_a).ok is True
@@ -327,12 +313,12 @@ def test_endpoint_construction_enforces_family_b_shape_invariant():
     # later refactor drops the check and nothing goes red.
     with pytest.raises(ValueError):
         Endpoint(key="probe_b_missing_shape", host="vip", path="/api/probe", method="GET", family="B",
-                 extra_headers=(), family_b_shape=None)
+                 extra_headers=(), family_b_shape=None, throttle_gated=True)
 
     with pytest.raises(ValueError):
         Endpoint(key="probe_a_with_shape", host="vip", path="/api/probe", method="GET", family="A",
                  extra_headers=(),
-                 family_b_shape=FamilyBShape(is_list=False, inner_key="resume"))
+                 family_b_shape=FamilyBShape(is_list=False, inner_key="resume"), throttle_gated=True)
 
 
 # ── T-56 (interface): matches_auth_host ──────────────────────────────────
@@ -484,8 +470,12 @@ async def test_both_family_a_expiry_bodies_report_expired_session(monkeypatch):
 @pytest.mark.asyncio
 async def test_challenge_body_produces_stop_and_wait_error_not_empty_result(monkeypatch):
     _pool, ctx, _info = _new_ctx_and_session()
-    # Exact marker text proven to trip _detect_cloudflare_challenge in
-    # tests/test_helpers.py::test_guarded_page_cloudflare_challenge_zh_marker_is_blocked_not_expired
+    # Exact marker text proven to trip _detect_cloudflare_challenge — the ZH
+    # challenge-page markers are pinned directly in
+    # tests/test_helpers.py's _detect_cloudflare_challenge coverage
+    # (guarded_page, which exercised this same detector against a live
+    # page, no longer exists post-§C7; the fixture below is this file's
+    # own carrier for that string).
     raw = _raw(
         200,
         "text/html; charset=utf-8",
@@ -543,12 +533,17 @@ async def test_404_html_and_404_json_produce_different_errors(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_guarded_api_holds_lock_and_rechecks_identity_after_acquiring(monkeypatch):
-    # Mirrors tests/test_helpers.py::test_guarded_page_rejects_when_pool_entry_replaced_while_queued
-    # (Components §3: "the reasoning in its docstring... applies unchanged").
+    # Same race guarded_api's own docstring describes for guarded_api itself
+    # (Components §3/§C8) — logout()+login() replacing the pool entry with a
+    # brand-new SessionInfo while a second caller is still parked on the old
+    # entry's lock. The guarded_page-era sibling of this test
+    # (tests/test_helpers.py::test_guarded_page_rejects_when_pool_entry_replaced_while_queued)
+    # no longer exists post-§C7 — guarded_page itself is gone — so this is
+    # now the sole test pinning that identity re-check for the API path.
     pool = SessionPool()
     ctx = FakeCtx(pool)
     sid = get_session_id(ctx)
-    info_old = SessionInfo(browser_context=_FakeApiBrowserContext())
+    info_old = SessionInfo(cookies=[], account_label="test@104.com")
     pool.activate_direct(sid, info_old)
 
     release_holder = asyncio.Event()
@@ -583,7 +578,7 @@ async def test_guarded_api_holds_lock_and_rechecks_identity_after_acquiring(monk
 
     # Simulate logout()+login() completing while `queued` is still parked —
     # a brand-new SessionInfo (new lock) replaces the one `queued` resolved.
-    pool.activate_direct(sid, SessionInfo(browser_context=_FakeApiBrowserContext()))
+    pool.activate_direct(sid, SessionInfo(cookies=[], account_label="test@104.com"))
 
     release_holder.set()
     await asyncio.wait_for(asyncio.gather(holder_task, queued_task), timeout=5)
@@ -630,8 +625,14 @@ async def test_guarded_api_does_not_follow_redirect_and_reports_auth_host_redire
 async def test_guarded_api_throttled_rejection_carries_throttled_kind(monkeypatch):
     _pool, ctx, _info = _new_ctx_and_session()
 
+    # enforce_throttle's contract (§C10): a rejection is a ThrottleAbort, not
+    # a bare dict — guarded_api reads .kind/.payload off it directly.
     async def rejecting_throttle(*args, **kwargs):
-        return {"error": "節流測試", "retry_after_seconds": 5}
+        return ThrottleAbort(
+            kind="throttled",
+            payload={"error": "節流測試", "retry_after_seconds": 5},
+            detail="",
+        )
 
     monkeypatch.setattr("mcp104.tools.helpers.enforce_throttle", rejecting_throttle)
     _key, ep = _endpoints_matching(path_contains="/api/search/searchResult")[0]
@@ -668,14 +669,14 @@ async def test_logged_out_session_on_list_tool_returns_expired_error_never_empty
 def test_endpoint_method_has_no_default_and_is_required():
     with pytest.raises(TypeError):
         Endpoint(key="probe_no_method", host="vip", path="/api/probe", family="A",
-                 extra_headers=(), family_b_shape=None)
+                 extra_headers=(), family_b_shape=None, throttle_gated=True)
 
 
 def test_endpoint_construction_rejects_a_method_outside_get_or_post():
     with pytest.raises(ValueError):
         Endpoint(key="probe_bad_method", host="auth", path="/bc-comm/message/{job_no}-{p_id}",
                  method="DELETE", family="B", extra_headers=(),
-                 family_b_shape=FamilyBShape(is_list=True, inner_key=None))
+                 family_b_shape=FamilyBShape(is_list=True, inner_key=None), throttle_gated=True)
 
 
 class _FakeAiohttpResponse:
@@ -749,14 +750,14 @@ async def test_fetch_emits_every_declared_extra_header_verbatim_and_nothing_unde
 
     declared = Endpoint(key="probe_headers", host="vip", path="/api/probe", method="GET",
                          family="A", extra_headers=(("X-Test-Header", "test-value"),),
-                         family_b_shape=None)
+                         family_b_shape=None, throttle_gated=True)
     await api_client_mod.fetch(declared, cookie_header="c=1", params=[])
 
     _method, _url, headers, _body = _FakeAiohttpSession.calls[0]
     assert headers.get("X-Test-Header") == "test-value"
 
     undeclared = Endpoint(key="probe_no_headers", host="vip", path="/api/probe", method="GET",
-                           family="A", extra_headers=(), family_b_shape=None)
+                           family="A", extra_headers=(), family_b_shape=None, throttle_gated=True)
     await api_client_mod.fetch(undeclared, cookie_header="c=1", params=[])
     _method, _url, headers2, _body = _FakeAiohttpSession.calls[1]
     assert "Referer" not in headers2, "a name not declared in extra_headers must not be sent"
@@ -819,6 +820,7 @@ def test_classify_family_b_404_with_only_error_key_still_behaves_as_before():
 
 def test_all_declared_endpoints_construct_without_error():
     # ENDPOINTS itself is built at module import time — reaching this line at all
-    # already proves every entry (five pre-existing + three new messaging ones)
-    # constructs cleanly under the new required fields.
-    assert len(ENDPOINTS) == 8
+    # already proves every entry constructs cleanly under the required fields.
+    # Ten today: five pre-existing + three messaging endpoints + the two
+    # §C8 additions (verify_session, logout_session).
+    assert len(ENDPOINTS) == 10

@@ -16,20 +16,30 @@ __pycache__/
 # `pip install -e .` / `pip install --no-deps .` build metadata and in-tree build
 # output — regenerated on every install, not source. `build/` is what setuptools
 # leaves behind (a second copy of the package under build/lib/) if a build is ever run
-# outside the Dockerfile's own same-layer cleanup; `dist/` is sdist/wheel output,
-# never produced by this project's install/build commands today but excluded
-# pre-emptively for the same reason.
+# with `python -m build` or similar outside a clean `pip install`; `dist/` is
+# sdist/wheel output, never produced by this project's install commands today but
+# excluded pre-emptively for the same reason.
 *.egg-info/
 build/
 dist/
 
-# Runtime data — never commit. cookies.json holds live 104 session cookies.
+# Runtime data — never commit. Per-user data lives outside this repo by default
+# (see src/mcp104/config.py's resolve_data_dir()); these rules exist for the case
+# where MCP104_DATA_DIR is pointed at a directory under the repo (e.g. local dev
+# convenience), and for the historical `data/` layout. cookies.json holds live 104
+# session cookies.
 data/*.db
 data/*.json
 # *.sqlite as well: the extension list, not the directory, is what excludes these,
 # so a file this project writes under a third extension would be committable. A
 # verification script left three verify_*.sqlite here and git offered to add them.
 data/*.sqlite
+# throttle_state.log (browser/throttle.py's append-only request-timestamp log) and
+# logout_unconfirmed (an extension-less marker file — its existence, not its
+# content, is what it carries) are both login/session state, same class of risk as
+# cookies.json above.
+data/*.log
+data/logout_unconfirmed
 
 # Measurement captures — real candidates' résumés, names and e-mail addresses
 # scraped from a live 104 enterprise session. Never commit. The probe scripts in

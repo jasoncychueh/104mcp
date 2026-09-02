@@ -5,24 +5,26 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "mcp104"
 version = "0.1.0"
-requires-python = ">=3.10"             # the CONTAINER interpreter (Python 3.10.12 on
-                                        # mcr.microsoft.com/playwright/python:v1.44.0-jammy),
-                                        # not the dev machine's (measured 3.13.5). See
-                                        # .spec/steering/tech.md and CLAUDE.md for both.
+requires-python = ">=3.10"             # Floor is undecided, not measured against any
+                                        # runtime this project still targets: the container
+                                        # that used to explain this value (Python 3.10.12 on
+                                        # mcr.microsoft.com/playwright/python:v1.44.0-jammy)
+                                        # is gone (stdio rearchitecture); the dev machine
+                                        # measures 3.13.5. Whether to support 3.10 is a
+                                        # separate, undecided call — see backlog e5b3a2 — this
+                                        # value is carried forward unchanged, not re-validated.
 dependencies = [
   "mcp[cli]>=1.12,<2",                 # <2 is load-bearing: 2.0 moves mcp.server.fastmcp
   "patchright>=1.0.0",                 #   and renames FastMCP; unpinned fails at import
   "aiosqlite>=0.20.0",
   "aiohttp>=3.9.0",
   "tzdata>=2024.1",
-  "uvicorn>=0.30",                     # main() imports it directly; today transitive via mcp
 ]
 
 [project.optional-dependencies]
-# The uvicorn / ruff / pyflakes floors above and below are conservative floors BELOW the
-# versions actually measured on the dev machine (uvicorn transitive, ruff 0.14.7,
-# pyflakes 3.2.0) — not tested minima. Say so here rather than implying either was
-# measured as a working lower bound.
+# The ruff / pyflakes floors below are conservative floors BELOW the versions actually
+# measured on the dev machine (ruff 0.14.7, pyflakes 3.2.0) — not tested minima. Say so
+# here rather than implying either was measured as a working lower bound.
 dev = ["pytest>=8.0.0", "pytest-asyncio>=0.24.0", "ruff>=0.14", "pyflakes>=3.2"]
 
 [project.scripts]

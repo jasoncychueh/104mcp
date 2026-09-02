@@ -20,11 +20,12 @@ modules, not this cycle's blind file):
   and to check an unknown-key/tombstone error names a real valid replacement (T-3, T-4).
 - `db/database.py`, `browser/session.py`, and the sibling `tests/test_api_client.py` /
   `tests/test_helpers.py` fixture-harness idiom (`FakeCtx`/`FakeApp`/
-  `_FakeApiBrowserContext`/`_install_fake_fetch`) — reused/adapted here so this file's
-  seam-substitution matches the rest of the suite: the HTTP transport
-  (`browser.api_client.fetch`) and the browser context (`SessionInfo.browser_context`)
-  are faked; `guarded_api`, `classify`, `encode_filters`, `resolve` and the actual
-  `tools.search` tool functions are exercised for real, never mocked.
+  `_install_fake_fetch`) — reused/adapted here so this file's seam-substitution
+  matches the rest of the suite: the HTTP transport (`browser.api_client.fetch`) is
+  faked (there is no BrowserContext left to fake post-login, §C7 — a session under
+  test is built by handing `SessionInfo.cookies` a list directly); `guarded_api`,
+  `classify`, `encode_filters`, `resolve` and the actual `tools.search` tool
+  functions are exercised for real, never mocked.
 
 Cases: T-1, T-3, T-4, T-5, T-6, T-7, T-8, T-9, T-10, T-11, T-12, T-13, T-14, T-15, T-16,
 T-17, T-18, T-28, T-29, T-41, T-42, T-43, T-58, T-59.
@@ -172,21 +173,6 @@ def _install_never_called_fetch(monkeypatch) -> None:
     monkeypatch.setattr("mcp104.tools.helpers.fetch", spy, raising=False)
 
 
-class _FakeApiBrowserContext:
-    """Stand-in for Playwright's BrowserContext on the API path — see
-    tests/test_api_client.py's identical class for the design.md citation."""
-
-    def __init__(self, cookies=None):
-        self._cookies = cookies if cookies is not None else []
-        self.pages = []
-
-    async def cookies(self):
-        return self._cookies
-
-    def on(self, event, handler):
-        pass
-
-
 class FakeSessionObj:
     pass
 
@@ -268,11 +254,13 @@ _OPENED_DATABASES: list[Database] = []
 async def _new_session(tmp_path) -> tuple[FakeCtx, SessionInfo, Database]:
     pool = SessionPool()
     database = Database(str(tmp_path / f"db_{uuid4().hex}.sqlite"))
-    await database.init()
+    await database.init("test@104.com")
     _OPENED_DATABASES.append(database)
     ctx = FakeCtx(pool, database)
     sid = get_session_id(ctx)
-    info = SessionInfo(browser_context=_FakeApiBrowserContext())
+    # guarded_api reads credentials straight off SessionInfo.cookies now —
+    # there is no BrowserContext left to fake post-login (§C7).
+    info = SessionInfo(cookies=[], account_label="test@104.com")
     pool.activate_direct(sid, info)
     return ctx, info, database
 

@@ -9,11 +9,19 @@ kept a TYPE_CHECKING guard around that dependency, so this file requires
 patchright to be installed (it is, both locally and in the container).
 """
 
+from __future__ import annotations
+
 import asyncio
+from dataclasses import dataclass
 
 import pytest
 
-from mcp104.tools.auth import _abandon_pending_login, _has_vip_session_cookie
+from mcp104.tools.auth import (
+    LoginState,
+    PendingLoginResources,
+    _finalize_pending_login,
+    _has_vip_session_cookie,
+)
 
 
 def test_bsignin_only_cookies_is_false():
@@ -66,7 +74,18 @@ def test_mixed_jar_with_vip_session_cookie_among_others_is_true():
     assert _has_vip_session_cookie(cookies) is True
 
 
-# ── _abandon_pending_login: cancellation must be bounded ────────────────
+# ── _finalize_pending_login: cancellation must be bounded, and every
+# resource still gets torn down even when the watcher itself hangs ──────
+#
+# Renamed from the old _abandon_pending_login (this cycle's login-lifecycle
+# rewrite, §C6): the old name and its _FakeApp (`_pending_browsers`,
+# `vnc_manager`) no longer match the real signature at all — there is no
+# more VNC layer (browser/vnc.py is deleted, §C3) and pending-login state is
+# now PendingLoginResources keyed in AppContext._pending_logins, not a bare
+# browser handle. This test's job is unchanged: prove teardown proceeds
+# (and reports it did NOT fully confirm) even when the watcher task never
+# actually finishes.
+
 
 class _FakeSessionPool:
     def __init__(self):
@@ -76,28 +95,46 @@ class _FakeSessionPool:
         self.discarded.append(token)
 
 
-class _FakeVncManager:
+class _FakeStream:
     def __init__(self):
-        self.stopped = []
+        self.stopped = False
 
-    async def stop(self, token):
-        self.stopped.append(token)
+    async def stop(self):
+        self.stopped = True
+
+
+class _FakeBrowserResource:
+    """Stand-in for both Browser and BrowserContext — _finalize_pending_login
+    only ever calls .close() on either."""
+
+    def __init__(self):
+        self.closed = False
+
+    async def close(self):
+        self.closed = True
+
+
+@dataclass
+class _FakeConfig:
+    auth_bind_port: int | None = None
 
 
 class _FakeApp:
     def __init__(self):
         self._watcher_tasks = {}
-        self._pending_browsers = {}
+        self._pending_logins = {}
+        self._finished_logins = {}
         self.session_pool = _FakeSessionPool()
-        self.vnc_manager = _FakeVncManager()
+        self.config = _FakeConfig()
+        self.auth_site = None
 
 
 @pytest.mark.asyncio
-async def test_abandon_pending_login_does_not_hang_on_a_stuck_watcher(monkeypatch):
+async def test_finalize_pending_login_does_not_hang_on_a_stuck_watcher(monkeypatch):
     # Simulate a watcher whose own cleanup hangs even after cancellation —
     # e.g. `await context.close()` on a browser whose CDP connection is
     # already dead (CLAUDE.md's known-issue #1, /dev/shm pressure).
-    # _abandon_pending_login must not wait on it forever.
+    # _finalize_pending_login must not wait on it forever.
     monkeypatch.setattr("mcp104.tools.auth.WATCHER_CANCEL_TIMEOUT", 0.05)
 
     async def stuck_watcher():
@@ -112,16 +149,30 @@ async def test_abandon_pending_login_does_not_hang_on_a_stuck_watcher(monkeypatc
     task = asyncio.ensure_future(stuck_watcher())
     app._watcher_tasks["tok"] = task
 
+    stream = _FakeStream()
+    context = _FakeBrowserResource()
+    browser = _FakeBrowserResource()
+    app._pending_logins["tok"] = PendingLoginResources(
+        browser=browser, context=context, page=object(), stream=stream,
+        state=LoginState.AWAITING_HUMAN,
+    )
+
     try:
         # The outer timeout is a test safety net, independent of the
         # WATCHER_CANCEL_TIMEOUT monkeypatch above — this call must return
-        # well within it if the bound inside _abandon_pending_login works.
-        await asyncio.wait_for(_abandon_pending_login(app, "tok", "test"), timeout=5)
+        # well within it if the bound inside _finalize_pending_login works.
+        await asyncio.wait_for(
+            _finalize_pending_login(app, "tok", "test"), timeout=5
+        )
 
         # Cleanup must still have proceeded despite the watcher never
-        # actually finishing.
+        # actually finishing: every resource still gets torn down, and the
+        # abandoned pending login is still recorded.
         assert "tok" in app.session_pool.discarded
-        assert "tok" in app.vnc_manager.stopped
+        assert stream.stopped is True
+        assert context.closed is True
+        assert browser.closed is True
+        assert app._finished_logins.get("tok") == "abandoned"
     finally:
         task.cancel()
         try:
