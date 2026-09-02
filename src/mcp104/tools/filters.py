@@ -12,7 +12,7 @@ module only reports the facts (a wire pair list, a validation error) for those l
 act on. The bundled category datasets are public and unauthenticated
 (`src/mcp104/assets/104-categories/README.md`), so `tools/categories.py` reads them
 directly here — that file access is local and not routed through
-`guarded_page`/`guarded_api` or the throttle (steering/structure.md, steering/tech.md).
+`guarded_api` or the throttle (steering/structure.md, steering/tech.md).
 
 **Drop detection (`detect_dropped`, the certification corpus, echo-evidence derivation)
 lives in `tools/drop_detection.py`, not here.** This module has no corpus read and no

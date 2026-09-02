@@ -29,7 +29,7 @@ installed package tree, not this directory by a repo-relative path.
   recorded in `docs/104-site-facts.md` (§ Technology Stack in `.spec/steering/tech.md`: "104 公開
   分類資料（`static.104.com.tw/category-tool/json/*.json`）— 免登入、不在受保護主機上、零反爬蟲
   曝險"). Unauthenticated, public, zero anti-bot exposure — this is why fetching them (then, and on
-  refresh) is not routed through `guarded_page`/`guarded_api` or the throttle.
+  refresh) is not routed through `guarded_api` or the throttle.
 - **Fetched:** 2026-08-13, copied verbatim from `research/captures/category_json/` (that directory
   holds the original captures alongside several datasets this feature does not bundle; only the
   eight below are copied here).

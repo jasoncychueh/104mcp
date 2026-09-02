@@ -63,3 +63,26 @@ async def create_stealth_context(browser: Browser) -> BrowserContext:
         },
     )
     return context
+
+
+async def selftest_browser() -> None:
+    """Body of the `--selftest-browser-stdout` argv path (see
+    `main.py`'s SELFTEST_FLAG docstring for what the path must and must not
+    do). Lives here rather than in main.py because it is the one caller
+    outside the login path that legitimately needs to touch a browser page
+    (T-113 / R3.6 restrict page access to stealth.py, cdp_stream.py and
+    tools/auth.py). Writes nothing to stdout/disk; failures propagate to
+    the caller unchanged."""
+    browser = await launch_browser(headless=True)
+    try:
+        context = await create_stealth_context(browser)
+        try:
+            page = await context.new_page()
+            try:
+                await page.goto("about:blank")
+            finally:
+                await page.close()
+        finally:
+            await context.close()
+    finally:
+        await browser.close()

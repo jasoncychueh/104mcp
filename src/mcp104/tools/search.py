@@ -5,8 +5,7 @@ success `payload`), how does it become the documented tool-facing response — w
 does a route's own envelope carry, which fields survive into a row or a résumé detail, and
 what does a caller-supplied `filters` dict turn into on the wire. Deliberately does not:
 issue the HTTP request, decide session/auth failures, or run the request throttle —
-tools/helpers.py's `guarded_api` owns all three, exactly as `guarded_page` did for the
-DOM-scraping predecessor of this module. This module receives an already-classified
+tools/helpers.py's `guarded_api` owns all three. This module receives an already-classified
 payload and turns it into the tool-facing dict, or (for filter validation and category
 name resolution) refuses before any request is issued at all.
 
@@ -815,12 +814,12 @@ def register_search_tools(mcp: FastMCP):
             async with guarded_api(ctx, ENDPOINTS["get_resume_detail"], params=params) as (envelope, info):
                 response = _build_resume_detail_response(envelope)
                 # Only write a name if the résumé actually carried one — passing name=""
-                # would silently overwrite a previously stored real name. account_email
+                # would silently overwrite a previously stored real name. account_label
                 # comes from the guard's own validated `info`, not a separately-resolved
                 # one — see guarded_api's docstring for why that distinction matters.
                 name_value = envelope["data"]["resume"].get("userName")
                 if name_value:
-                    await app.db.upsert_candidate(candidate_id, ID_SOURCE_RESUME, info.account_email, name=name_value)
+                    await app.db.upsert_candidate(candidate_id, ID_SOURCE_RESUME, info.account_label, name=name_value)
                 return response
         except GuardAbort as e:
             return e.payload

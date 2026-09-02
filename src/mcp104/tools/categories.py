@@ -5,7 +5,7 @@ Answers: given a dataset (one of the eight files bundled under
 codes did they mean — and how confident should we be in that answer?
 
 Deliberately does not: touch the network, read `config.py`, or know anything about
-`guarded_page`/`guarded_api` or the request throttle. `tools/filters.py`'s own condition
+`guarded_api` or the request throttle. `tools/filters.py`'s own condition
 table owns the mapping from a filter *condition* to which dataset backs it; this module
 only knows how to load a named dataset file and resolve a query against it, with no
 knowledge of which filter keys exist. The datasets are public,

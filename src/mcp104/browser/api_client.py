@@ -76,9 +76,10 @@ REFERER_SITE_ROOT = "https://vip.104.com.tw/"
 # comment asking people not to add them.
 _ALLOWED_METHODS = frozenset({"GET", "POST"})
 
-# Matches guarded_page's page.goto timeout (15000ms) — the existing
-# navigation budget this design deliberately does not diverge from without
-# reason. Combined with the interval floor in browser/throttle.py
+# 15 seconds because that was page.goto's own navigation timeout on the
+# now-removed page-navigation guard (guarded_page) this value was carried
+# over from without reason to diverge, and it is kept unchanged here for
+# the same reason: combined with the interval floor in browser/throttle.py
 # (MIN_CALL_INTERVAL_SECONDS), a call's worst case inside the session lock
 # is the floor plus this timeout, which must stay under the MCP client's
 # own default request timeout — a client that gives up while 104 is still
@@ -143,9 +144,10 @@ class Endpoint:
     host: str  # "vip" | "auth"
     path: str  # may contain `{name}` placeholders filled from build_url's params
     method: str  # "GET" | "POST" — see _ALLOWED_METHODS
-    family: str  # "A" | "B" — see classify()
+    family: str  # "A" | "B" — dispatches classify(); "non_json" names a route measured to answer outside either JSON envelope (e.g. logout_session) — classify() is never reached for it in practice, see that endpoint's own comment
     extra_headers: tuple[tuple[str, str], ...]  # NAME/VALUE pairs sent verbatim, beyond the always-sent baseline (User-Agent, Accept-Language, Cookie)
     family_b_shape: FamilyBShape | None  # required (non-None) iff family == "B" — enforced below, not merely documented
+    throttle_gated: bool  # whether this route passes through enforce_throttle's judgment gate (tools/helpers.py's guarded_api) — every row must answer this explicitly; the sole False today is logout_session (see ENDPOINTS below and design §C8's admission criteria)
 
     def __post_init__(self) -> None:
         if self.method not in _ALLOWED_METHODS:
@@ -207,6 +209,7 @@ ENDPOINTS: dict[str, Endpoint] = {
         family="A",
         extra_headers=(("Referer", REFERER_SITE_ROOT),),
         family_b_shape=None,
+        throttle_gated=True,
     ),
     "list_recommended_resumes": Endpoint(
         key="list_recommended_resumes",
@@ -216,6 +219,7 @@ ENDPOINTS: dict[str, Endpoint] = {
         family="A",
         extra_headers=(("Referer", REFERER_SITE_ROOT),),
         family_b_shape=None,
+        throttle_gated=True,
     ),
     "list_matched_resumes": Endpoint(
         key="list_matched_resumes",
@@ -225,6 +229,7 @@ ENDPOINTS: dict[str, Endpoint] = {
         family="A",
         extra_headers=(("Referer", REFERER_SITE_ROOT),),
         family_b_shape=None,
+        throttle_gated=True,
     ),
     "get_resume_detail": Endpoint(
         key="get_resume_detail",
@@ -234,6 +239,7 @@ ENDPOINTS: dict[str, Endpoint] = {
         family="B",
         extra_headers=(),
         family_b_shape=FamilyBShape(is_list=False, inner_key="resume"),
+        throttle_gated=True,
     ),
     "list_jobs": Endpoint(
         key="list_jobs",
@@ -243,6 +249,7 @@ ENDPOINTS: dict[str, Endpoint] = {
         family="B",
         extra_headers=(),
         family_b_shape=FamilyBShape(is_list=True, inner_key=None),
+        throttle_gated=True,
     ),
     # ── Messaging (§6b.7-§6b.9): all three on auth.vip.104.com.tw, all
     # family B ({data, metadata}). extra_headers=() on all three is
@@ -262,6 +269,7 @@ ENDPOINTS: dict[str, Endpoint] = {
         family="B",
         extra_headers=(),
         family_b_shape=FamilyBShape(is_list=True, inner_key=None),
+        throttle_gated=True,
     ),
     "get_conversation": Endpoint(
         key="get_conversation",
@@ -271,6 +279,7 @@ ENDPOINTS: dict[str, Endpoint] = {
         family="B",
         extra_headers=(),
         family_b_shape=FamilyBShape(is_list=True, inner_key=None),
+        throttle_gated=True,
     ),
     # family_b_shape is [INF], not [M]: only 104's own front-end reading
     # response.data[0].messageId[0] [C §6b.9-2] says `data` is a list — the
@@ -288,6 +297,59 @@ ENDPOINTS: dict[str, Endpoint] = {
         family="B",
         extra_headers=(),
         family_b_shape=FamilyBShape(is_list=True, inner_key=None),
+        throttle_gated=True,
+    ),
+    # ── Restore verification (§C6/§C8) ──────────────────────────────────
+    #
+    # verify_session: an authenticated no-op call used only to prove a
+    # restored cookie jar is still alive. Route and shape are the same
+    # station as search_resumes (vip.104.com.tw, family A, needs Referer)
+    # — this is the résumé-COUNT route, not a résumé read, and it is
+    # measured to cost zero of the daily résumé-browsing quota
+    # [M §6b.3g-inline / §8.8-1]. The ten parameters the browser itself
+    # sends on this route are measured unnecessary: an unparameterised
+    # call gets the identical HTTP 200 + parseable JSON + family-A
+    # SUCCESS as the fully-parameterised one, under the same cookie jar
+    # [M §8.8-1]. Referer is NOT part of that "nothing needed" finding —
+    # omitting it still gets ACCESS_DENIED on this route like the other
+    # three vip family-A routes [M §6b.3h] — so it stays declared.
+    "verify_session": Endpoint(
+        key="verify_session",
+        host="vip",
+        path="/api/search/getSearchRsNum",
+        method="GET",
+        family="A",
+        extra_headers=(("Referer", REFERER_SITE_ROOT),),
+        family_b_shape=None,
+        throttle_gated=True,
+    ),
+    # logout_session: the one best-effort, fire-and-forget server-side
+    # logout request (§C6). Measured [M §8.8-4], not assumed: `GET` gets a
+    # 302 (empty body) to boidc.104.com.tw, whose chain ends on an HTML
+    # error page; `POST` (empty body) is 404 HTML. Neither is a JSON
+    # envelope of either family, hence family="non_json" — a value
+    # classify() never actually dispatches on here, because guarded_api's
+    # auth-host redirect check intercepts this route's 302 (Location ->
+    # boidc.104.com.tw) before classify() is ever called, and always has
+    # in every measured run of this route. `method="GET"` per the same
+    # measurement (`POST` is 404, not accepted). Post-hoc verification
+    # (three send styles, one shared session) found the vip application
+    # session (its/ithp) unaffected in all three — this call has no
+    # observed effect on vip.104.com.tw, so its purpose is to send the
+    # attempt and record that we tried, not to reach a confirmed
+    # server-side logout. throttle_gated=False: the sole exemption from
+    # enforce_throttle's judgment gate — note_request still counts this
+    # request (the gate, not the ledger, is what's waived; see §C6/§C8 for
+    # the three admission criteria this route meets).
+    "logout_session": Endpoint(
+        key="logout_session",
+        host="vip",
+        path="/oidc/logout",
+        method="GET",
+        family="non_json",
+        extra_headers=(),
+        family_b_shape=None,
+        throttle_gated=False,
     ),
     # Never declared, deliberately — an endpoint absent from ENDPOINTS
     # cannot be called at all, which is the enforcement (the method

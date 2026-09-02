@@ -9,7 +9,7 @@ fields `tools/search.py` keeps on a résumé row, what does each one mean.
 
 Deliberately does not: touch the network, the session, the guard or the throttle —
 `structure.md` already rules that public category data must not be routed through
-`guarded_page`/`guarded_api` or the throttle (it is unauthenticated, off the protected
+`guarded_api` or the throttle (it is unauthenticated, off the protected
 host, zero anti-bot exposure), and that rule extends here without modification: these two
 tools read only bundled package data (`tools/categories.py`'s datasets, `tools/
 filters.py`'s `CONDITIONS`) and are registered WITHOUT `require_login` — see
@@ -632,7 +632,7 @@ Args:
 
 ⚠ {SECOND_IDENTIFIER_NOTE}
 
-不需要 login()：讀套件內建公開分類資料，不經過 guarded_page/guarded_api，不消耗
+不需要 login()：讀套件內建公開分類資料，不經過 guarded_api，不消耗
 104 請求或履歷瀏覽配額。
 """
 
@@ -666,7 +666,7 @@ event_polarity 會列出目前已知的 (event_type, event_status) 配對與對�
 才有，屆時是 104 填入的人類可讀佔位文字，不是真實聯絡資料；唯一可靠的依據是 contact_
 privacy 本身。
 
-不需要 login()：本工具是純本機說明文字，不經過 guarded_page/guarded_api，不消耗任何
+不需要 login()：本工具是純本機說明文字，不經過 guarded_api，不消耗任何
 104 請求或履歷瀏覽配額。get_resume_detail 的完整履歷欄位不在本工具範圍內（那些欄位
 機械式轉換、不省略，見 get_resume_detail 自己的說明）。
 """

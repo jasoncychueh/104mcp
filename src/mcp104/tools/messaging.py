@@ -341,7 +341,7 @@ _SEND_AMBIGUOUS_MESSAGE = (
 )
 
 
-async def _log_send_attempt(app, account_email: str | None, candidate_id: str) -> None:
+async def _log_send_attempt(app, account_label: str | None, candidate_id: str) -> None:
     """NOT pure — writes to SQLite, and wraps its own failure so that the verdict
     the caller already decided (`unconfirmed`/`ambiguous`) is never replaced by an
     unhandled database error. The rule: writing the log must never suppress the
@@ -352,7 +352,7 @@ async def _log_send_attempt(app, account_email: str | None, candidate_id: str) -
     decision rather than a property distributed over however many handlers exist.
     """
     try:
-        await app.db.log_sent(account_email, candidate_id, ID_SOURCE_MESSAGE)
+        await app.db.log_sent(account_label, candidate_id, ID_SOURCE_MESSAGE)
     except Exception:
         log.error(
             "send_message: log_sent failed for candidate_id=%s (verdict itself is unaffected)",
@@ -487,19 +487,19 @@ def register_messaging_tools(mcp: FastMCP):
         # either of these unconditionally must not raise UnboundLocalError
         # on the most ordinary path there is (an expired session). See
         # §6c: a control signal (hook_completed) gets its own variable
-        # rather than being inferred from whether account_email happens to
-        # be set — an empty account_email would otherwise mean "the hook
+        # rather than being inferred from whether account_label happens to
+        # be set — an empty account_label would otherwise mean "the hook
         # ran, the request may have gone out", the opposite of what an
         # unset local should mean here.
-        account_email: str | None = None
+        account_label: str | None = None
         hook_completed = False
 
         async def _check_daily_cap(info: SessionInfo) -> None:
-            nonlocal account_email, hook_completed
+            nonlocal account_label, hook_completed
             # The SAME SessionInfo guarded_api just validated by identity —
             # not one resolved before queuing on the lock.
-            account_email = info.account_email
-            count = await app.db.get_daily_sent_count(info.account_email)
+            account_label = info.account_label
+            count = await app.db.get_daily_sent_count(info.account_label)
             if count >= app.config.max_daily_messages:
                 raise ToolAbort(
                     {"success": False, "error": f"已達每日發送上限 {app.config.max_daily_messages} 則"},
@@ -513,11 +513,11 @@ def register_messaging_tools(mcp: FastMCP):
             async with guarded_api(
                 ctx, ENDPOINTS["send_message"], params=params, body=body, before_request=_check_daily_cap,
             ) as (_payload, info):
-                await _log_send_attempt(app, info.account_email, candidate_id)
+                await _log_send_attempt(app, info.account_label, candidate_id)
                 return {"sent": "unconfirmed", "message": _SEND_UNCONFIRMED_MESSAGE}
         except GuardAbort as e:
             if _send_verdict(e.kind) == "ambiguous":
-                await _log_send_attempt(app, account_email, candidate_id)
+                await _log_send_attempt(app, account_label, candidate_id)
                 return {"sent": "unconfirmed", "message": _SEND_AMBIGUOUS_MESSAGE}
             # NOT SENT — the guard's own payload, unchanged, `error` key
             # intact (§6d): ERROR_CHALLENGE's text is the one place that
@@ -526,13 +526,15 @@ def register_messaging_tools(mcp: FastMCP):
             return e.payload
         except Exception as exc:
             # A non-GuardAbort exception escaping guarded_api's locked
-            # region (§6d) — realistically info.browser_context.cookies()
-            # against a dead browser. hook_completed is the ordering proof:
-            # the hook runs strictly before the cookie read and the
-            # request, so hook_completed is False only when execution
-            # never reached that point, i.e. nothing was issued.
+            # region (§6d) — a defensive catch-all, not a specific known
+            # failure mode: credentials come from SessionInfo.cookies
+            # (§C7), a plain attribute with nothing left to fail against
+            # a dead browser. hook_completed is the ordering proof: the
+            # hook runs strictly before the request, so hook_completed is
+            # False only when execution never reached that point, i.e.
+            # nothing was issued.
             log.error("send_message: 非預期例外 (hook_completed=%s): %s", hook_completed, exc, exc_info=True)
             if hook_completed:
-                await _log_send_attempt(app, account_email, candidate_id)
+                await _log_send_attempt(app, account_label, candidate_id)
                 return {"sent": "unconfirmed", "message": _SEND_AMBIGUOUS_MESSAGE}
             return {"error": "內部錯誤，這是程式問題，請回報 —— 沒有送出任何請求"}

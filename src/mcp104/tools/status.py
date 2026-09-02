@@ -34,7 +34,7 @@ def register_status_tools(mcp: FastMCP):
         app = ctx.request_context.lifespan_context
         session_id = get_session_id(ctx)
         info = app.session_pool.get_session(session_id)
-        candidate = await app.db.get_candidate(candidate_id, id_source, info.account_email)
+        candidate = await app.db.get_candidate(candidate_id, id_source, info.account_label)
         return candidate is not None and candidate.get("status") is not None
 
     @mcp.tool()
@@ -56,5 +56,5 @@ def register_status_tools(mcp: FastMCP):
         app = ctx.request_context.lifespan_context
         session_id = get_session_id(ctx)
         info = app.session_pool.get_session(session_id)
-        await app.db.upsert_candidate(candidate_id, id_source, info.account_email, status=status)
+        await app.db.upsert_candidate(candidate_id, id_source, info.account_label, status=status)
         return {"success": True}
