@@ -16,7 +16,6 @@ established, and the reason a test suite written blind to this module's own
 implementation can still exercise its decisions without ever driving the MCP tool
 wrapper.
 """
-from __future__ import annotations
 
 import logging
 
@@ -608,7 +607,6 @@ session 已過期等）回傳 {{"error": str}}，沒有 results 欄位；名稱�
 刻意的設計 —— 不會替你猜一個代碼。三個鍵每筆候選都一定存在，code 與 name 皆可直接填回
 同一個篩選鍵：{categories_mod.CANDIDATE_TERMINAL_ZH}。
 """
-
 
 _LIST_RECOMMENDED_DESCRIPTION = f"""列出某個職缺「104 推薦」的履歷清單（走 JSON API）。
 

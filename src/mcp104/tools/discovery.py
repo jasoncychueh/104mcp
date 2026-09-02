@@ -25,7 +25,6 @@ This module also owns the résumé-row field allow-list (`RESUME_ROW_FIELD_GLOSS
 in one edit; `tools/search.py` imports both back from here rather than the reverse, which
 is also what keeps this module free of any dependency on `tools/search.py` itself.
 """
-from __future__ import annotations
 
 import re
 
@@ -635,7 +634,6 @@ Args:
 不需要 login()：讀套件內建公開分類資料，不經過 guarded_api，不消耗
 104 請求或履歷瀏覽配額。
 """
-
 
 def _describe_result_fields_description() -> str:
     return f"""列出「列」（row）回傳的每個欄位是什麼意思（走本機套件資料，不呼叫 104、

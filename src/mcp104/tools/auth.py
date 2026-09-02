@@ -13,8 +13,6 @@
 `await`，讓「已經讀過、還沒寫入」的中間狀態在單一事件迴圈上不可能被觀察到。
 """
 
-from __future__ import annotations
-
 import asyncio
 import logging
 import secrets
