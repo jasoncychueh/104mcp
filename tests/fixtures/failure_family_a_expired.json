@@ -1,0 +1,17 @@
+{
+  "captured_at": "2026-08-14T12:29:05",
+  "note": "Family A with a NATURALLY expired session: real HTML/JavaScript redirect to /company/status/switchCompany. Distinct from the logged-out shape above — this one does not parse as JSON.",
+  "request_url": "https://vip.104.com.tw/api/search/getSearchRsNum?kws=%E5%B7%A5%E7%A8%8B%E5%B8%AB",
+  "request_headers_sent": {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Accept-Encoding": "gzip, deflate, br, zstd",
+    "Accept": "*/*",
+    "Connection": "keep-alive",
+    "Cookie": "<redacted -- was a live session cookie, see redact_fixtures.py>"
+  },
+  "http_status": 200,
+  "content_type": "text/html; charset=utf-8",
+  "body_bytes": 1132,
+  "body_text": "<script>location.href='/company/status/switchCompany?target_link_uri=https%3A%2F%2Fvip.104.com.tw%2Fapi%2Fsearch%2FgetSearchRsNum%3Fkws%3D%25E5%25B7%25A5%25E7%25A8%258B%25E5%25B8%25AB';</script><script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML=\"window.__CF$cv$params={r:'a2ad37692a4d9688',t:'MTc4NjY4MTc0NA=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);\";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script>",
+  "body_json": null
+}

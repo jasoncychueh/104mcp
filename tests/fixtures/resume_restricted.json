@@ -1,0 +1,376 @@
+{
+  "data": {
+    "error": null,
+    "resume": {
+      "achievement": {
+        "layout": "1",
+        "display": 0,
+        "list": []
+      },
+      "addressDesc": "735 台南市下營區新北街***",
+      "age": 39,
+      "areaDesc": "台南市下營區",
+      "auto": "<p>我畢業於台灣首府大學資訊與多媒體設計學系。畢業後當完兵，曾探索不同職涯方向，後來我在職訓中心重新接觸網頁程式，受到開發社群活躍氛圍影響而產生興趣，進入資策會程式班接受較完整訓練，作為投入軟體開發的起點。</p><p><br /></p><p>資策會結訓後，曾加入 SI 公司駐點電信商、客戶關係管理平台擔任軟體工程師，後端主要是用 Java 體系開發應用，期間持續自學而在前端任務上也有經驗。曾調整架構並改善包版流程，透過技術選型的提議來降低團隊維護成本，開發設計過一套計薪系統，也曾擔任內部教育訓練講師，獲得學員與主管正向回饋。</p><p><br /></p><p>中間因取得 Working Holiday Visa，至海外生活約一年。後來因 COVID-19 回到台灣，之後加入永聯物流開發。</p><p><br /></p><p>在永聯物流開發任職期間，我運用自學的 AWS 知識，協助公司後續每年節省將近百萬元雲端費用。在後端方面，我整理程式碼規範、參與 Code Review，新進人員培訓，並建立測試平台，協助團隊導入 E2E 測試，把關微服務系統串接品質。在 DevOps 方面，我盤點雲端與地端部署架構，繪製雲地系統架構圖，作為維運、問題排查與跨團隊溝通依據。而面對尚未明確分工的新專案時，我也會主動拆解專案任務並開案協調，協助團隊推進完成系統上線。</p><p><br /></p><p>截至今天，我已具備系統分析、前後端開發、系統維運、專案管理及團隊協調的能力。未來希望能將這些經驗運用在需求釐清、方案設計與落地推進中，協助團隊把複雜問題轉化為能支援業務發展的成果。</p>",
+      "autoEng": "",
+      "attachArr": [],
+      "layoutMenu": "info,experience,custom1,bio,education,skill,language,jobCondition",
+      "layoutBasic": "2",
+      "layoutSkill": "2",
+      "layoutEducation": "1",
+      "layoutExpJob": "1",
+      "layoutLanguageSkill": "1",
+      "layoutSearch": "1",
+      "layoutCertificate": "1",
+      "layoutAchievement": "1",
+      "layoutPortfolio": "1",
+      "layoutReferral": "1",
+      "background": {
+        "type": 0,
+        "url": null,
+        "thumbnailStatus": 0,
+        "thumbnailUrl": null,
+        "color": ""
+      },
+      "summaryDisplay": [
+        1,
+        2,
+        3,
+        4
+      ],
+      "basicData": "76年次",
+      "callTimeDesc": "請先使用「邀約」功能，求職者按下同意後即可取得 E-mail 及聯絡電話。",
+      "careerSkillDescForMaster": "",
+      "talentDesc": "",
+      "characteristic": "軟體工程、流程改善、專案管理、流程引擎簡化微服務",
+      "compendium": 0,
+      "customContent": {
+        "display": 1,
+        "list": [
+          {
+            "title": "社群演講/工作坊 - 使用現代流程引擎，簡化跨服務、多步驟流程開發",
+            "sort": 1,
+            "layout": 1,
+            "body": [
+              {
+                "desc": "<p>在現代分散式/微服務系統中，傳統依賴手動撰寫程式與狀態管理的方式，常面臨錯誤處理與系統恢復的複雜挑戰，導致開發與維運成本持續攀升。</p><p><br /></p><p>介紹「流程引擎」，重點說明其核心架構與 API 使用，了解設計理念，讓開發者可以運用熟悉的程式語言，打造高韌性且具擴展性的分散式流程系統，協助提升流程自動化的可靠度與開發效率，並有效降低系統複雜度與維護風險。</p><p><br /></p><p>持續演進並推廣中</p>",
+                "start": "2024/10",
+                "end": "",
+                "finish": "",
+                "url": "https://docs.example.com/presentation/d/qdoa2kahob43qul73dh3w77icpvq",
+                "file": {
+                  "type": 3,
+                  "url": "https://docs.example.com/presentation/d/pwoa00owuzg43v74ueruj5c2mnxd",
+                  "thumbnailUrl": "https://asset.vip.104.com.tw/download/webImg/v/SYNTHETIC%3Ajq9QCLIvG4cT1Je5UrE82cSviwm2ExkPxfSw7hpK6k02KosL"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "customResume": {
+        "birthYear": "1987",
+        "cellphone": null,
+        "certifications": {
+          "list": [],
+          "other": ""
+        },
+        "characteristic": [
+          "軟體工程",
+          "流程改善",
+          "專案管理",
+          "流程引擎簡化微服務"
+        ],
+        "disRoleDesc": [],
+        "disTool": [
+          ""
+        ],
+        "driverLicenseDesc": [
+          "普通重型機車駕照",
+          "普通小型車駕照"
+        ],
+        "height": null,
+        "indCatNoDesc": [
+          "產業不拘"
+        ],
+        "jobCatNoDesc": [
+          "全端工程師",
+          "軟體專案管理師",
+          "軟體工程師",
+          "系統分析師",
+          "軟體專案主管"
+        ],
+        "jobTimePeriod": [
+          "日班"
+        ],
+        "otherTimePeriod": null,
+        "remoteWork": 1,
+        "roleDesc": [
+          "全職"
+        ],
+        "roleStatusDesc": [],
+        "subCellphone": null,
+        "tel": null,
+        "telArea": null,
+        "transportsIdDesc": [
+          "普通重型機車"
+        ],
+        "wcityNoDesc": [
+          "台北市",
+          "高雄市",
+          "台南市",
+          "新北市",
+          "新竹縣市"
+        ],
+        "weight": null,
+        "workShift": false,
+        "languageList": [
+          {
+            "languageDesc": "英文",
+            "listening": "略懂",
+            "speaking": "略懂",
+            "reading": "中等",
+            "writing": "略懂"
+          }
+        ],
+        "locallanList": []
+      },
+      "detailExpDesc": "",
+      "degreeLevelDesc": [
+        "大學"
+      ],
+      "degreeStatusDesc": [
+        "畢業"
+      ],
+      "disRoleDesc": "",
+      "disTool": "",
+      "driverLicenseDesc": "普通重型機車駕照、普通小型車駕照",
+      "eduDesc": "大學畢業 致遠管理學院 資訊與多媒體設計學系（原資訊工程學系）",
+      "eduOutput": [
+        "致遠管理學院 資訊與多媒體設計學系（原資訊工程學系）(2005/09 ~ 2009/06畢業)"
+      ],
+      "eduEnd": [
+        "20090601"
+      ],
+      "eduStart": [
+        "20050901"
+      ],
+      "email": "求職者已隱藏",
+      "engName": "SYNTH, CHIEN-PO",
+      "expCatTimeDesc": [
+        {
+          "expCatDesc": "全端工程師",
+          "expTimeDesc": "3~4年"
+        },
+        {
+          "expCatDesc": "軟體工程師",
+          "expTimeDesc": "7~8年"
+        }
+      ],
+      "expJobArr": [
+        {
+          "coSizeDesc": "100~500人",
+          "companyVisibility": true,
+          "expEnd": "2025/04/01",
+          "expEndDesc": "3年",
+          "expFirm": "永聯物流開發股份有限公司",
+          "expFirmLogo": "https://static.104.com.tw/b_profile/cust_picture/0883/130000000030883/logo.png?v=20250321183044",
+          "expIndDesc": "其他不動產業",
+          "expJobDesc": "全端工程師",
+          "expJobNote": "<p>倉儲管理系統</p><p><br /></p><ol><li>完成系統跨區域上線，獨立重構微服務組態，協調網域定義，排除雲地部署瓶頸</li><li>主導 E2E 測試平台開發，推動團隊導入自動化測試與品質控管流程</li><li>優化雲端成本，降低平台支出約 50%，年省逾百萬元</li><li>改善 CI/CD 流程，並培訓一名同仁獨立執行 AWS/Kubernetes/ELK 平台維運</li><li>完善共用元件與 Code Review 規範，指導新進人員並維持程式品質</li><li>引導新場專案時程範疇釐清，制定上線流程並建立團隊協作範本</li></ol><p><br /></p><p>Java, Spring Boot, MyBatis, JUnit, Wiremock, Javascript, React, Git, Gradle, SQL, Docker, Microservice, Kubernetes, AWS, ELK, Kafka, APM</p>",
+          "expJobSkill": [
+            "Java",
+            "Spring",
+            "軟體專案管理",
+            "PostgreSQL",
+            "OOAD"
+          ],
+          "expJobSkillDesc": "Java,Spring,軟體專案管理,PostgreSQL,OOAD",
+          "expManagementDesc": null,
+          "expPeriod": "2022/05~2025/04",
+          "expStart": "2022/05/01",
+          "expTitle": "資深軟體工程師(Backend, DevOps)",
+          "expWage": null,
+          "expWageDesc": null,
+          "expWageTypeDesc": null,
+          "expWageYear": null
+        },
+        {
+          "coSizeDesc": "1~30人",
+          "companyVisibility": true,
+          "expEnd": "2021/09/01",
+          "expEndDesc": "4年10個月",
+          "expFirm": "愛發科技有限公司",
+          "expFirmLogo": "https://static.104.com.tw/b_profile/cust_picture/9452/130000000159452/logo.png?v=20241208130525",
+          "expIndDesc": "電腦系統整合服務業",
+          "expJobDesc": "軟體工程師",
+          "expJobNote": "<p>客戶管理系統</p><p><br /></p><ol><li>開發電商 App 首頁與後台上稿功能，支撐內容長期維護</li><li>整合 LINE Message 互動遊戲，並建立基礎流量保護</li><li>梳理薪資流程，完成約 50 支 API 系統開發，提升計薪效率</li><li>改善專案架構與建置流程，提升開發體驗並縮短耗時約 20%</li><li>串接金流、發票、簡訊與考勤，完成外部服務整合</li><li>降低技術導入成本，以 Electron / Node.js 整合標籤機</li></ol><p><br /></p><p>Java, Spring Framework, MyBatis, JUnit, Redis, RabbitMQ, Javascript, React, Electron, React Native, Gradle</p>",
+          "expJobSkill": [
+            "Java",
+            "Spring Framework",
+            "JavaScript",
+            "Junit",
+            "軟體程式設計"
+          ],
+          "expJobSkillDesc": "Java,Spring Framework,JavaScript,Junit,軟體程式設計",
+          "expManagementDesc": null,
+          "expPeriod": "2016/12~2021/09",
+          "expStart": "2016/12/01",
+          "expTitle": "軟體工程師(Backend, Frontend)",
+          "expWage": null,
+          "expWageDesc": null,
+          "expWageTypeDesc": null,
+          "expWageYear": null
+        },
+        {
+          "coSizeDesc": "30~100人",
+          "companyVisibility": true,
+          "expEnd": "2016/06/01",
+          "expEndDesc": "2年9個月",
+          "expFirm": "藍科數位科技股份有限公司",
+          "expFirmLogo": "https://static.104.com.tw/b_profile/cust_picture/4000/70842954000/logo.png?v=20250917155047",
+          "expIndDesc": "電腦軟體服務業",
+          "expJobDesc": "軟體工程師",
+          "expJobNote": "<p>系統整合商</p><p><br /></p><ol><li>開發電信商入口前台及整合後端服務</li><li>實作前後端分離，建置前端環境並整合後端</li><li>擔任內訓講師，分享 JavaScript 開發實務</li></ol>",
+          "expJobSkill": [
+            "JSP",
+            "Spring",
+            "Java",
+            "jQuery",
+            "SVN"
+          ],
+          "expJobSkillDesc": "JSP,Spring,Java,jQuery,SVN",
+          "expManagementDesc": null,
+          "expPeriod": "2013/10~2016/06",
+          "expStart": "2013/10/01",
+          "expTitle": "軟體工程師(Backend, Frontend)",
+          "expWage": null,
+          "expWageDesc": null,
+          "expWageTypeDesc": null,
+          "expWageYear": null
+        }
+      ],
+      "expPeriodDesc": "9~10年工作經驗",
+      "hiddenIndSet": [
+        2,
+        2,
+        2
+      ],
+      "hopeSalaryDesc": "面議",
+      "hunterStatus": null,
+      "idNo": "1842629170771",
+      "indCatNoDesc": "產業不拘",
+      "introduction": "<ul><li>參與並推進跨區域系統上線、流程改善與成本優化。</li><li>具備前端與後端開發，雲端與地端維運，完整系統落地協作經驗。</li><li>在實際需求與系統限制之間，持續尋找更簡單且體驗良好的解決方案。</li><li>近期專注題目：使用現代流程引擎，簡化跨服務、多步驟流程開發。</li></ul>",
+      "isContact": false,
+      "isDis": "0",
+      "isDuplicateApply": false,
+      "isHalfShow": 0,
+      "isSave": false,
+      "jobCatNoDesc": "全端工程師、軟體專案管理師、軟體工程師、系統分析師、軟體專案主管",
+      "jobName": null,
+      "jobNo": null,
+      "motto": "",
+      "major": [
+        "資訊與多媒體設計學系（原資訊工程學系）"
+      ],
+      "majorCatDesc": [
+        "資訊工程相關"
+      ],
+      "military": "1",
+      "militaryStatus": "役畢",
+      "militaryDesc": "役畢 (2010/06)",
+      "militaryExit": "2010/06",
+      "nationality": "",
+      "otherCourse": [],
+      "pId": "4899781",
+      "pcskillDescForMaster": "",
+      "proDesc2": "",
+      "personalPage": [],
+      "personalPic": "https://asset.vip.104.com.tw/download/webHeadShot?v=SYNTHETIC%3AkMp7K0CfTBq7UjXWhjWmnBU5Ja9hEqUTMgwOLxxJTH5RzC9SHwyz64dHx1fvNG6X",
+      "phone": {
+        "company": "",
+        "home": "",
+        "mobile1": "",
+        "mobile2": ""
+      },
+      "phoneDescAll": "求職者已隱藏",
+      "plastActionDateDesc": "1天內曾瀏覽工作",
+      "postNum": "735",
+      "readStatus": false,
+      "recentJobDesc": "永聯物流開發股份有限公司 資深軟體工程師(Backend, DevOps)",
+      "recommendArr": null,
+      "remark": [],
+      "remoteWork": 1,
+      "resumeStatus": "on",
+      "resumeType": "1",
+      "resumeVersion": "2",
+      "roleDesc": "全職",
+      "roleStatusDesc": "",
+      "roleNowDesc": "待業中",
+      "schoolCountryDesc": [
+        "台灣"
+      ],
+      "schoolName": [
+        "致遠管理學院"
+      ],
+      "sex": 1,
+      "sexDesc": "男",
+      "specialty": [
+        {
+          "skill": "程式設計",
+          "desc": "<ul><li>Java, Spring Boot</li><li>HTML</li><li>JavaScript, ReactJs</li><li>PostgreSQL</li></ul>"
+        },
+        {
+          "skill": "軟體工程",
+          "desc": "<ul><li>Workflow Engine, Temporal</li><li>Domain Driven Design</li><li>Test-Driven Development</li><li>Project Management</li></ul>"
+        }
+      ],
+      "startDateOptionDesc": "錄取後兩週可上班",
+      "studyStatusDesc": [
+        ""
+      ],
+      "switchDate": "20260614",
+      "switchStatus": "2",
+      "switchStatusView": "1",
+      "titleCat": "軟體工程師、軟體專案主管、軟體專案管理師、Forward Deployed Engineer",
+      "titleCatDesc": "軟體工程師、軟體專案主管、軟體專案管理師、Forward Deployed Engineer",
+      "transportsIdDesc": "普通重型機車",
+      "updateDateDesc": "2026/08/10 21:23",
+      "updateDayDesc": "2026/08/10",
+      "userName": "林志家",
+      "versionNo": "20220308135319",
+      "wcityNoDesc": "台北市、高雄市、台南市、新北市、新竹縣市",
+      "workDesc": "",
+      "workIntervalDescAll": "日班",
+      "contactPrivacy": "private",
+      "documentSnapshotId": [],
+      "latestMemo": null,
+      "hasInRecruitFlow": false,
+      "isTalent50": false,
+      "talent50Recommends": [],
+      "talent50Token": null
+    },
+    "browseLimit": {
+      "resumeMax": 300,
+      "onThatDayCount": 15
+    },
+    "hasOnJob": true,
+    "jobNo": null,
+    "nccLogBaseData": {
+      "ext": {
+        "Buserid": "900000000000000001",
+        "custno": "99999999000",
+        "custType": "",
+        "pid": 90000001
+      }
+    },
+    "isHunterOrDispatch": false,
+    "companyName": "假日市實業股份有限公司",
+    "userName": "鄭雨昱",
+    "resumeTemplate": "1",
+    "resumeFitnessReportInfo": {
+      "switch": true,
+      "url": "https://pro.104.com.tw/asm/api/privip/auth/vip_result?idno=1842629170771&pid=4899781&custno=99999999000&industry_id=1001006002&position_id=1&has_testing=0&manage_pid=90000001"
+    }
+  },
+  "metadata": {}
+}

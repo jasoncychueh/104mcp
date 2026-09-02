@@ -1,0 +1,357 @@
+"""Request-level pacing and rate limiting for a single logged-in session.
+
+Built from ONE passive recording of a real human session (4 minutes, 626
+requests, 12 navigations, 2 tabs) — see docs/104-site-facts.md. Every
+default in this module is a CONSERVATIVE GUESS anchored on that one short,
+single-session sample, not a derived safe threshold. In particular the
+sample's idle-gap distribution (median ~14s, tail to 88s) likely
+UNDERSTATES real human pauses — a longer recording would probably show
+more/longer idle gaps, not fewer. Treat every constant here as a starting
+point to be recalibrated once a longer recording exists, not as a
+measured ceiling.
+
+What the recording actually showed: burst shape is not where automation
+differs from a human — a page load fires ~44-106 requests with near-zero
+gaps between them either way. The difference is entirely in (a) the idle
+time BETWEEN actions (human: 10-88s, median ~14s; the old uniform-3-8s
+delay was well short of that) and (b) session DURATION (the human
+stopped after 4 minutes; scripted runs went on for hours). This module
+addresses both: `evaluate()` paces inter-action gaps and enforces a
+mandatory rest after sustained continuous activity, to model "the human
+stops and leaves" — the behaviour the original uniform-delay approach most
+conspicuously lacked.
+
+★ Inter-action pacing is now an INTERVAL FLOOR (MIN_CALL_INTERVAL_SECONDS),
+not a distribution drawn to approximate the recording's idle-gap shape.
+The two are opposite in effect on traffic shape: a drawn delay ADDS an
+interval sampled from a distribution of our own devising, so timing
+converges on a shape we manufactured — and uniform pacing is itself an
+anomaly signature, the exact thing this module exists to avoid. A floor
+leaves the caller's own rhythm intact (inference time varies with output
+length; the Agent reads results before deciding what to call next) and
+clips only the fastest tail.
+
+★ MAX_REQUESTS_PER_HOUR's default was lowered (1800 -> 300) around the
+same time this ThrottleState first served only five tools going through
+guarded_api and issuing exactly one HTTP request per call. **That is no
+longer the qualified statement it was** — the JSON-API messaging
+migration (read_messages / get_conversation / send_message) moved the
+remaining three tools onto guarded_api too, so as of that migration ALL
+EIGHT read/write tools issue exactly one counted HTTP request per call,
+through this one ThrottleState, with no second traffic shape sharing it.
+300/hour is therefore a call-volume budget for the whole tool surface,
+not a number that binds some tools and is slack for others.
+
+This single-path state does NOT retire the caveats below it used to
+carry for the five-tool case — if anything the migration makes them
+apply more widely, not less: every constant in this module is still a
+conservative guess anchored on ONE 4-minute human recording whose
+idle-gap distribution likely UNDERSTATES real pauses (see the module's
+opening paragraphs); and that recording's own traffic SHAPE — a page
+load firing ~44-106 requests with near-zero gaps between them — is now
+something production never produces at all, on any of the eight tools,
+which puts the derivation basis further from what actually ships than it
+was before this migration, not closer to it. A client that fetches only
+JSON and never the surrounding page assets is itself a distinguishing
+signature (steering/tech.md §6b.6: "量少不等於可疑度低" — low request
+volume is not the same as low suspicion), which is a reason to keep
+treating these numbers as a starting point, not a reason the migration
+made moot. Stating the single path plainly must not read as license to
+stop being careful about where these numbers came from.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import time
+from collections import deque
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+from urllib.parse import urlparse
+
+if TYPE_CHECKING:
+    from patchright.async_api import BrowserContext, Request
+
+log = logging.getLogger("104-mcp.throttle")
+
+# Rolling window for the hourly request budget. Fixed, not env-configurable
+# — only the request COUNT allowed within it (MAX_REQUESTS_PER_HOUR in
+# config.py) is. "Rolling", not a fixed clock hour: the window is always
+# "the last 3600 seconds as of now", so it never resets in a burst at the
+# top of an hour.
+REQUEST_WINDOW_SECONDS = 3600.0
+
+# A gap this long or longer between successive PROCEEDING calls resets the
+# "continuous activity" streak used by the mandatory-rest rule. Not exposed
+# as an env var — the dispatch that introduced this module called out only
+# the 20-minute streak limit and the 3-minute rest duration as configurable.
+ACTIVITY_GAP_RESET_SECONDS = 120.0
+
+# Hosts to exclude from the request count even though some can appear on
+# 104 pages: third-party analytics/embeds, not 104's own traffic. Matched
+# against the request's hostname (not the full URL) as a substring.
+_THIRD_PARTY_HOST_MARKERS = (
+    "google-analytics", "googletagmanager", "doubleclick", "clarity.ms",
+    "bing", "facebook", "scarabresearch", "hotjar", "youtube", "vimeo",
+    "gstatic", "googleapis",
+)
+
+
+def is_countable_request(url: str) -> bool:
+    """A request counts toward the hourly budget iff it's to a 104.com.tw
+    host and not one of the third-party markers above. uts.104.com.tw
+    (measured at 38% of observed image traffic) is 104's own beacon host
+    and DOES count — it isn't in the exclusion list and shouldn't be
+    added to it just because it looks analytics-shaped.
+    """
+    hostname = urlparse(url).hostname or ""
+    if not hostname.endswith("104.com.tw"):
+        return False
+    return not any(marker in hostname for marker in _THIRD_PARTY_HOST_MARKERS)
+
+
+@dataclass
+class ThrottleState:
+    """Per-session throttling bookkeeping. One instance lives on each
+    SessionInfo (browser/session.py), created lazily via its default
+    factory so a session that never calls a tool costs nothing extra.
+
+    request_timestamps: epoch-second floats, counted toward the rolling
+        hourly budget. In production populated by note_request (API-client
+        traffic) — the only source of counted requests as of the JSON-API
+        messaging migration, since all eight tools now go through
+        guarded_api. attach_request_counter's live browser "request"
+        listener (page-navigation traffic) is a SECOND source this
+        dataclass still supports, but its only caller (guarded_page) has no
+        tool call site any more (see guarded_page's own docstring in
+        tools/helpers.py) — so in practice, today, only one source is ever
+        live on a session. Both would use real time.time() values if both
+        fired; tests populate this directly with fake-clock values instead
+        — never mix real and fake clocks within one instance, or the
+        rolling-window pruning compares them against each other.
+    last_request_logged_at: set by note_request only, used only to log the
+        observed inter-call interval — kept separate from
+        last_call_finished_at (below), which drives the pacing floor and is
+        committed at a different point in the call (before the request is
+        issued, not after note_request runs).
+    """
+    request_timestamps: deque[float] = field(default_factory=deque)
+    last_call_finished_at: float | None = None
+    activity_streak_start: float | None = None
+    last_action_at: float | None = None
+    resting_until: float | None = None
+    counter_attached: bool = False
+    last_request_logged_at: float | None = None
+
+
+@dataclass(frozen=True)
+class ThrottleDecision:
+    proceed: bool
+    wait_seconds: float = 0.0
+    reason: str = ""  # "" | "rest" | "budget" | "pacing" — meaningful only when proceed is False
+
+
+def evaluate(
+    state: ThrottleState,
+    *,
+    now: float,
+    max_requests_per_hour: int,
+    max_inline_wait_seconds: float,
+    activity_streak_limit_seconds: float,
+    rest_duration_seconds: float,
+    min_call_interval_seconds: float,
+) -> ThrottleDecision:
+    """Pure decision function — no sleeping, no I/O. Mutates `state` only
+    when it commits to a verdict (a rejected call leaves state exactly as
+    it found it, except for entering a fresh rest period, which IS the
+    verdict). Deterministic given `now`, which is the whole point: tests
+    inject it and never need a real clock or real sleep.
+    """
+    # 1. Already resting from an earlier mandatory-rest trigger?
+    if state.resting_until is not None:
+        if now < state.resting_until:
+            return ThrottleDecision(False, state.resting_until - now, "rest")
+        # Rest served. Streak starts clean; last_call_finished_at is left
+        # alone deliberately — a 3-minute rest trivially satisfies any
+        # pacing gap, so step 4 below computes wait=0 for the first
+        # post-rest call either way.
+        state.resting_until = None
+        state.activity_streak_start = None
+        state.last_action_at = None
+
+    # 2. Would this call push continuous activity past the streak limit?
+    # Checked before the budget check: if both would fire, the Agent
+    # should hear the (shorter, more specific) rest wait once, not the
+    # budget wait now and the rest wait on its very next retry.
+    gap = now - state.last_action_at if state.last_action_at is not None else None
+    streak_start = now if (gap is None or gap >= ACTIVITY_GAP_RESET_SECONDS) else (state.activity_streak_start or now)
+    if (now - streak_start) >= activity_streak_limit_seconds:
+        state.resting_until = now + rest_duration_seconds
+        state.activity_streak_start = None
+        # last_action_at intentionally NOT advanced — this call was
+        # rejected, not performed.
+        return ThrottleDecision(False, rest_duration_seconds, "rest")
+
+    # 3. Hourly request budget, rolling window.
+    cutoff = now - REQUEST_WINDOW_SECONDS
+    while state.request_timestamps and state.request_timestamps[0] <= cutoff:
+        state.request_timestamps.popleft()
+    if len(state.request_timestamps) >= max_requests_per_hour:
+        oldest = state.request_timestamps[0]
+        wait = max(0.0, oldest + REQUEST_WINDOW_SECONDS - now)
+        return ThrottleDecision(False, wait, "budget")
+
+    # 4. Inter-action pacing: a FLOOR, not a drawn distribution — see the
+    # module docstring for why a floor (leaving the caller's own timing
+    # variance intact) is the opposite of, and preferred over, a
+    # manufactured delay shape.
+    if state.last_call_finished_at is None:
+        pacing_wait = 0.0  # first call of the session — nothing to pace against
+    else:
+        elapsed = now - state.last_call_finished_at
+        pacing_wait = max(0.0, min_call_interval_seconds - elapsed)
+
+    if pacing_wait > max_inline_wait_seconds:
+        # Too long to sleep inside a tool call without risking the MCP
+        # client's own timeout (a tool call already takes 15-25s; adding
+        # an 87s sleep on top of that would make the client report the
+        # call as failed while the work continued server-side — this
+        # already happened once with read_messages). Defer instead of
+        # blocking: state is untouched, so re-evaluating at retry time
+        # recomputes from scratch.
+        return ThrottleDecision(False, pacing_wait, "pacing")
+
+    # Proceeding. Commit bookkeeping at the point the action will actually
+    # happen (now + whatever inline wait the caller is about to sleep).
+    effective_now = now + pacing_wait
+    state.activity_streak_start = streak_start
+    state.last_action_at = effective_now
+    state.last_call_finished_at = effective_now
+    return ThrottleDecision(True, pacing_wait, "")
+
+
+async def _sleep(seconds: float) -> None:
+    """Indirection around asyncio.sleep so tests can neutralize JUST this
+    module's inline waits via monkeypatch("mcp104.browser.throttle._sleep", ...).
+
+    Patching "mcp104.browser.throttle.asyncio.sleep" instead would look
+    module-scoped but isn't: `throttle.py` does `import asyncio` (the
+    module object, not a copy), so mcp104.browser.throttle.asyncio IS
+    sys.modules["asyncio"] — patching its .sleep attribute mutates the
+    ONE global asyncio module for the whole process, silently breaking
+    asyncio.sleep(0.01)-as-a-yield-point everywhere else (including test
+    code that relies on it to let a concurrently-scheduled task run at
+    all). This function exists specifically so patching stays scoped to
+    calls made through it.
+    """
+    await asyncio.sleep(seconds)
+
+
+def _retry_after_payload(wait_seconds: float) -> dict:
+    n = max(1, round(wait_seconds))
+    return {
+        "error": f"為避免觸發 104 的機器人偵測，請於 {n} 秒後再試",
+        "retry_after_seconds": n,
+    }
+
+
+async def enforce_throttle(
+    state: ThrottleState,
+    *,
+    max_requests_per_hour: int,
+    max_inline_wait_seconds: float,
+    activity_streak_limit_minutes: float,
+    rest_duration_minutes: float,
+    min_call_interval_seconds: float,
+    now_fn=time.time,
+) -> dict | None:
+    """Async boundary around evaluate(): performs the actual inline sleep
+    (only ever a real sleep in production — now_fn is the injection point
+    tests use instead) and turns a deferred verdict into the retry-after
+    payload guarded_page/guarded_api return to the Agent via ToolAbort.
+
+    Returns None to mean "proceed, already paced" — never raises.
+    """
+    decision = evaluate(
+        state,
+        now=now_fn(),
+        max_requests_per_hour=max_requests_per_hour,
+        max_inline_wait_seconds=max_inline_wait_seconds,
+        activity_streak_limit_seconds=activity_streak_limit_minutes * 60,
+        rest_duration_seconds=rest_duration_minutes * 60,
+        min_call_interval_seconds=min_call_interval_seconds,
+    )
+    if not decision.proceed:
+        log.warning(
+            "throttle: deferring call, reason=%s wait_seconds=%.1f",
+            decision.reason, decision.wait_seconds,
+        )
+        return _retry_after_payload(decision.wait_seconds)
+
+    if decision.wait_seconds > 0:
+        await _sleep(decision.wait_seconds)
+    return None
+
+
+def attach_request_counter(context: BrowserContext, state: ThrottleState) -> None:
+    """Idempotent per BrowserContext (guarded by state.counter_attached —
+    guarded_page WOULD call this on every tool call, not just the first, if
+    it had a caller).
+
+    ★ Has NO caller as of the JSON-API messaging migration — its only
+    caller is guarded_page (tools/helpers.py), which itself has no tool
+    call site any more (see that function's own docstring for why it is
+    kept rather than deleted this cycle). This function is therefore dead
+    in production today, same as guarded_page and browser/session.py's
+    random_delay, and for the identical reason: removing an unexercised
+    piece of the pre-migration guard before its replacement has been
+    verified live would invert the safe order. A removal candidate once
+    that verification passes.
+
+    Attached at the BROWSER CONTEXT level rather than per-page so it keeps
+    counting across new tabs opened within the same session — the
+    measured recording this module is based on used 2 tabs. Uses a real
+    "request" event listener, not add_init_script: patchright silently
+    no-ops add_init_script under its stealth configuration, so only
+    listener-based counting is reliable here.
+    """
+    if state.counter_attached:
+        return
+
+    def _on_request(request: Request) -> None:
+        if is_countable_request(request.url):
+            state.request_timestamps.append(time.time())
+
+    context.on("request", _on_request)
+    state.counter_attached = True
+
+
+def note_request(state: ThrottleState, *, now_fn=time.time) -> None:
+    """Count one API request toward the rolling-window volume cap, and log
+    the interval observed since the previous call on this session.
+
+    Called once per call from guarded_api (tools/helpers.py), regardless
+    of whether that call ultimately succeeds — attach_request_counter's
+    browser "request" listener cannot observe aiohttp traffic at all, so
+    without this the hourly window would count zero requests while 104
+    received every one the session actually made.
+
+    The logged interval is this module's own self-check, at zero
+    production cost: the interval floor's justification rests on the
+    assumption that caller-driven call timing varies naturally (inference
+    time varies with output length, and the Agent reads results before
+    deciding what to call next). The case that would falsify it is
+    parallel tool calls landing in one turn — the session lock serialises
+    them, so they would arrive back-to-back and the logged interval would
+    reflect the lock's queue rather than the caller's own rhythm. Nothing
+    reacts to the logged value automatically; it exists to be read later.
+    """
+    now = now_fn()
+    if state.last_request_logged_at is not None:
+        log.info(
+            "throttle: observed inter-call interval=%.2fs",
+            now - state.last_request_logged_at,
+        )
+    state.last_request_logged_at = now
+    state.request_timestamps.append(now)

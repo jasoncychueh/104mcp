@@ -1,0 +1,24 @@
+{
+  "captured_at": "2026-08-14T12:29:32",
+  "note": "Family A with a valid session and a site-root Referer, on closed job 14832961: HTTP 404 + JSON, DATA_NOT_FOUND / 此職務已關閉. This is the 404-with-JSON shape, whose cause is a closed job rather than a stale identifier.",
+  "request_url": "https://vip.104.com.tw/api/match/matchResult?jobno=14832961",
+  "request_headers_sent": {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Accept-Encoding": "gzip, deflate, br, zstd",
+    "Accept": "*/*",
+    "Connection": "keep-alive",
+    "Referer": "https://vip.104.com.tw/",
+    "Cookie": "<redacted -- was a live session cookie, see redact_fixtures.py>"
+  },
+  "http_status": 404,
+  "content_type": "application/json; charset=utf-8",
+  "body_bytes": 140,
+  "body_text": "{\n    \"status\": \"DATA_NOT_FOUND\",\n    \"message\": \"此職務已關閉\",\n    \"result\": null,\n    \"url\": \"\\/match\\/jobList\",\n    \"data\": null\n}",
+  "body_json": {
+    "status": "DATA_NOT_FOUND",
+    "message": "此職務已關閉",
+    "result": null,
+    "url": "/match/jobList",
+    "data": null
+  }
+}

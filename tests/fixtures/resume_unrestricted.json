@@ -1,0 +1,441 @@
+{
+  "data": {
+    "error": null,
+    "resume": {
+      "achievement": {
+        "layout": "1",
+        "display": 1,
+        "list": [
+          {
+            "title": "Intel® Arc™ Pro Graphics - Windows*",
+            "sort": "1",
+            "desc": "<p>WorkStation optimized Graphics Driver for CS25 MWS projects</p><p>&amp; Benefits for WSTN driver </p>",
+            "start": "2024/07",
+            "end": "2025/08",
+            "finish": "1",
+            "url": "https://www.intel.com/content/www/us/en/download/741626/intel-arc-pro-graphics-windows.html",
+            "file": {
+              "type": 1,
+              "url": "https://asset.vip.104.com.tw/download/webImg/v/SYNTHETIC%3An4pELhWzjdojDIzoHqO1KYE5bwXMl2sPcczdte27qCWRUw4y",
+              "thumbnailUrl": "https://asset.vip.104.com.tw/download/webImg/v/SYNTHETIC%3Afhx0lp6izUz99IZYlV0qmKOLE4wMSkmg0YafirDoEFgd18Hz"
+            }
+          },
+          {
+            "title": "How to implement \u000bthe WSTN driver  for MWS projects?",
+            "sort": "2",
+            "desc": "<p>1.Provide 4ID for Intel GFX team or CE</p><p>2.Pick up the WSTN driver from Intel CE</p><p>3.Check Driver's Base INF whether has four ID</p>",
+            "start": "2024/07",
+            "end": "2025/05",
+            "finish": "1",
+            "url": "",
+            "file": {
+              "type": 1,
+              "url": "https://asset.vip.104.com.tw/download/webImg/v/SYNTHETIC%3Af41MwAQRr41gIN1GMgj4TCq6QLx4coFxGysrZgaNerROfSfx",
+              "thumbnailUrl": "https://asset.vip.104.com.tw/download/webImg/v/SYNTHETIC%3Ab0tlz3HV1jBtXY3WFdp039DVaOyQaxWkhdA1o5dkpUEjN2Gx"
+            }
+          },
+          {
+            "title": "VGA, Dock/Dongle & Monitor\u000bIssues Analysis",
+            "sort": "3",
+            "desc": "<p>(1)Firstly, check which Dock model uses(TBT4/TBT5 or USB-C Travel Dock, etc.) and Dependency on the specific Monitor or not</p><p>(2)Which log should be collected, btw the better is to provide PASS &amp; FAIL logs both for issue comparison</p><p>(3)Discuss with Dock team about AUX log, and confirm Intel when handing over to Dock/Dongle tor Monitor side with comparing results belong to debug process</p><p>(4)Finally, according to the comparison data, AUX log analysis from Dock team, and Intel team check as well to find out the corresponding component owner</p>",
+            "start": "2023/06",
+            "end": "",
+            "finish": "",
+            "url": "",
+            "file": {
+              "type": 1,
+              "url": "https://asset.vip.104.com.tw/download/webImg/v/SYNTHETIC%3AeQZdSdcEbltLwQBPP1aLwF1yq6uLGrlZfFGSuBh4amIyXHlk",
+              "thumbnailUrl": "https://asset.vip.104.com.tw/download/webImg/v/SYNTHETIC%3AriVcgzri4C4Mm1KEZRs4fUXJtEgYegZyMwkvLgTlvwxL7UDc"
+            }
+          },
+          {
+            "title": "GbE(NVM):\u000b What data should be included in .BIN file?",
+            "sort": "4",
+            "desc": "<p>HWID &amp; LAN LED lighting &amp; Checksum for Win11 NetCx driver,</p><p>or Company Tracking Data</p>",
+            "start": "2023/06",
+            "end": "2025/05",
+            "finish": "1",
+            "url": "",
+            "file": {
+              "type": 1,
+              "url": "https://asset.vip.104.com.tw/download/webImg/v/SYNTHETIC%3ABg5CdRyzy2EUFEMHyWlk2svTNchNqCQE5xrboHUblyi7bYfp",
+              "thumbnailUrl": "https://asset.vip.104.com.tw/download/webImg/v/SYNTHETIC%3AmeEBhcIs4BDkRndeZUImVJUDzEcaeQ3YNXMD57Y9sPG8SoxT"
+            }
+          }
+        ]
+      },
+      "addressDesc": "825 測試市資料區自由路***",
+      "age": 40,
+      "areaDesc": "新北市中和區",
+      "auto": "<p>       貴公司您好，我叫邱文家，水瓶座A型，樂觀隨和。父母從小循循善誘，養成我積極負責的態度，樂於學習分享、自溝通起做到情商管理，培養良好的職場人際關係。我從資工系畢業，主修程式語言(C/C++)和學習電腦相關理論，期間也考取到乙級電腦軟體應用證照，平時會涉獵科技與本職知識；這些皆有助於職能更加精進。</p><p>       任職十四年期間加入27個專案(平均一年2個)，從中累積豐富經驗；工作涵蓋Driver/OS/Microsoft Certification for WHLK/JumpStart(ADK)，每年提升Issue Analyze and Debug能力積累，經數據收集到前期敏感度察覺、透過實驗驗證或比較同質性專案之差異等方法，找出問題偕同3rd Party廠商解決。開發階段(NPI/FVT~SIT)多點壓力是必然的，時刻持有樂觀積極心態：正視它尋求解決方法、團隊溝通合作，最後檢討改進(覆盤)。還有更多專案中遇到的實例與經驗，面談時再多加說明.......</p><p>       對於電腦軟韌體應用(分析/除錯)，秉持持續精進的企圖心，全力以赴完成專案之交付。 誠摯地感謝，主管和人資單位閱讀我的履歷，希望未來有機會發揮所長為公司團隊夥伴們達成目標！</p>",
+      "autoEng": "",
+      "attachArr": [
+        {
+          "title": "Synthetic Portfolio Attachment",
+          "type": 2,
+          "link": "https://docs.example.com/presentation/d/ecipp5l498um61cpzakgj6nzh7el",
+          "sort": 1,
+          "filename": "docs.example.com/presentation/d/ecipp5l498um61cpzakgj6nzh7el",
+          "preview": null
+        }
+      ],
+      "layoutMenu": "info,education,experience,jobCondition,language,skill,certificate,bio,portfolio,project",
+      "layoutBasic": "9",
+      "layoutSkill": "1",
+      "layoutEducation": "1",
+      "layoutExpJob": "1",
+      "layoutLanguageSkill": "1",
+      "layoutSearch": "1",
+      "layoutCertificate": "1",
+      "layoutAchievement": "1",
+      "layoutPortfolio": "2",
+      "layoutReferral": "1",
+      "background": {
+        "type": 0,
+        "url": null,
+        "thumbnailStatus": 0,
+        "thumbnailUrl": null,
+        "color": "#ffffff"
+      },
+      "summaryDisplay": [
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "basicData": "75年次",
+      "callTimeDesc": "上班日午休，09:00~20:00",
+      "careerSkillDescForMaster": "",
+      "talentDesc": "",
+      "characteristic": "大學主修C/C++、2016年優秀個人獎、27個NB專案經驗、負責VGA和Audio(SndW架構)、創新提案8個通過2個、分享超過12個Course/Topic",
+      "compendium": 0,
+      "customContent": {
+        "display": 0,
+        "list": []
+      },
+      "customResume": {
+        "birthYear": "1986",
+        "cellphone": null,
+        "certifications": {
+          "list": [
+            {
+              "category": "勞動部勞動力發展署技能檢定中心",
+              "categoryNo": "4002037000",
+              "name": "乙級電腦軟體應用技術士",
+              "issuingAuthority": "勞動部勞動力發展署技能檢定中心",
+              "no": "",
+              "score": "",
+              "link": "",
+              "obtainDate": "",
+              "expireDate": ""
+            }
+          ],
+          "other": ""
+        },
+        "characteristic": [
+          "大學主修C/C++",
+          "2016年優秀個人獎",
+          "27個NB專案經驗",
+          "負責VGA和Audio(SndW架構)",
+          "創新提案8個通過2個",
+          "分享超過12個Course/Topic"
+        ],
+        "disRoleDesc": [],
+        "disTool": [
+          ""
+        ],
+        "driverLicenseDesc": [
+          "普通重型機車駕照",
+          "普通小型車駕照"
+        ],
+        "height": null,
+        "indCatNoDesc": [
+          "電腦軟體服務業",
+          "其它軟體及網路相關業"
+        ],
+        "jobCatNoDesc": [
+          "軟體工程師",
+          "軟韌體測試工程師",
+          "FAE工程師"
+        ],
+        "jobTimePeriod": [
+          "日班"
+        ],
+        "otherTimePeriod": null,
+        "remoteWork": 0,
+        "roleDesc": [
+          "全職"
+        ],
+        "roleStatusDesc": [],
+        "subCellphone": null,
+        "tel": null,
+        "telArea": null,
+        "transportsIdDesc": [
+          "普通重型機車"
+        ],
+        "wcityNoDesc": [
+          "新北市板橋區",
+          "新北市中和區",
+          "新北市土城區"
+        ],
+        "weight": null,
+        "workShift": false,
+        "languageList": [
+          {
+            "languageDesc": "中文",
+            "listening": "精通",
+            "speaking": "精通",
+            "reading": "精通",
+            "writing": "精通"
+          },
+          {
+            "languageDesc": "英文",
+            "listening": "中等",
+            "speaking": "中等",
+            "reading": "中等",
+            "writing": "中等"
+          }
+        ],
+        "locallanList": [
+          {
+            "languageDesc": "台語",
+            "level": "中等"
+          }
+        ]
+      },
+      "detailExpDesc": "",
+      "degreeLevelDesc": [
+        "大學",
+        "高中"
+      ],
+      "degreeStatusDesc": [
+        "畢業",
+        "畢業"
+      ],
+      "disRoleDesc": "",
+      "disTool": "",
+      "driverLicenseDesc": "普通重型機車駕照、普通小型車駕照",
+      "eduDesc": "大學畢業 立德大學 資訊工程系",
+      "eduOutput": [
+        "立德大學 資訊工程系(2005/09 ~ 2010/06畢業)",
+        "南山中學 普通科(2001/09 ~ 2004/06畢業)"
+      ],
+      "eduEnd": [
+        "20100601",
+        "20040601"
+      ],
+      "eduStart": [
+        "20050901",
+        "20010901"
+      ],
+      "email": "07ukvrixa5@example.net",
+      "engName": "SYNTH, PO-WEN",
+      "expCatTimeDesc": [
+        {
+          "expCatDesc": "系統分析師",
+          "expTimeDesc": "14~15年"
+        },
+        {
+          "expCatDesc": "軟體工程師",
+          "expTimeDesc": "1~2年"
+        },
+        {
+          "expCatDesc": "軟韌體測試工程師",
+          "expTimeDesc": "1年(含)以下"
+        }
+      ],
+      "expJobArr": [
+        {
+          "coSizeDesc": "500人以上",
+          "companyVisibility": true,
+          "expEnd": "1900/01/01",
+          "expEndDesc": "仍在職",
+          "expFirm": "香港商聯寶電腦有限公司台灣分公司",
+          "expFirmLogo": "https://static.104.com.tw/b_profile/cust_picture/5952/130000000005952/logo.gif?v=20260223120034",
+          "expIndDesc": "電腦及其週邊設備製造業",
+          "expJobDesc": "系統分析師",
+          "expJobNote": "<p>Issue Analyze </p><p>Co-work with collaboration</p><p>(MS, Intel/AMD and 3rd party vendor)</p><p>New Technology Study &amp; Personal Sharing</p>",
+          "expJobSkill": [
+            "系統整合分析",
+            "軟體工程系統開發"
+          ],
+          "expJobSkillDesc": "系統整合分析,軟體工程系統開發",
+          "expManagementDesc": null,
+          "expPeriod": "2012/08",
+          "expStart": "2012/08/01",
+          "expTitle": "軟體應用工程師",
+          "expWage": "70213",
+          "expWageDesc": "月薪70,213元/年薪1,095,310元",
+          "expWageTypeDesc": "月薪",
+          "expWageYear": "1095310"
+        },
+        {
+          "coSizeDesc": "500人以上",
+          "companyVisibility": true,
+          "expEnd": "2012/07/01",
+          "expEndDesc": "1年1個月",
+          "expFirm": "仁寶電腦工業股份有限公司",
+          "expFirmLogo": "https://static.104.com.tw/b_profile/cust_picture/5000/21222725000/logo.jpg?v=20260813112849",
+          "expIndDesc": "電腦及其週邊設備製造業",
+          "expJobDesc": "軟體工程師",
+          "expJobNote": null,
+          "expJobSkill": null,
+          "expJobSkillDesc": null,
+          "expManagementDesc": null,
+          "expPeriod": "2011/07~2012/07",
+          "expStart": "2011/07/01",
+          "expTitle": "軟體應用工程師",
+          "expWage": null,
+          "expWageDesc": null,
+          "expWageTypeDesc": null,
+          "expWageYear": null
+        },
+        {
+          "coSizeDesc": "500人以上",
+          "companyVisibility": true,
+          "expEnd": "2011/06/01",
+          "expEndDesc": "2個月",
+          "expFirm": "和碩集團_和碩聯合科技股份有限公司",
+          "expFirmLogo": "https://static.104.com.tw/b_profile/cust_picture/5000/28689155000/logo.png?v=20260812141226",
+          "expIndDesc": "電腦及其週邊設備製造業",
+          "expJobDesc": "軟韌體測試工程師",
+          "expJobNote": null,
+          "expJobSkill": null,
+          "expJobSkillDesc": null,
+          "expManagementDesc": null,
+          "expPeriod": "2011/05~2011/06",
+          "expStart": "2011/05/01",
+          "expTitle": "軟體測試工程師",
+          "expWage": null,
+          "expWageDesc": null,
+          "expWageTypeDesc": null,
+          "expWageYear": null
+        }
+      ],
+      "expPeriodDesc": "14~15年工作經驗",
+      "hiddenIndSet": [
+        2,
+        2,
+        2
+      ],
+      "hopeSalaryDesc": "面議",
+      "hunterStatus": null,
+      "idNo": "1725089703433",
+      "indCatNoDesc": "電腦軟體服務業、其它軟體及網路相關業",
+      "introduction": "<p>Band 7(主管工程師/非管理職) in Driver/OS team</p><p>14 years during SA careers for 27 NB projects</p><p>FY2016 RD Personal Award</p><p>Computer Science and Information Engineering</p><p>*Majoring in C/C++ of Programming Language</p><p><br /></p><p>Work Experience:</p><p>VGA/Audio(Realtek/ISST/Dolby)/Camera Driver</p><p>Intel &amp; AMD Platform Drivers</p><p>Others I/D Device Driver/Ethernet Driver/GbE FW</p><p>(Multicard/TouchPad/FPR/SMC/WinTab/NFC)</p><p>JumpStart/ADK &amp; WHLK(System Certificate by Microsoft)</p><p>COPM(iMEI/DPTF/SIO/NFC/TXT/HID)</p><p>Battery Life &amp; Performance</p>",
+      "isContact": false,
+      "isDis": "0",
+      "isDuplicateApply": false,
+      "isHalfShow": 0,
+      "isSave": false,
+      "jobCatNoDesc": "軟體工程師、軟韌體測試工程師、FAE工程師",
+      "jobName": null,
+      "jobNo": null,
+      "motto": "",
+      "major": [
+        "資訊工程系",
+        "普通科"
+      ],
+      "majorCatDesc": [
+        "資訊工程相關",
+        "普通科"
+      ],
+      "military": "1",
+      "militaryStatus": "役畢",
+      "militaryDesc": "役畢 (2011/03)",
+      "militaryExit": "2011/03",
+      "nationality": "",
+      "otherCourse": [],
+      "pId": "1858965",
+      "pcskillDescForMaster": "",
+      "proDesc2": "",
+      "personalPage": [],
+      "personalPic": "https://asset.vip.104.com.tw/download/webHeadShot?v=SYNTHETIC%3AvKK3z7lyIRMRI6l2MPFTbraKZhWEw2kabSQPYhBJcFwcxTQmY38epRRIXG8o7IeV",
+      "phone": {
+        "company": "",
+        "home": "08-3462-6722",
+        "mobile1": "0910-812-605",
+        "mobile2": ""
+      },
+      "phoneDescAll": "0938-528-196",
+      "plastActionDateDesc": "1天內曾瀏覽工作",
+      "postNum": "235",
+      "readStatus": false,
+      "recentJobDesc": "香港商聯寶電腦有限公司台灣分公司 軟體應用工程師",
+      "recommendArr": null,
+      "remark": [],
+      "remoteWork": 0,
+      "resumeStatus": "on",
+      "resumeType": "1",
+      "resumeVersion": "2",
+      "roleDesc": "全職",
+      "roleStatusDesc": "",
+      "roleNowDesc": "仍在職",
+      "schoolCountryDesc": [
+        "台灣",
+        "台灣"
+      ],
+      "schoolName": [
+        "立德大學",
+        "南山中學"
+      ],
+      "sex": 1,
+      "sexDesc": "男",
+      "specialty": [
+        {
+          "skill": "系統分析和軟體實驗驗證",
+          "desc": "<p><span style=\"background-color:rgb(255,255,255);\">Issue Analyze for VGA, Audio, Camera Driver, Others I/O Device Driver, Ethernet Driver &amp; GbE FW, Intel &amp; AMD Platform Drivers</span></p><p><span style=\"background-color:rgb(255,255,255);\"> </span></p><p><span style=\"background-color:rgb(255,255,255);\">OS and Microsoft Certification Debug：</span></p><p><span style=\"background-color:rgb(255,255,255);\">JumpStart/ADK(MS Performance/Battery Life Assessment)</span></p><p><span style=\"background-color:rgb(255,255,255);\">WHLK issue debug(MS Certificatation)</span></p><p><span style=\"background-color:rgb(255,255,255);\">Stress issue(S0i3/S4/S5/Restart) like BSOD/Black Screen/Device Lost debug</span></p><p><span style=\"background-color:rgb(255,255,255);\">Factory issue analyze and debug(AFT/Runin/OBE)</span></p><p><span style=\"background-color:rgb(255,255,255);\"> </span></p><p><span style=\"background-color:rgb(255,255,255);\">OS/Programming and Debug Experience：</span></p><p><span style=\"background-color:rgb(255,255,255);\">WIN10/11、C/C++、WinDbg(OS)、Driver Log tracing and Compare experiments、ADK WPA(MS Performance Analyze tool)</span></p>#C #C++ #Windows 10 #Windows 11"
+        }
+      ],
+      "startDateOptionDesc": "錄取後一個月可上班",
+      "studyStatusDesc": [
+        "",
+        ""
+      ],
+      "switchDate": "20260803",
+      "switchStatus": "2",
+      "switchStatusView": "1",
+      "titleCat": "軟體應用工程師",
+      "titleCatDesc": "軟體應用工程師",
+      "transportsIdDesc": "普通重型機車",
+      "updateDateDesc": "2026/08/11 22:46",
+      "updateDayDesc": "2026/08/11",
+      "userName": "邱文家",
+      "versionNo": "20121215000000",
+      "wcityNoDesc": "新北市板橋區、新北市中和區、新北市土城區",
+      "workDesc": "<p>主要做筆電系統分析與OS/Driver相關實驗驗證，專案多為Intel平台也有一年AMD(Gorgon Point)平台經驗，大學主修C/C++程式語言有計算機概論及程式設計觀念。</p>",
+      "workIntervalDescAll": "日班",
+      "contactPrivacy": "public",
+      "documentSnapshotId": [],
+      "latestMemo": null,
+      "hasInRecruitFlow": false,
+      "isTalent50": false,
+      "talent50Recommends": [],
+      "talent50Token": null
+    },
+    "browseLimit": {
+      "resumeMax": 300,
+      "onThatDayCount": 13
+    },
+    "hasOnJob": true,
+    "jobNo": null,
+    "nccLogBaseData": {
+      "ext": {
+        "Buserid": "900000000000000001",
+        "custno": "99999999000",
+        "custType": "",
+        "pid": 90000001
+      }
+    },
+    "isHunterOrDispatch": false,
+    "companyName": "測試市科技股份有限公司",
+    "userName": "林翊雅",
+    "resumeTemplate": "1",
+    "resumeFitnessReportInfo": {
+      "switch": true,
+      "url": "https://pro.104.com.tw/asm/api/privip/auth/vip_result?idno=1725089703433&pid=1858965&custno=99999999000&industry_id=1001006002&position_id=1&has_testing=0&manage_pid=90000001"
+    }
+  },
+  "metadata": {}
+}

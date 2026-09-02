@@ -1,0 +1,23 @@
+{
+  "captured_at": "2026-08-14T12:29:23",
+  "note": "Family A with a valid session but NO Referer header: HTTP 200, status ACCESS_DENIED, 'invalid referer'. Referer is required on this route and on no other route measured.",
+  "request_url": "https://vip.104.com.tw/api/match/matchResult?jobno=14832961",
+  "request_headers_sent": {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Accept-Encoding": "gzip, deflate, br, zstd",
+    "Accept": "*/*",
+    "Connection": "keep-alive",
+    "Cookie": "<redacted -- was a live session cookie, see redact_fixtures.py>"
+  },
+  "http_status": 200,
+  "content_type": "application/json; charset=utf-8",
+  "body_bytes": 120,
+  "body_text": "{\n    \"status\": \"ACCESS_DENIED\",\n    \"message\": \"invalid referer\",\n    \"result\": null,\n    \"url\": \"\",\n    \"data\": null\n}",
+  "body_json": {
+    "status": "ACCESS_DENIED",
+    "message": "invalid referer",
+    "result": null,
+    "url": "",
+    "data": null
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "captured_at": "2026-08-15",
+  "note": "Reject-and-read: pId=0 (non-existent thread) + an empty POST body -- 104's own validation envelope, the third error shape (neither family A nor family B's success shape). No message was ever sent.",
+  "not_measured": "content_type was never recorded by the probe on THIS route -- assumed, matched to the one auth-host route that IS measured (failure_family_b_unauthenticated.json: 'application/json;charset=utf-8', no space after the semicolon -- the vip-host family-A fixtures write it WITH a space, and that is a different host, not evidence for this one). body_text is body_json re-serialised by this script, not 104's actual response bytes. http_status and body_json ARE measured -- see this fixture's builder (research/probes/redact_fixtures.py, build_failure_send_validation) for the full account.",
+  "http_status": 400,
+  "content_type": "application/json;charset=utf-8",
+  "body_text": "{\"code\": \"00005\", \"message\": \"帶入內容驗證失敗\", \"detail\": {\"content\": [\"The content field is required when file is not present.\"], \"file\": [\"The file field is required when content is not present.\"]}}",
+  "body_json": {
+    "code": "00005",
+    "message": "帶入內容驗證失敗",
+    "detail": {
+      "content": [
+        "The content field is required when file is not present."
+      ],
+      "file": [
+        "The file field is required when content is not present."
+      ]
+    }
+  }
+}
