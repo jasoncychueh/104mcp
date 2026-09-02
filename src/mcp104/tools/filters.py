@@ -248,8 +248,8 @@ class Condition:
     # For `value_source == "composite"` ONLY: the caller-facing dict SHAPE (field names,
     # required-ness, type) — deliberately a SEPARATE field from `value_domain`, which for
     # a composite row carries prose CAVEATS about the shape (e.g. `language`'s value
-    # domain being unmeasured beyond 1/2), not the shape itself. Conflating the two was
-    # Bug A (Round I1): `tools/discovery.py`'s `browse_filter_values` was returning
+    # domain being unmeasured beyond 1/2), not the shape itself. Conflating the two once
+    # made `tools/discovery.py`'s `browse_filter_values` return
     # `value_domain` under the key `structure`, which is dotted-key annotation prose
     # (`"month.mode"`) rather than the nested dict `validate_filters` actually requires —
     # a caller building a request FROM that payload produced an invalid dict every time.

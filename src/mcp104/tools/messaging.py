@@ -265,7 +265,7 @@ def _build_conversation_response(envelope: object) -> dict:
     warning = _more_pages_warning(
         pagination,
         # Unconditional "sort=ASC, oldest to newest" statement, never "this
-        # page is the oldest batch" (Round I1 Smell I): that claim is only
+        # page is the oldest batch": that claim is only
         # true on page 1 — on page 2 of 3 the CURRENT page is neither the
         # oldest nor the newest batch, and the old wording asserted it was
         # regardless of which page fired the warning. The actionable half
@@ -527,8 +527,8 @@ def register_messaging_tools(mcp: FastMCP):
         except Exception as exc:
             # A non-GuardAbort exception escaping guarded_api's locked
             # region (§6d) — a defensive catch-all, not a specific known
-            # failure mode: credentials come from SessionInfo.cookies
-            # (§C7), a plain attribute with nothing left to fail against
+            # failure mode: credentials come from SessionInfo.cookies,
+            # a plain attribute with nothing left to fail against
             # a dead browser. hook_completed is the ordering proof: the
             # hook runs strictly before the request, so hook_completed is
             # False only when execution never reached that point, i.e.

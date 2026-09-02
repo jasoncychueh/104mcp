@@ -76,6 +76,15 @@ REFERER_SITE_ROOT = "https://vip.104.com.tw/"
 # comment asking people not to add them.
 _ALLOWED_METHODS = frozenset({"GET", "POST"})
 
+# The only three values Endpoint.family may declare — enforced in
+# Endpoint.__post_init__, the same construction-time whitelist as
+# _ALLOWED_METHODS above. "A" and "B" dispatch classify() to the two JSON
+# envelope shapes; "non_json" names a route measured to answer outside
+# either envelope (currently only logout_session) and gets its own
+# explicit branch in classify() rather than falling through into either
+# family's shape-specific parsing.
+_ALLOWED_FAMILIES = frozenset({"A", "B", "non_json"})
+
 # 15 seconds because that was page.goto's own navigation timeout on the
 # now-removed page-navigation guard (guarded_page) this value was carried
 # over from without reason to diverge, and it is kept unchanged here for
@@ -147,11 +156,13 @@ class Endpoint:
     family: str  # "A" | "B" — dispatches classify(); "non_json" names a route measured to answer outside either JSON envelope (e.g. logout_session) — classify() is never reached for it in practice, see that endpoint's own comment
     extra_headers: tuple[tuple[str, str], ...]  # NAME/VALUE pairs sent verbatim, beyond the always-sent baseline (User-Agent, Accept-Language, Cookie)
     family_b_shape: FamilyBShape | None  # required (non-None) iff family == "B" — enforced below, not merely documented
-    throttle_gated: bool  # whether this route passes through enforce_throttle's judgment gate (tools/helpers.py's guarded_api) — every row must answer this explicitly; the sole False today is logout_session (see ENDPOINTS below and design §C8's admission criteria)
+    throttle_gated: bool  # whether this route passes through enforce_throttle's judgment gate (tools/helpers.py's guarded_api) — every row must answer this explicitly; the sole False today is logout_session (see ENDPOINTS below for why it qualifies for the exemption)
 
     def __post_init__(self) -> None:
         if self.method not in _ALLOWED_METHODS:
             raise ValueError(f"Endpoint {self.key!r}: method must be one of {sorted(_ALLOWED_METHODS)}, got {self.method!r}")
+        if self.family not in _ALLOWED_FAMILIES:
+            raise ValueError(f"Endpoint {self.key!r}: family must be one of {sorted(_ALLOWED_FAMILIES)}, got {self.family!r}")
         if self.family == "B" and self.family_b_shape is None:
             raise ValueError(f"Endpoint {self.key!r}: family 'B' requires family_b_shape")
         if self.family != "B" and self.family_b_shape is not None:
@@ -299,7 +310,7 @@ ENDPOINTS: dict[str, Endpoint] = {
         family_b_shape=FamilyBShape(is_list=True, inner_key=None),
         throttle_gated=True,
     ),
-    # ── Restore verification (§C6/§C8) ──────────────────────────────────
+    # ── Restore verification ─────────────────────────────────────────────
     #
     # verify_session: an authenticated no-op call used only to prove a
     # restored cookie jar is still alive. Route and shape are the same
@@ -324,7 +335,7 @@ ENDPOINTS: dict[str, Endpoint] = {
         throttle_gated=True,
     ),
     # logout_session: the one best-effort, fire-and-forget server-side
-    # logout request (§C6). Measured [M §8.8-4], not assumed: `GET` gets a
+    # logout request. Measured [M §8.8-4], not assumed: `GET` gets a
     # 302 (empty body) to boidc.104.com.tw, whose chain ends on an HTML
     # error page; `POST` (empty body) is 404 HTML. Neither is a JSON
     # envelope of either family, hence family="non_json" — a value
@@ -339,8 +350,11 @@ ENDPOINTS: dict[str, Endpoint] = {
     # attempt and record that we tried, not to reach a confirmed
     # server-side logout. throttle_gated=False: the sole exemption from
     # enforce_throttle's judgment gate — note_request still counts this
-    # request (the gate, not the ledger, is what's waived; see §C6/§C8 for
-    # the three admission criteria this route meets).
+    # request (the gate, not the ledger, is what's waived). This route
+    # qualifies for the exemption on its own properties: one tool call
+    # issues exactly one request, it is never retried automatically, and
+    # refusing it would leave 104's side in a state the operator does not
+    # expect (logged out there, still treated as logged in here).
     "logout_session": Endpoint(
         key="logout_session",
         host="vip",
@@ -527,15 +541,12 @@ async def fetch(
             body_bytes = await response.read()
 
     # A NEW local, body_text — never rebinding the `body` PARAMETER (the
-    # request body) to hold the response text. Round I1 Smell C: that
-    # rebinding is the identical one-slot-two-meanings shape this module's
-    # own guarded_api argues against elsewhere (hook_completed getting its
-    # own variable rather than being inferred from account_email, and the
-    # D2b ruling it cites `certified` and `echo_evidence`/
-    # `domain_completeness` for) — harmless today only because nothing
-    # after this point still needs the request body, which is exactly the
-    # kind of fact a future edit can quietly stop being true without
-    # anyone noticing the rename would then be load-bearing.
+    # request body) to hold the response text. One slot, two meanings is a
+    # shape this project avoids elsewhere for the same reason: it is
+    # harmless today only because nothing after this point still needs the
+    # request body, which is exactly the kind of fact a future edit can
+    # quietly stop being true without anyone noticing the rename would
+    # then be load-bearing.
     body_text = body_bytes.decode("utf-8", errors="replace")
     parsed_json = None
     if body_text:
@@ -616,6 +627,22 @@ def classify(endpoint: Endpoint, raw: RawResponse) -> Verdict:
 
     if endpoint.family == "A":
         return _classify_family_a(raw)
+    if endpoint.family == "non_json":
+        # In practice this branch is never reached at all: guarded_api's
+        # auth-host redirect check intercepts logout_session's 302 before
+        # classify() is ever called, and the EXPIRY_MARKER check above
+        # catches the same redirect's Location a second, independent way.
+        # It is declared anyway because classify() is called directly in
+        # tests and must not crash on a response shape its own Endpoint
+        # table admits — a non_json endpoint carries no family_b_shape
+        # (Endpoint.__post_init__ refuses one), so routing it into
+        # _classify_family_b would read that shape as None and blow up on
+        # the first attribute access. This route does not parse the
+        # response body at all: any status that reached this point without
+        # tripping the expiry or 403 checks above counts as the guard
+        # having let the request through, not as a claim that logout
+        # succeeded.
+        return Verdict(True, payload={})
     return _classify_family_b(endpoint, raw)
 
 
@@ -731,10 +758,11 @@ def _classify_family_b(endpoint: Endpoint, raw: RawResponse) -> Verdict:
         return Verdict(False, kind="malformed", detail="missing data")
     data = body["data"]
 
-    # Guaranteed non-None: Endpoint.__post_init__ refuses to construct a
-    # family-B endpoint without one, so there is no per-call default to
-    # fall back on here — an endpoint this module was never taught the
-    # shape of cannot reach this line at all.
+    # Guaranteed non-None: classify() only calls this function for
+    # family=="B" (family=="non_json" is handled by its own branch there,
+    # before this function is ever reached), and Endpoint.__post_init__
+    # refuses to construct a family-B endpoint without a family_b_shape —
+    # so there is no per-call default to fall back on here.
     shape = endpoint.family_b_shape
     if shape.is_list:
         if not isinstance(data, list):

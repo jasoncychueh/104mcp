@@ -44,8 +44,8 @@ log = logging.getLogger("104-mcp.search")
 # runtime guard here would be a second, untested place implementing the same promise
 # the test already makes).
 #
-# `_snake_case` itself is imported from tools/discovery.py, not defined here (moved,
-# Bug B, Round I1): `describe_result_fields()` must key its payload on the SAME
+# `_snake_case` itself is imported from tools/discovery.py, not defined here:
+# `describe_result_fields()` must key its payload on the SAME
 # delivered names `_convert_resume_row` below actually produces, and the only way that
 # can never drift is for both modules to call the identical function rather than two
 # independently-maintained copies of one regex.

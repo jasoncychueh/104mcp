@@ -132,25 +132,11 @@ async def test_t039_missing_browser_error_names_cause_and_location_without_a_com
         async def launch(self, **kwargs):
             raise Exception(real_playwright_error)
 
-    class _FakePlaywrightContextManager:
-        async def start(self):
-            return types.SimpleNamespace(chromium=_FakeChromium())
+    async def fake_get_playwright():
+        return types.SimpleNamespace(chromium=_FakeChromium())
 
-        async def __aenter__(self):
-            return types.SimpleNamespace(chromium=_FakeChromium())
-
-        async def __aexit__(self, *exc):
-            return False
-
-    def fake_async_playwright():
-        return _FakePlaywrightContextManager()
-
-    import patchright.async_api as patchright_async_api
-
-    monkeypatch.setattr(patchright_async_api, "async_playwright", fake_async_playwright)
     import mcp104.browser.stealth as stealth_mod
-    if hasattr(stealth_mod, "async_playwright"):
-        monkeypatch.setattr(stealth_mod, "async_playwright", fake_async_playwright)
+    monkeypatch.setattr(stealth_mod, "get_playwright", fake_get_playwright)
 
     with pytest.raises(Exception) as exc_info:
         await launch_browser()

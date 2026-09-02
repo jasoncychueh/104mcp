@@ -13,7 +13,6 @@ from mcp104.browser.throttle import (
     compact_state_file,
     enforce_throttle,
     evaluate,
-    is_countable_request,
     load_throttle_state,
     note_request,
 )
@@ -301,28 +300,6 @@ def test_early_retry_after_forced_rest_receives_the_same_refusal():
 
     assert second.proceed is False
     assert second.reason == "rest"
-
-
-# -- Request counting: host classification --------------------------------
-# (Unrelated to the pacing mechanism this feature replaces - unchanged.)
-
-def test_is_countable_request_counts_104_hosts_including_uts_beacon():
-    assert is_countable_request("https://vip.104.com.tw/search/searchResult") is True
-    # uts.104.com.tw beacons measured at 38% of observed image traffic - 104's
-    # own host, must count even though it looks analytics-shaped.
-    assert is_countable_request("https://uts.104.com.tw/beacon.gif") is True
-
-
-def test_is_countable_request_excludes_third_party_hosts():
-    assert is_countable_request("https://www.googletagmanager.com/gtm.js") is False
-    assert is_countable_request("https://www.google-analytics.com/collect") is False
-    assert is_countable_request("https://connect.facebook.net/sdk.js") is False
-    assert is_countable_request("https://static.hotjar.com/c/hotjar.js") is False
-    assert is_countable_request("https://stats.doubleclick.net/r") is False
-
-
-def test_is_countable_request_excludes_unrelated_hosts():
-    assert is_countable_request("https://example.com/") is False
 
 
 # =========================================================================

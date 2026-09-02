@@ -450,7 +450,7 @@ async def guarded_api(
         # this is the only place any aiohttp request — successful or not —
         # is ever counted. Runs unconditionally, regardless of
         # endpoint.throttle_gated: the gate above may be waived, the
-        # ledger never is (§C6/§C8) — a route exempt from the judgment
+        # ledger never is — a route exempt from the judgment
         # gate is still a real request against 104 and still belongs in
         # the rolling-window volume count and the inter-call pacing
         # anchor.

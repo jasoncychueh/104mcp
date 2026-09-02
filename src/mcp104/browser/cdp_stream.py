@@ -12,7 +12,7 @@ watchdog）為參考實作，但不是逐行照抄——座標換算改移到伺
 `page_coords()`），理由是可測試性：探針把換算寫在檢視頁的 JS 裡，沒辦法在沒有瀏覽器的
 情況下逐案驗證。
 
-四個技術約束（design.md §C4，都在探針裡實際踩過並修好）：
+四個技術約束（都在探針裡實際踩過並修好）：
 
 1. **背壓契約**：Chromium 要收到前一幀的 `Page.screencastFrameAck` 才送下一幀。每一幀
    都必須 ack；ack 是非同步送出的，其 task 必須保有強參考直到完成（見 `_track`）；不得
@@ -64,7 +64,7 @@ _SCREENCAST_PARAMS = {"format": "jpeg", "quality": 80, "maxWidth": 1600, "maxHei
 WATCHDOG_IDLE_SECONDS = 2.0
 WATCHDOG_POLL_SECONDS = 0.5
 
-# 判定成立之後串流刻意再活多久才真的關閉——見模組頂端 docstring 與 design.md §C4：
+# 判定成立之後串流刻意再活多久才真的關閉——見模組頂端 docstring：
 # 這是操作者看到完成訊息的時間窗，也是 rms/index 白畫面競態的觀察窗，也是一個安全
 # 參數（決定已登入狀態的 104 後台畫面認證完成之後還會繼續串流多久）。三個角色要求的是
 # 同一個值，所以只能縮短、不能隨手放大。
@@ -237,6 +237,12 @@ class CdpLoginStream:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._last_frame_at: float = 0.0
         self._state: str = "waiting"
+        # Dedup key for watchdog restart failures: the watchdog polls every
+        # WATCHDOG_POLL_SECONDS, so an ongoing failure (e.g. the CDP
+        # connection itself is gone) would otherwise log once per poll
+        # forever. Holds the exception's str(); reset to None on a
+        # successful restart so a later, different failure logs again.
+        self._last_watchdog_error: str | None = None
 
     @property
     def state(self) -> str:
@@ -302,15 +308,24 @@ class CdpLoginStream:
             if self._viewers and idle_for > WATCHDOG_IDLE_SECONDS:
                 try:
                     await self._restart_screencast()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    # Self-repair keeps retrying regardless (unchanged
+                    # behavior) — logged so a persistent failure is
+                    # visible somewhere, deduped on the exception text so
+                    # a stuck condition logs once, not once per poll.
+                    detail = str(exc)
+                    if detail != self._last_watchdog_error:
+                        log.warning("cdp_stream: watchdog restart_screencast failed: %s", detail)
+                        self._last_watchdog_error = detail
+                else:
+                    self._last_watchdog_error = None
                 # 不論 restart 是否真的成功送出，都往後推一次時間戳——避免緊接著
                 # 下一輪又立刻判定「還是逾時」而連續重啟；如果這次真的沒有生效，下一個
                 # WATCHDOG_IDLE_SECONDS 視窗會再試一次，不會卡死在密集重試迴圈裡。
                 self._last_frame_at = self._loop.time()
 
     async def start(self) -> None:
-        self._loop = asyncio.get_event_loop()
+        self._loop = asyncio.get_running_loop()
         self._last_frame_at = self._loop.time()
         self._cdp = await self._page.context.new_cdp_session(self._page)
         await self._cdp.send("Page.enable")
@@ -321,9 +336,13 @@ class CdpLoginStream:
     async def stop(self) -> None:
         """冪等。第一步是取消 watchdog（收尾順序是背壓約束的一部分——見模組頂端
         docstring 約束 1）：watchdog 隨時可能正停在「判定太久沒有新幀」與「送出那對
-        CDP 呼叫」之間，若排空還在飛的 ack 排在取消之前，那對呼叫就可能在 `stop()`
+        CDP 呼叫」之間，若排空還在飛的 ack 排在取消之前,那對呼叫就可能在 `stop()`
         已經回傳之後才送達一顆已完成認證的瀏覽器上。取消排在最前面，這個競態就不存在，
-        而不是變得罕見。"""
+        而不是變得罕見。
+
+        最後一步關閉所有已註冊的檢視者 sink（各自吞例外——一個檢視者連線已經死了不該
+        擋住其餘檢視者被關閉，也不該讓 `stop()` 本身失敗），再清空註冊表：這顆物件的
+        生命週期結束時，沒有任何檢視者連線應該繼續掛著。"""
         if self._state == "closed":
             return
         self._state = "closed"
@@ -345,6 +364,13 @@ class CdpLoginStream:
             except Exception:
                 pass
 
+        for sink in list(self._viewers):
+            try:
+                await sink.close()
+            except Exception:
+                pass
+        self._viewers.clear()
+
     async def refresh_for_new_viewer(self) -> None:
         """檢視者連上時重啟一次串流（一對 `stopScreencast`/`startScreencast`），讓那位
         檢視者立刻拿到一張新畫面——受控頁面若在第一個檢視者連上之前就已載入完成、之後
@@ -354,8 +380,11 @@ class CdpLoginStream:
             return
         try:
             await self._restart_screencast()
-        except Exception:
-            pass
+        except Exception as exc:
+            # One-off (not polled like the watchdog), so no dedup needed —
+            # log every occurrence; self-repair behavior is unchanged, this
+            # only makes a failure visible instead of silently swallowed.
+            log.warning("cdp_stream: refresh_for_new_viewer restart_screencast failed: %s", exc)
 
     def mark_completed(self) -> None:
         """同步（沒有 `await`）——這個物件唯一的狀態寫入點：把 `state` 由

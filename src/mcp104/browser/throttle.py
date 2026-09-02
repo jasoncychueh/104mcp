@@ -68,12 +68,6 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
-from urllib.parse import urlparse
-
-if TYPE_CHECKING:
-    from patchright.async_api import BrowserContext, Request
-
 log = logging.getLogger("104-mcp.throttle")
 
 # Rolling window for the hourly request budget. Fixed, not env-configurable
@@ -89,28 +83,6 @@ REQUEST_WINDOW_SECONDS = 3600.0
 # the 20-minute streak limit and the 3-minute rest duration as configurable.
 ACTIVITY_GAP_RESET_SECONDS = 120.0
 
-# Hosts to exclude from the request count even though some can appear on
-# 104 pages: third-party analytics/embeds, not 104's own traffic. Matched
-# against the request's hostname (not the full URL) as a substring.
-_THIRD_PARTY_HOST_MARKERS = (
-    "google-analytics", "googletagmanager", "doubleclick", "clarity.ms",
-    "bing", "facebook", "scarabresearch", "hotjar", "youtube", "vimeo",
-    "gstatic", "googleapis",
-)
-
-
-def is_countable_request(url: str) -> bool:
-    """A request counts toward the hourly budget iff it's to a 104.com.tw
-    host and not one of the third-party markers above. uts.104.com.tw
-    (measured at 38% of observed image traffic) is 104's own beacon host
-    and DOES count — it isn't in the exclusion list and shouldn't be
-    added to it just because it looks analytics-shaped.
-    """
-    hostname = urlparse(url).hostname or ""
-    if not hostname.endswith("104.com.tw"):
-        return False
-    return not any(marker in hostname for marker in _THIRD_PARTY_HOST_MARKERS)
-
 
 @dataclass
 class ThrottleState:
@@ -119,18 +91,13 @@ class ThrottleState:
     factory so a session that never calls a tool costs nothing extra.
 
     request_timestamps: epoch-second floats, counted toward the rolling
-        hourly budget. In production populated by note_request (API-client
-        traffic) — the only source of counted requests as of the JSON-API
-        messaging migration, since all eight tools now go through
-        guarded_api. attach_request_counter's live browser "request"
-        listener (page-navigation traffic) is a SECOND source this
-        dataclass still supports, but its only caller (guarded_page) has no
-        tool call site any more (see guarded_page's own docstring in
-        tools/helpers.py) — so in practice, today, only one source is ever
-        live on a session. Both would use real time.time() values if both
-        fired; tests populate this directly with fake-clock values instead
-        — never mix real and fake clocks within one instance, or the
-        rolling-window pruning compares them against each other.
+        hourly budget. Populated by note_request only — every tool now
+        goes through guarded_api's aiohttp-based API client, which issues
+        exactly one counted HTTP request per call, so this is the sole
+        source of counted requests. Tests populate this directly with
+        fake-clock values instead of real time.time() values — never mix
+        real and fake clocks within one instance, or the rolling-window
+        pruning compares them against each other.
     last_request_logged_at: set by note_request only, used only to log the
         observed inter-call interval — kept separate from
         last_call_finished_at (below), which drives the pacing floor and is
@@ -150,7 +117,6 @@ class ThrottleState:
     activity_streak_start: float | None = None
     last_action_at: float | None = None
     resting_until: float | None = None
-    counter_attached: bool = False
     last_request_logged_at: float | None = None
     unpersisted_timestamps: list[float] = field(default_factory=list)
 
@@ -448,7 +414,7 @@ def _merge_loaded_state(state: ThrottleState, loaded: ThrottleState, now: float)
         else:
             state.activity_streak_start = loaded.activity_streak_start
 
-    # resting_until, counter_attached, last_request_logged_at: a read never
+    # resting_until, last_request_logged_at: a read never
     # touches these — see ThrottleState's docstring / this module's
     # cross-run-persistence notes for why each one is exempt.
 
@@ -576,39 +542,6 @@ async def enforce_throttle(
     return None
 
 
-def attach_request_counter(context: BrowserContext, state: ThrottleState) -> None:
-    """Idempotent per BrowserContext (guarded by state.counter_attached —
-    guarded_page WOULD call this on every tool call, not just the first, if
-    it had a caller).
-
-    ★ Has NO caller as of the JSON-API messaging migration — its only
-    caller is guarded_page (tools/helpers.py), which itself has no tool
-    call site any more (see that function's own docstring for why it is
-    kept rather than deleted this cycle). This function is therefore dead
-    in production today, same as guarded_page and browser/session.py's
-    random_delay, and for the identical reason: removing an unexercised
-    piece of the pre-migration guard before its replacement has been
-    verified live would invert the safe order. A removal candidate once
-    that verification passes.
-
-    Attached at the BROWSER CONTEXT level rather than per-page so it keeps
-    counting across new tabs opened within the same session — the
-    measured recording this module is based on used 2 tabs. Uses a real
-    "request" event listener, not add_init_script: patchright silently
-    no-ops add_init_script under its stealth configuration, so only
-    listener-based counting is reliable here.
-    """
-    if state.counter_attached:
-        return
-
-    def _on_request(request: Request) -> None:
-        if is_countable_request(request.url):
-            state.request_timestamps.append(time.time())
-
-    context.on("request", _on_request)
-    state.counter_attached = True
-
-
 def note_request(state: ThrottleState, *, path: Path, now_fn=time.time) -> None:
     """Count one API request toward the rolling-window volume cap, log the
     interval observed since the previous call on this session, and append
@@ -616,10 +549,9 @@ def note_request(state: ThrottleState, *, path: Path, now_fn=time.time) -> None:
     this process.
 
     Called once per call from guarded_api (tools/helpers.py), regardless
-    of whether that call ultimately succeeds — attach_request_counter's
-    browser "request" listener cannot observe aiohttp traffic at all, so
-    without this the hourly window would count zero requests while 104
-    received every one the session actually made.
+    of whether that call ultimately succeeds — this is the only place any
+    request is ever counted, so without it the hourly window would count
+    zero requests while 104 received every one the session actually made.
 
     The logged interval is this module's own self-check, at zero
     production cost: the interval floor's justification rests on the

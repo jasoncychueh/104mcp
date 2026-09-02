@@ -159,23 +159,50 @@ _REQUIRED_MARKER = "**必填，沒有預設值**"
 
 _ENV_VAR_TABLE_HEADER = "| 環境變數 | 必填／預設值 | 用途 |"
 
-# Matches an os.getenv("NAME") call, optionally followed by a literal string
-# default (`, "default"`). Group 1 is the name; group 2 is the default when
-# present, None when the call form carries no default at all.
-_ENV_VAR_CALL_RE = re.compile(r'os\.getenv\(\s*"([A-Z0-9_]+)"\s*(?:,\s*"([^"]*)")?\s*\)')
+# Matches any of the three call forms config.py reads an environment variable
+# through: a bare `os.getenv("NAME")` (optionally with a literal string
+# default), the `_parse_int_env("NAME", default)` helper (always has an int
+# literal default), or the `_parse_optional_int_env("NAME")` helper (never has
+# a default — its whole contract is "unset means None", not "unset means a
+# fallback value"). Exactly one of the three named-group triples matches per
+# hit; which one tells `_scan_env_var_calls` how to read the name/default off
+# it, since the three forms carry that information differently.
+_ENV_VAR_CALL_RE = re.compile(
+    r'os\.getenv\(\s*"(?P<getenv_name>[A-Z0-9_]+)"\s*(?:,\s*"(?P<getenv_default>[^"]*)")?\s*\)'
+    r'|_parse_int_env\(\s*"(?P<int_name>[A-Z0-9_]+)"\s*,\s*(?P<int_default>-?\d+)\s*\)'
+    r'|_parse_optional_int_env\(\s*"(?P<opt_name>[A-Z0-9_]+)"\s*\)'
+)
 
 
 def _scan_env_var_calls(source: str, info: dict[str, dict], *, only_mcp104_prefixed: bool) -> None:
     matches = list(_ENV_VAR_CALL_RE.finditer(source))
     for i, m in enumerate(matches):
-        name = m.group(1)
+        if m.group("getenv_name") is not None:
+            # Only this form can ever be required: `_parse_int_env` and
+            # `_parse_optional_int_env` both resolve unset input on their own
+            # (a default, or None) and never raise, so only a bare
+            # `os.getenv(...)` can be the one paired with a `raise
+            # ConfigError` in the source immediately after it.
+            name = m.group("getenv_name")
+            has_default = m.group("getenv_default") is not None
+            default = m.group("getenv_default")
+            window_end = matches[i + 1].start() if i + 1 < len(matches) else len(source)
+            window = source[m.end():window_end]
+            required = (not has_default) and ("raise ConfigError" in window)
+        elif m.group("int_name") is not None:
+            name = m.group("int_name")
+            has_default = True
+            default = m.group("int_default")
+            required = False
+        else:
+            name = m.group("opt_name")
+            has_default = False
+            default = None
+            required = False
+
         if only_mcp104_prefixed and not name.startswith("MCP104_"):
             continue
-        has_default = m.group(2) is not None
-        window_end = matches[i + 1].start() if i + 1 < len(matches) else len(source)
-        window = source[m.end():window_end]
-        required = (not has_default) and ("raise ConfigError" in window)
-        info[name] = {"has_default": has_default, "default": m.group(2), "required": required}
+        info[name] = {"has_default": has_default, "default": default, "required": required}
 
 
 def _env_vars_from_config_source() -> dict[str, dict]:

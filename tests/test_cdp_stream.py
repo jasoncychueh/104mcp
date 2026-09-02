@@ -434,39 +434,84 @@ async def test_t009a_no_frame_files_written_to_workdir_or_data_dir(tmp_path, mon
     assert files == []
 
 
+def _find_function_defs(tree: ast.AST, names: set[str]) -> list[ast.AST]:
+    """Every function/method def anywhere in the module whose name is in
+    `names` -- not scoped to a class, so this finds the screencast-frame
+    handler (a method on CdpLoginStream) and dispatch_input (also a method)
+    regardless of which class owns them."""
+    return [
+        node for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in names
+    ]
+
+
 def test_t009b_frame_path_has_no_direct_file_write_or_frame_bearing_log_call():
+    """R1.x / privacy: the screencast-frame handler (Page.screencastFrame's
+    handler, whatever it is named) and dispatch_input must not write frame
+    bytes to a file, nor log/print anything at all from within their own
+    function bodies -- not just calls that happen to name a variable
+    "frame"/"data"/"metadata". Scanning by function identity (found via the
+    CDP event registration and the public dispatch_input method), not by
+    guessing argument-name conventions, so a rename of a local variable
+    can't hide a violation from this test, and can't produce a false
+    positive either."""
     source = inspect.getsource(cdp_stream_module)
     tree = ast.parse(source)
 
-    write_calls = []
-    frame_bearing_log_calls = []
-    frame_ish_names = {"frame", "data", "metadata"}
-
+    # Identify the screencast-frame handler by how it is wired up: the
+    # callback passed to `self._cdp.on("Page.screencastFrame", <handler>)`.
+    handler_names = {"dispatch_input"}
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        func = node.func
-        name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", None)
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "on"
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and node.args[0].value == "Page.screencastFrame"
+            and len(node.args) >= 2
+            and isinstance(node.args[1], ast.Attribute)
+        ):
+            handler_names.add(node.args[1].attr)
 
-        if name == "open" and isinstance(func, ast.Name):
-            write_calls.append(node.lineno)
-        if name in {"write", "writelines"} and isinstance(func, ast.Attribute):
-            write_calls.append(node.lineno)
+    assert len(handler_names) == 2, (
+        f"expected to find exactly the screencastFrame handler plus "
+        f"dispatch_input, found {handler_names!r} -- the registration call "
+        f"shape this test looks for may have changed"
+    )
 
-        if isinstance(func, ast.Attribute) and func.attr in {
-            "debug", "info", "warning", "error", "exception", "critical",
-        }:
-            arg_names = {
-                a.id for a in list(node.args) + [kw.value for kw in node.keywords]
-                if isinstance(a, ast.Name)
-            }
-            if arg_names & frame_ish_names:
-                frame_bearing_log_calls.append(node.lineno)
+    targets = _find_function_defs(tree, handler_names)
+    assert len(targets) == len(handler_names), (
+        f"could not locate a function def for every name in {handler_names!r}"
+    )
 
-    assert write_calls == [], f"direct file write(s) found at line(s) {write_calls}"
-    assert frame_bearing_log_calls == [], (
-        f"a log call appears to pass frame/data/metadata directly at line(s) "
-        f"{frame_bearing_log_calls}"
+    write_calls = []
+    log_or_print_calls = []
+
+    for fn in targets:
+        for node in ast.walk(fn):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", None)
+
+            if name == "open" and isinstance(func, ast.Name):
+                write_calls.append((fn.name, node.lineno))
+            if name in {"write", "writelines"} and isinstance(func, ast.Attribute):
+                write_calls.append((fn.name, node.lineno))
+
+            if name == "print" and isinstance(func, ast.Name):
+                log_or_print_calls.append((fn.name, node.lineno))
+            if isinstance(func, ast.Attribute) and func.attr in {
+                "debug", "info", "warning", "error", "exception", "critical", "log",
+            }:
+                log_or_print_calls.append((fn.name, node.lineno))
+
+    assert write_calls == [], f"direct file write(s) found in {write_calls}"
+    assert log_or_print_calls == [], (
+        f"log/print call(s) found inside the frame-handling or input-dispatch "
+        f"function body at {log_or_print_calls} -- frame/keystroke data must "
+        f"never reach a log sink from these functions"
     )
 
 
