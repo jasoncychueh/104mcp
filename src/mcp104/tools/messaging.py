@@ -13,7 +13,6 @@ Nothing in this module imports `patchright` at all (not even under `TYPE_CHECKIN
 the last browser-navigation call site (`send_message`'s DOM click sequence) is gone,
 and with it the one thing that made this module's tests require a browser to collect.
 """
-from __future__ import annotations
 
 import logging
 

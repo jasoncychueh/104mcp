@@ -37,6 +37,7 @@ import tomllib
 from pathlib import Path
 
 import pytest
+from mcp.server.fastmcp import FastMCP
 
 import mcp104.config as config_module
 from mcp104.tools.auth import register_auth_tools
@@ -564,4 +565,148 @@ def test_every_tool_description_fits_claude_code_budget_with_headroom():
         f"the {_TOOL_DESCRIPTION_CHAR_BUDGET}-char budget -- real headroom is "
         f"required, not merely squeaking under it (this is exactly how "
         f"search_resumes went over in the first place): {no_headroom}"
+    )
+
+
+# ── Regression coverage for the `ctx` auto-injection bug (Phase 5 acceptance) ─────────
+#
+# FastMCP's Tool.from_function decides whether a parameter is the auto-injected
+# server Context (never a caller-facing field) via `issubclass(param.annotation,
+# Context)` -- a real class check. `from __future__ import annotations` (PEP 563)
+# turns every annotation in the module into a string at runtime, which makes that
+# issubclass() call fail silently (returns False, no error) and treats `ctx` as an
+# ordinary tool argument instead. Shipped symptom: Claude Code rejected every call
+# to login()/search_resumes()/etc. with "1 validation error for loginArguments --
+# ctx: Field required", because every tool's `inputSchema.required` gained a `ctx`
+# entry nothing ever supplies. Two tests below: (a) black-box, registers the real
+# tool registry and checks the published schema directly; (b) white-box, AST-scans
+# tools/*.py so a future module cannot reintroduce the same combination even before
+# any tool test happens to catch it.
+
+
+def _register_all_tools(mcp) -> None:
+    register_auth_tools(mcp)
+    register_search_tools(mcp)
+    register_messaging_tools(mcp)
+    register_status_tools(mcp)
+    register_discovery_tools(mcp)
+
+
+@pytest.mark.asyncio
+async def test_no_registered_tool_exposes_ctx_as_a_caller_field():
+    """`ctx: Context` is FastMCP's auto-injected server context, never a caller-
+    facing argument -- it must never appear in a tool's published `inputSchema`
+    (neither in `properties` nor in `required`). See the module-level comment
+    above for the bug this guards against."""
+    mcp = FastMCP("contract-test")
+    _register_all_tools(mcp)
+    tools = await mcp.list_tools()
+    assert tools, "sanity: no tools registered at all"
+
+    offenders = {}
+    for tool in tools:
+        schema = tool.inputSchema or {}
+        properties = schema.get("properties", {})
+        required = schema.get("required", [])
+        if "ctx" in properties or "ctx" in required:
+            offenders[tool.name] = {
+                "in_properties": "ctx" in properties,
+                "in_required": "ctx" in required,
+            }
+    assert not offenders, (
+        f"these tools publish `ctx` as a caller-facing field in their inputSchema "
+        f"-- FastMCP failed to auto-inject it (see the module-level comment above "
+        f"this test): {offenders}"
+    )
+
+
+def _module_has_future_annotations(tree: ast.AST) -> bool:
+    return any(
+        isinstance(node, ast.ImportFrom)
+        and node.module == "__future__"
+        and any(alias.name == "annotations" for alias in node.names)
+        for node in ast.walk(tree)
+    )
+
+
+def _module_has_ctx_param_function(tree: ast.AST) -> bool:
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        args = node.args
+        all_params = (
+            list(args.posonlyargs)
+            + list(args.args)
+            + list(args.kwonlyargs)
+            + ([args.vararg] if args.vararg else [])
+            + ([args.kwarg] if args.kwarg else [])
+        )
+        if any(param.arg == "ctx" for param in all_params):
+            return True
+    return False
+
+
+def _module_registers_tools(tree: ast.AST) -> bool:
+    """True iff the module's source calls `<something>.tool(...)` or
+    `<something>.add_tool(...)` anywhere -- i.e. it registers at least one MCP tool
+    on a FastMCP instance. A module can define a helper that merely takes a `ctx`
+    parameter (e.g. tools/helpers.py's `get_session_id`/`resolve_session`/
+    `guarded_api`) without itself ever being handed to FastMCP for schema
+    generation -- `from __future__ import annotations` is harmless there, because
+    nothing ever calls `issubclass()` on that helper's own annotations. Only a
+    module that registers tools is where PEP 563 can break FastMCP's `ctx`
+    auto-injection (see the module-level comment above the other test in this
+    section)."""
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr in ("tool", "add_tool")
+        ):
+            return True
+    return False
+
+
+def test_no_ctx_param_module_uses_future_annotations():
+    """White-box counterpart to test_no_registered_tool_exposes_ctx_as_a_caller_field:
+    AST-scans every src/mcp104/tools/*.py module and fails if a module both (a)
+    registers at least one MCP tool (calls `.tool(...)`/`.add_tool(...)`) and (b)
+    defines any function taking a `ctx` parameter, while also (c) carrying `from
+    __future__ import annotations` -- that combination is exactly what silently
+    breaks FastMCP's issubclass()-based auto-injection detection (see the
+    module-level comment above the other test in this section): mcp relies on the
+    parameter's RUNTIME annotation object to recognise Context, and PEP 563 turns
+    every annotation in the module into a string, so `ctx` leaks into the
+    published inputSchema as an ordinary caller-facing field. Scoped to
+    tool-registering modules only: a module that merely defines a `ctx`-taking
+    helper never used for schema generation (e.g. tools/helpers.py) is not at
+    risk, and flagging it would be a false positive. This catches the defect at
+    the source-file level, ahead of and independent from the schema-inspection
+    test, so a future module cannot reintroduce it even before any
+    tool-registration test happens to run."""
+    tools_dir = REPO_ROOT / "src" / "mcp104" / "tools"
+    offenders = []
+    registering_modules = []
+    for path in sorted(tools_dir.glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        if not _module_registers_tools(tree):
+            continue
+        registering_modules.append(path.name)
+        if _module_has_ctx_param_function(tree) and _module_has_future_annotations(tree):
+            offenders.append(path.name)
+
+    # Not a vacuous rule: if fewer than the four known tool-registering modules
+    # (auth/search/messaging/discovery) are ever detected, `_module_registers_tools`
+    # itself is broken and the loop above would pass by finding nothing to check.
+    assert len(registering_modules) >= 4, (
+        f"expected at least 4 tool-registering modules (auth/search/messaging/"
+        f"discovery), found {registering_modules} -- _module_registers_tools() "
+        f"itself may be broken, which would make this whole test vacuous"
+    )
+
+    assert not offenders, (
+        "these tool-registering tools/*.py modules define a `ctx`-taking function "
+        "AND carry `from __future__ import annotations`, which stringifies the "
+        "`ctx: Context` annotation and breaks FastMCP's issubclass()-based "
+        f"auto-injection detection: {offenders}"
     )
