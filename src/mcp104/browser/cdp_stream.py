@@ -57,12 +57,21 @@ log = logging.getLogger("104-mcp.cdp_stream")
 # format/quality/maxWidth/maxHeight 之後被改到不一致。
 _SCREENCAST_PARAMS = {"format": "jpeg", "quality": 80, "maxWidth": 1600, "maxHeight": 900}
 
-# Upper bound on closing a single viewer sink: aiohttp's close() waits for the peer's
-# close frame, which can take ~10s per viewer on a half-open TCP connection. stop() is
-# awaited inline inside logout() (a tool call), and CLAUDE.md requires a tool call's
-# worst case to stay under 20s — a hung viewer connection must not be able to hold
-# logout() or process shutdown hostage.
-VIEWER_CLOSE_TIMEOUT_SECONDS = 2.0
+# Upper bound on the ENTIRE viewer-teardown portion of stop() — draining
+# self._pending_tasks (in-flight per-frame sink sends) AND closing every
+# registered viewer sink — regardless of how many viewers are registered.
+# aiohttp's send_str()/close() both wait on the peer, which can hang
+# indefinitely on a half-open TCP connection (no heartbeat on the
+# WebSocketResponse — see auth_server.py — so a dead viewer is only
+# noticed when its receive loop ends and calls remove_viewer). Without a
+# total budget, N stuck viewers would each get their own wait and the sum
+# would be unbounded; this constant is that sum's ceiling, spent across
+# both steps via a shared remaining-budget clock (see stop() below). stop()
+# is awaited inline inside logout() (a tool call), and CLAUDE.md requires a
+# tool call's worst case to stay under 20s — a hung viewer connection must
+# not be able to hold logout() or process shutdown hostage. This budget
+# does NOT cover the CDP Page.stopScreencast call, which precedes it.
+VIEWER_TEARDOWN_TIMEOUT_SECONDS = 3.0
 
 # watchdog 多久檢查一次「上一張 frame 是多久以前」；超過 WATCHDOG_IDLE_SECONDS 沒有
 # 新 frame、且至少有一個檢視者連著，就重啟一次 screencast。真人停在一個不會自行重繪的
@@ -347,9 +356,15 @@ class CdpLoginStream:
         已經回傳之後才送達一顆已完成認證的瀏覽器上。取消排在最前面，這個競態就不存在，
         而不是變得罕見。
 
-        最後一步關閉所有已註冊的檢視者 sink（各自吞例外——一個檢視者連線已經死了不該
-        擋住其餘檢視者被關閉，也不該讓 `stop()` 本身失敗），再清空註冊表：這顆物件的
-        生命週期結束時，沒有任何檢視者連線應該繼續掛著。"""
+        接下來排空 `self._pending_tasks`（每幀的 sink send）、最後關閉所有已註冊的
+        檢視者 sink，兩步共用同一個 `VIEWER_TEARDOWN_TIMEOUT_SECONDS` 總預算（見該
+        常數的說明）：**整段 viewer 收尾最多 `VIEWER_TEARDOWN_TIMEOUT_SECONDS` 秒，
+        不論 viewer 數，也不保證每個 viewer 都被優雅關閉**——半開 TCP 下 aiohttp 的
+        send/close 都可能無限期不返回，逾時的項目直接放棄（pending task 用
+        `cancel()`，viewer sink 直接跳過 `close()`），不擋住 `stop()` 本身回傳。中間的
+        `Page.stopScreencast` 呼叫不計入這個預算（各自吞例外——一個檢視者連線已經死了
+        不該擋住其餘檢視者被關閉，也不該讓 `stop()` 本身失敗），呼叫後清空註冊表：這顆
+        物件的生命週期結束時，沒有任何檢視者連線應該繼續掛著。"""
         if self._state == "closed":
             return
         self._state = "closed"
@@ -362,22 +377,57 @@ class CdpLoginStream:
                 pass
             self._watchdog_task = None
 
-        if self._pending_tasks:
-            await asyncio.gather(*self._pending_tasks, return_exceptions=True)
+        loop = asyncio.get_running_loop()
+        budget_start = loop.time()
 
+        if self._pending_tasks:
+            remaining = max(0.0, VIEWER_TEARDOWN_TIMEOUT_SECONDS - (loop.time() - budget_start))
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(*self._pending_tasks, return_exceptions=True),
+                    timeout=remaining,
+                )
+            except asyncio.TimeoutError:
+                unfinished = [task for task in self._pending_tasks if not task.done()]
+                for task in unfinished:
+                    task.cancel()
+                log.warning(
+                    "cdp_stream: stop() viewer-teardown budget exhausted while draining "
+                    "pending frame sends, cancelling %d unfinished task(s)",
+                    len(unfinished),
+                )
+
+        # Not part of VIEWER_TEARDOWN_TIMEOUT_SECONDS — see stop()'s docstring and the
+        # constant's own comment. used_before_cdp is captured before this call so the
+        # time this call itself takes is never charged against the viewer-close budget
+        # below.
+        used_before_cdp = loop.time() - budget_start
         if self._cdp is not None:
             try:
                 await self._cdp.send("Page.stopScreencast")
             except Exception:
                 pass
 
+        close_budget = max(0.0, VIEWER_TEARDOWN_TIMEOUT_SECONDS - used_before_cdp)
+        close_start = loop.time()
+        skipped = 0
         for sink in list(self._viewers):
+            remaining = max(0.0, close_budget - (loop.time() - close_start))
+            if remaining <= 0:
+                skipped += 1
+                continue
             try:
-                await asyncio.wait_for(sink.close(), timeout=VIEWER_CLOSE_TIMEOUT_SECONDS)
+                await asyncio.wait_for(sink.close(), timeout=remaining)
             except asyncio.TimeoutError:
-                log.warning("cdp_stream: viewer sink close() timed out after %ss, moving on", VIEWER_CLOSE_TIMEOUT_SECONDS)
+                skipped += 1
             except Exception as exc:
                 log.warning("cdp_stream: viewer sink close() failed: %s", exc)
+        if skipped:
+            log.warning(
+                "cdp_stream: stop() viewer-teardown budget exhausted, %d viewer sink(s) "
+                "left unclosed",
+                skipped,
+            )
         self._viewers.clear()
 
     async def refresh_for_new_viewer(self) -> None:
