@@ -65,7 +65,6 @@ def test_config_from_env(monkeypatch, tmp_path):
     "MCP104_AUTH_BIND_PORT",
 ])
 def test_non_numeric_env_value_is_startup_failure_naming_var_and_value(monkeypatch, tmp_path, var_name):
-    # (case I2-I)
     _configure_env(monkeypatch, tmp_path)
     if var_name == "MCP104_AUTH_BIND_PORT":
         # MCP104_AUTH_BIND_PORT is only parsed when paired with

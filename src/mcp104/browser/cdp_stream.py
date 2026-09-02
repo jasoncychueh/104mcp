@@ -71,6 +71,12 @@ _SCREENCAST_PARAMS = {"format": "jpeg", "quality": 80, "maxWidth": 1600, "maxHei
 # tool call's worst case to stay under 20s — a hung viewer connection must
 # not be able to hold logout() or process shutdown hostage. This budget
 # does NOT cover the CDP Page.stopScreencast call, which precedes it.
+#
+# The same hazard — a half-open viewer's send/close never returning — also
+# bounds announce_completed()'s push to every registered sink, so this
+# constant caps that call too: it is awaited on the success path (the login
+# watcher in auth.py), where a stuck viewer must not be able to strand a
+# completed login before finalize() ever runs.
 VIEWER_TEARDOWN_TIMEOUT_SECONDS = 3.0
 
 # watchdog 多久檢查一次「上一張 frame 是多久以前」；超過 WATCHDOG_IDLE_SECONDS 沒有
@@ -381,20 +387,31 @@ class CdpLoginStream:
         budget_start = loop.time()
 
         if self._pending_tasks:
+            # Snapshot before wait_for: by the time a TimeoutError is caught below,
+            # wait_for's cancel-and-wait has already resolved every task in
+            # self._pending_tasks (each via its own done_callback, see _pending_tasks'
+            # declaration), so the set itself may already be empty — a post-hoc
+            # `[t for t in self._pending_tasks if not t.done()]` would always be [].
+            tasks = list(self._pending_tasks)
             remaining = max(0.0, VIEWER_TEARDOWN_TIMEOUT_SECONDS - (loop.time() - budget_start))
             try:
                 await asyncio.wait_for(
-                    asyncio.gather(*self._pending_tasks, return_exceptions=True),
+                    asyncio.gather(*tasks, return_exceptions=True),
                     timeout=remaining,
                 )
             except asyncio.TimeoutError:
-                unfinished = [task for task in self._pending_tasks if not task.done()]
-                for task in unfinished:
-                    task.cancel()
+                # What actually bounds the drain is wait_for's cancel-and-wait
+                # semantics on the gather() future above (cancelling it cancels every
+                # task passed into it, and wait_for awaits that cancellation before
+                # re-raising) — this loop is defensive belt-and-braces, not the
+                # mechanism doing the work.
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
                 log.warning(
-                    "cdp_stream: stop() viewer-teardown budget exhausted while draining "
-                    "pending frame sends, cancelling %d unfinished task(s)",
-                    len(unfinished),
+                    "cdp_stream: stop() viewer-teardown budget exhausted, %d 個未完成的 "
+                    "frame send 被取消",
+                    sum(1 for task in tasks if task.cancelled()),
                 )
 
         # Not part of VIEWER_TEARDOWN_TIMEOUT_SECONDS — see stop()'s docstring and the
@@ -458,14 +475,29 @@ class CdpLoginStream:
     async def announce_completed(self) -> None:
         """向每一個已註冊的接收者推送 `{"type": "state", "value": "completed"}`。
         不寫 `state`，也完全不讀 `state`——無條件推送。重複呼叫就是重複推送一次相同的
-        值，這是允許的，不是缺陷：這個介面沒有冪等宣告，因為它沒有狀態可以冪等。"""
+        值，這是允許的，不是缺陷：這個介面沒有冪等宣告，因為它沒有狀態可以冪等。有界：
+        整個推送以 `VIEWER_TEARDOWN_TIMEOUT_SECONDS` 為上限，逾時就放棄剩餘的推送並
+        回傳——半開 TCP 下 `_safe_send_str` 可能永遠不返回（與 `stop()` 同一類危害，
+        見該常數的說明），而這裡是在成功路徑（`auth.py` 的 login watcher）上被 await，
+        不能被一個檢視者的死連線卡住；丟掉一次 announce 可以恢復，幀扇出路徑下一幀還
+        會再送一次 state。"""
         if not self._viewers:
             return
         payload = json.dumps({"type": "state", "value": "completed"})
-        await asyncio.gather(
-            *(_safe_send_str(sink, payload) for sink in list(self._viewers)),
-            return_exceptions=True,
-        )
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(
+                    *(_safe_send_str(sink, payload) for sink in list(self._viewers)),
+                    return_exceptions=True,
+                ),
+                timeout=VIEWER_TEARDOWN_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            log.warning(
+                "cdp_stream: announce_completed() timed out after %ss, giving up on "
+                "remaining viewer(s)",
+                VIEWER_TEARDOWN_TIMEOUT_SECONDS,
+            )
 
     async def _dispatch_mouse(self, event: dict) -> None:
         mouse_kind = event.get("event")
