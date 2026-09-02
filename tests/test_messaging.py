@@ -1,8 +1,10 @@
 """Tests for the JSON-API messaging migration (`read_messages` / `get_conversation` /
 `send_message`), following tests/test_search.py's seam-substitution idiom: the HTTP
-transport (`browser.api_client.fetch`) and the browser context
-(`SessionInfo.browser_context`) are faked; `guarded_api`, `classify()` and the actual
-`tools.messaging` functions are exercised for real, never mocked.
+transport (`browser.api_client.fetch`) is faked. There is no BrowserContext seam left
+post-login (§C7) — `guarded_api` reads credentials straight off `SessionInfo.cookies`,
+so a session under test is built by handing that field a cookie list directly.
+`guarded_api`, `classify()` and the actual `tools.messaging` functions are exercised
+for real, never mocked.
 
 Fixture bodies here are SYNTHETIC, not derived from a real capture — unlike
 tests/fixtures/rows_*.json, no raw `all-stream`/conversation response was ever
@@ -30,6 +32,7 @@ import pytest_asyncio
 import mcp104.tools.discovery as discovery_mod
 from mcp104.browser.api_client import ENDPOINTS, RawResponse
 from mcp104.browser.session import SessionInfo, SessionPool
+from mcp104.browser.throttle import ThrottleAbort
 from mcp104.config import get_config
 from mcp104.db.database import Database
 from mcp104.tools.helpers import GuardAbort, get_session_id
@@ -199,21 +202,6 @@ def _install_never_called_fetch(monkeypatch) -> None:
     monkeypatch.setattr("mcp104.tools.helpers.fetch", spy, raising=False)
 
 
-class _FakeApiBrowserContext:
-    def __init__(self, cookies=None, cookies_raise: bool = False):
-        self._cookies = cookies if cookies is not None else []
-        self._cookies_raise = cookies_raise
-        self.pages = []
-
-    async def cookies(self):
-        if self._cookies_raise:
-            raise RuntimeError("browser context is dead")
-        return self._cookies
-
-    def on(self, event, handler):
-        pass
-
-
 class FakeSessionObj:
     pass
 
@@ -265,14 +253,16 @@ send_message = TOOLS["send_message"]
 _OPENED_DATABASES: list[Database] = []
 
 
-async def _new_session(tmp_path, *, cookies_raise: bool = False) -> tuple[FakeCtx, SessionInfo, Database]:
+async def _new_session(tmp_path) -> tuple[FakeCtx, SessionInfo, Database]:
     pool = SessionPool()
     database = Database(str(tmp_path / f"db_{uuid4().hex}.sqlite"))
-    await database.init()
+    await database.init("test@104.com")
     _OPENED_DATABASES.append(database)
     ctx = FakeCtx(pool, database)
     sid = get_session_id(ctx)
-    info = SessionInfo(browser_context=_FakeApiBrowserContext(cookies_raise=cookies_raise))
+    # guarded_api reads credentials straight off SessionInfo.cookies now —
+    # there is no BrowserContext left to fake post-login (§C7).
+    info = SessionInfo(cookies=[], account_label="test@104.com")
     pool.activate_direct(sid, info)
     return ctx, info, database
 
@@ -756,7 +746,7 @@ async def test_send_message_successful_call_writes_exactly_one_sent_log_row(tmp_
 
     await send_message(ctx=ctx, job_id="12355016", candidate_id="7174595", message="您好")
 
-    count = await db.get_daily_sent_count(info.account_email)
+    count = await db.get_daily_sent_count(info.account_label)
     assert count == 1
 
 
@@ -782,14 +772,14 @@ async def test_send_message_daily_cap_rejected_before_any_request(tmp_path, monk
     ctx, info, db = await _new_session(tmp_path)
     app = ctx.request_context.lifespan_context
     for _ in range(app.config.max_daily_messages):
-        await db.log_sent(info.account_email, "some-candidate", "message")
+        await db.log_sent(info.account_label, "some-candidate", "message")
     _install_never_called_fetch(monkeypatch)
 
     result = await send_message(ctx=ctx, job_id="12355016", candidate_id="7174595", message="您好")
 
     assert result["success"] is False
     assert "上限" in result["error"]
-    count = await db.get_daily_sent_count(info.account_email)
+    count = await db.get_daily_sent_count(info.account_label)
     assert count == app.config.max_daily_messages  # unchanged — no new row
 
 
@@ -802,8 +792,14 @@ async def test_send_message_throttled_rejection_carries_retry_after_seconds_and_
     ctx, info, db = await _new_session(tmp_path)
     _install_never_called_fetch(monkeypatch)
 
+    # enforce_throttle's contract (§C10): a rejection is a ThrottleAbort, not
+    # a bare dict — guarded_api reads .kind/.payload off it directly.
     async def rejecting_throttle(*args, **kwargs):
-        return {"error": "節流測試", "retry_after_seconds": 5}
+        return ThrottleAbort(
+            kind="throttled",
+            payload={"error": "節流測試", "retry_after_seconds": 5},
+            detail="",
+        )
 
     monkeypatch.setattr("mcp104.tools.helpers.enforce_throttle", rejecting_throttle)
 
@@ -812,7 +808,7 @@ async def test_send_message_throttled_rejection_carries_retry_after_seconds_and_
     assert "error" in result
     assert result.get("retry_after_seconds") == 5
     assert "sent" not in result
-    assert await db.get_daily_sent_count(info.account_email) == 0
+    assert await db.get_daily_sent_count(info.account_label) == 0
 
 
 # ── NOT SENT: driven end to end through the real classify()/guarded_api/send_message,
@@ -827,7 +823,7 @@ async def test_send_message_expired_session_returns_error_payload_and_does_not_l
 
     assert "error" in result
     assert "已過期" in result["error"]
-    assert await db.get_daily_sent_count(info.account_email) == 0
+    assert await db.get_daily_sent_count(info.account_label) == 0
 
 
 @pytest.mark.asyncio
@@ -861,7 +857,7 @@ async def test_send_message_auth_host_redirect_returns_error_not_unconfirmed_and
     assert "error" in result
     assert "已過期" in result["error"]
     assert "sent" not in result
-    assert await db.get_daily_sent_count(info.account_email) == 0
+    assert await db.get_daily_sent_count(info.account_label) == 0
 
 
 @pytest.mark.asyncio
@@ -872,7 +868,7 @@ async def test_send_message_blocked_403_returns_error_payload_and_does_not_log(t
     result = await send_message(ctx=ctx, job_id="12355016", candidate_id="7174595", message="您好")
 
     assert "error" in result
-    assert await db.get_daily_sent_count(info.account_email) == 0
+    assert await db.get_daily_sent_count(info.account_label) == 0
 
 
 @pytest.mark.asyncio
@@ -885,7 +881,7 @@ async def test_send_message_cloudflare_challenge_returns_stop_and_wait_and_does_
 
     assert "error" in result
     assert "暫停操作並稍後再試" in result["error"]
-    assert await db.get_daily_sent_count(info.account_email) == 0
+    assert await db.get_daily_sent_count(info.account_label) == 0
 
 
 @pytest.mark.asyncio
@@ -896,7 +892,7 @@ async def test_send_message_404_thread_returns_error_payload_and_does_not_log(tm
     result = await send_message(ctx=ctx, job_id="0", candidate_id="0", message="您好")
 
     assert "error" in result
-    assert await db.get_daily_sent_count(info.account_email) == 0
+    assert await db.get_daily_sent_count(info.account_label) == 0
 
 
 @pytest.mark.asyncio
@@ -909,7 +905,7 @@ async def test_send_message_validation_400_surfaces_104s_own_text_and_does_not_l
     assert "error" in result
     assert "content" in result["error"] and "required" in result["error"].lower()
     assert "缺少必要參數" not in result["error"]
-    assert await db.get_daily_sent_count(info.account_email) == 0
+    assert await db.get_daily_sent_count(info.account_label) == 0
 
 
 # ── AMBIGUOUS: request went out, response not understood ────────────────────────────
@@ -922,7 +918,7 @@ async def test_send_message_malformed_body_reports_unconfirmed_and_logs_one_row(
     result = await send_message(ctx=ctx, job_id="12355016", candidate_id="7174595", message="您好")
 
     assert result["sent"] == "unconfirmed"
-    assert await db.get_daily_sent_count(info.account_email) == 1
+    assert await db.get_daily_sent_count(info.account_label) == 1
 
 
 @pytest.mark.asyncio
@@ -933,7 +929,7 @@ async def test_send_message_non_json_response_reports_unconfirmed_and_logs_one_r
     result = await send_message(ctx=ctx, job_id="12355016", candidate_id="7174595", message="您好")
 
     assert result["sent"] == "unconfirmed"
-    assert await db.get_daily_sent_count(info.account_email) == 1
+    assert await db.get_daily_sent_count(info.account_label) == 1
 
 
 @pytest.mark.asyncio
@@ -949,7 +945,7 @@ async def test_send_message_transport_failure_reports_unconfirmed_and_logs_one_r
     result = await send_message(ctx=ctx, job_id="12355016", candidate_id="7174595", message="您好")
 
     assert result["sent"] == "unconfirmed"
-    assert await db.get_daily_sent_count(info.account_email) == 1
+    assert await db.get_daily_sent_count(info.account_label) == 1
 
 
 # ── The whitelist's open side, end to end: an unnamed status code lands on
@@ -963,7 +959,7 @@ async def test_send_message_novel_http_status_defaults_to_unconfirmed_and_logs(t
     result = await send_message(ctx=ctx, job_id="12355016", candidate_id="7174595", message="您好")
 
     assert result["sent"] == "unconfirmed"
-    assert await db.get_daily_sent_count(info.account_email) == 1
+    assert await db.get_daily_sent_count(info.account_label) == 1
 
 
 # ── A sent_log write that raises does not change either verdict ─────────────────────
@@ -1000,20 +996,29 @@ async def test_send_message_log_sent_failure_does_not_change_ambiguous_verdict(t
 
 # ── The hook_completed discriminator (§6c/§6d): a non-GuardAbort exception raised
 # AFTER the hook returns unconfirmed (and logs); raised BEFORE returns not-sent (and
-# does not log) — even when account_email is empty, which an address-keyed
+# does not log) — even when account_label is empty, which an address-keyed
 # discriminator would get backwards ─────────────────────────────────────────────────
 
 @pytest.mark.asyncio
 async def test_send_message_exception_after_hook_reports_unconfirmed_and_logs(tmp_path, monkeypatch):
-    # cookies() runs AFTER before_request in guarded_api — raising there simulates
-    # an exception with the hook already completed.
-    ctx, info, db = await _new_session(tmp_path, cookies_raise=True)
+    # select_cookies_for_host runs AFTER before_request in guarded_api, ahead of
+    # fetch() — raising there simulates a non-GuardAbort exception with the hook
+    # already completed. (Post-§C7 there is no BrowserContext.cookies() call left
+    # to fault-inject against; credentials are a plain SessionInfo.cookies list
+    # that cannot itself raise, so the seam moves to the next call that consumes
+    # it.)
+    ctx, info, db = await _new_session(tmp_path)
+
+    def failing_select_cookies(*args, **kwargs):
+        raise RuntimeError("simulated failure reading cookies for this host")
+
+    monkeypatch.setattr("mcp104.tools.helpers.select_cookies_for_host", failing_select_cookies)
     _install_never_called_fetch(monkeypatch)  # must never reach fetch()
 
     result = await send_message(ctx=ctx, job_id="12355016", candidate_id="7174595", message="您好")
 
     assert result["sent"] == "unconfirmed"
-    assert await db.get_daily_sent_count(info.account_email) == 1
+    assert await db.get_daily_sent_count(info.account_label) == 1
 
 
 @pytest.mark.asyncio
@@ -1030,22 +1035,27 @@ async def test_send_message_exception_before_hook_reports_not_sent_and_does_not_
 
     assert "error" in result
     assert "sent" not in result
-    assert await db.get_daily_sent_count(info.account_email) == 0
+    assert await db.get_daily_sent_count(info.account_label) == 0
 
 
 @pytest.mark.asyncio
-async def test_send_message_exception_after_hook_reports_unconfirmed_even_with_empty_account_email(tmp_path, monkeypatch):
+async def test_send_message_exception_after_hook_reports_unconfirmed_even_with_empty_account_label(tmp_path, monkeypatch):
     # Pins the reason hook_completed is its OWN flag rather than inferred from
-    # info.account_email: an address-keyed discriminator would read an empty
+    # info.account_label: an address-keyed discriminator would read an empty
     # address as "the hook never ran" and wrongly report not-sent here.
     pool = SessionPool()
     database = Database(str(tmp_path / f"db_{uuid4().hex}.sqlite"))
-    await database.init()
+    await database.init("test@104.com")
     _OPENED_DATABASES.append(database)
     ctx = FakeCtx(pool, database)
     sid = get_session_id(ctx)
-    info = SessionInfo(browser_context=_FakeApiBrowserContext(cookies_raise=True), account_email="")
+    info = SessionInfo(cookies=[], account_label="")
     pool.activate_direct(sid, info)
+
+    def failing_select_cookies(*args, **kwargs):
+        raise RuntimeError("simulated failure reading cookies for this host")
+
+    monkeypatch.setattr("mcp104.tools.helpers.select_cookies_for_host", failing_select_cookies)
     _install_never_called_fetch(monkeypatch)
 
     result = await send_message(ctx=ctx, job_id="12355016", candidate_id="7174595", message="您好")
@@ -1067,13 +1077,25 @@ def _all_src_files():
     return list(SRC_ROOT.rglob("*.py"))
 
 
-def test_guarded_page_appears_nowhere_except_its_own_definition():
-    hits = []
-    for path in _all_src_files():
-        text = path.read_text(encoding="utf-8")
-        if "guarded_page(" in text and path.name != "helpers.py":
-            hits.append(str(path))
-    assert not hits, f"guarded_page( referenced outside helpers.py: {hits}"
+def test_messaging_module_touches_no_browser_page_or_context():
+    # Successor to the old test_guarded_page_appears_nowhere_except_its_own_
+    # definition: guarded_page itself is removed this cycle (§C7), so a scan
+    # for the STRING "guarded_page(" would go silent the moment its subject
+    # stopped existing anywhere — this file included — and keep passing
+    # forever with nothing left to catch. The property actually worth
+    # protecting here — a narrower, permanently-true slice of the repo-wide
+    # claim T-113 owns (tests/test_stealth.py / tests/test_main.py; not
+    # duplicated here) — is specific to this module: tools/messaging.py
+    # migrated fully to the JSON API this cycle (module docstring, top of
+    # this file) and must never re-acquire a page/BrowserContext reference,
+    # whether via a direct Playwright import or a call into the retired
+    # guarded_page.
+    import mcp104.tools.messaging as messaging_mod
+
+    text = Path(messaging_mod.__file__).read_text(encoding="utf-8")
+    forbidden_markers = ("guarded_page(", "BrowserContext", "import patchright", "from patchright", ".goto(")
+    hits = [m for m in forbidden_markers if m in text]
+    assert not hits, f"tools/messaging.py references browser-page machinery: {hits}"
 
 
 def test_acknowledgement_appears_exactly_once_under_src():

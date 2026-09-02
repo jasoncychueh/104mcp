@@ -2,12 +2,14 @@
 # renamed FastMCP to MCPServer. An unpinned install silently picks 2.0 and the
 # server fails at import. Migrating is a separate piece of work.
 #
-# Kept equal to pyproject.toml's [project] dependencies (a test asserts this) so the
-# Dockerfile can install runtime deps from this file — a cached layer above the
-# Chromium download — without pulling in pyproject.toml's dev extras (pytest etc.).
+# The reason this file originally existed — a Dockerfile installing runtime deps from
+# it as a cached layer above the Chromium download, without pulling in pyproject.toml's
+# dev extras — went away with the container build (stdio rearchitecture). Kept anyway,
+# equal to pyproject.toml's [project] dependencies (a test asserts this); no consumer
+# reads this file today, but nothing depends on removing it either, so the choice made
+# this round is to keep the file and keep the equality test rather than delete both.
 mcp[cli]>=1.12,<2
 patchright>=1.0.0
 aiosqlite>=0.20.0
 aiohttp>=3.9.0
 tzdata>=2024.1
-uvicorn>=0.30
