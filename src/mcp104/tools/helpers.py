@@ -1,22 +1,18 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 import re
 from contextlib import asynccontextmanager
 from functools import wraps
-from typing import TYPE_CHECKING, AsyncIterator, Awaitable, Callable, Sequence
+from typing import AsyncIterator, Awaitable, Callable, Sequence
 from urllib.parse import urlparse
 from uuid import uuid4
 
 from mcp.server.fastmcp import Context
 
 from mcp104.browser.api_client import Endpoint, classify, fetch, hostname_for, select_cookies_for_host
-from mcp104.browser.session import SessionInfo, check_session_expired, matches_auth_host
-from mcp104.browser.throttle import attach_request_counter, enforce_throttle, note_request
-
-if TYPE_CHECKING:
-    from patchright.async_api import Page
+from mcp104.browser.session import SessionInfo, matches_auth_host
+from mcp104.browser.throttle import enforce_throttle, note_request
 
 log = logging.getLogger("104-mcp.helpers")
 
@@ -58,6 +54,21 @@ ERROR_BLOCKED_API_AFTER_SUCCESS = {
     )
 }
 ERROR_API_REQUEST_FAILED = {"error": "104 API 請求失敗（可能是逾時或網路問題），請稍後再試"}
+# A third wording in the same 403 family, for restore verification only
+# (tools/auth.py's verify_restored_session) — it names both remedies at
+# once and says plainly it cannot tell which applies: a first API call on
+# a freshly-restored session has no prior success on THIS run to compare
+# against, so the first-call/after-success split above cannot be drawn
+# here either. No guard code below reads this constant; it is placed here
+# because this module is that wording family's one home, and it is
+# assembled into RestoreVerdict.payload by verify_restored_session itself.
+ERROR_BLOCKED_API_RESTORE_VERIFY = {
+    "error": (
+        "恢復驗證被 104 拒絕（HTTP 403），可能是機器人偵測，也可能是 Cloudflare 通關 "
+        "cookie 已失效——目前無法分辨是哪一種。若稍後仍然失敗，才需要重新呼叫 login()；"
+        "也可能只是暫時被擋，請稍後再試"
+    )
+}
 
 
 def _error_wrong_host(endpoint: Endpoint) -> dict:
@@ -98,8 +109,6 @@ def _error_validation(detail: str) -> dict:
     # point).
     return {"error": f"104 拒絕了這次請求的內容（{detail or '未提供訊息'}）"}
 
-
-SETTLE_SECONDS = 2.0  # module-level so tests can shrink it
 
 # Chinese strings actually observed on a live challenge page (2026-08-07,
 # see docs/104-site-facts.md). Either alone is a strong signal.
@@ -185,8 +194,8 @@ def require_login(func):
 
 class GuardAbort(Exception):
     """Base for "abort the tool call and return this payload" signals
-    raised from within guarded_page's or guarded_api's locked region —
-    either by the guard itself or by a before_goto/before_request hook.
+    raised from within guarded_api's locked region — either by the guard
+    itself or by a before_request hook.
     Carries the dict the tool should return as-is. Every tool call site
     catches this (not a specific subclass) identically:
 
@@ -217,21 +226,21 @@ class GuardAbort(Exception):
 
 class SessionUnavailable(GuardAbort):
     """The session itself cannot be used right now (not logged in,
-    expired, blocked, navigation failed). Raised only by guarded_page
-    itself. Kept distinct from the base GuardAbort so that a future
-    handler reacting specifically to session trouble (e.g. attempting
-    cleanup) has something meaningful to catch — a before_goto rejection
-    like a daily-cap hit is NOT a session problem and must not raise this."""
+    expired, blocked). Raised only by guarded_api itself. Kept distinct
+    from the base GuardAbort so that a future handler reacting
+    specifically to session trouble (e.g. attempting cleanup) has
+    something meaningful to catch — a before_request rejection like a
+    daily-cap hit is NOT a session problem and must not raise this."""
 
 
 class ToolAbort(GuardAbort):
-    """A before_goto hook (or other pre-navigation check) wants to abort
+    """A before_request hook (or other pre-request check) wants to abort
     the tool call for a reason that has nothing to do with session health
-    — e.g. send_message's daily-cap check. Using SessionUnavailable for
-    this would be a lie: the class docstring above promises "the session
-    cannot be used", which is false for a cap rejection, and a future
-    session-recovery handler keyed on SessionUnavailable would misfire on
-    it."""
+    — e.g. send_message's daily-cap check, or a throttle judgment-gate
+    rejection. Using SessionUnavailable for this would be a lie: the class
+    docstring above promises "the session cannot be used", which is false
+    for a cap or throttle rejection, and a future session-recovery handler
+    keyed on SessionUnavailable would misfire on it."""
 
 
 class MalformedResponseError(Exception):
@@ -263,13 +272,13 @@ class MalformedResponseError(Exception):
 async def resolve_session(ctx: Context) -> SessionInfo | None:
     """Resolve the caller's SessionInfo without navigating.
 
-    An implementation detail of guarded_page, not a general-purpose
-    call-site helper: guarded_page calls it once to get the `info` it then
+    An implementation detail of guarded_api, not a general-purpose
+    call-site helper: guarded_api calls it once to get the `info` it then
     validates by identity and locks. Tool code should not call this
     directly to get its own separate `info` — every tool that needs
-    SessionInfo now gets it as guarded_page's yielded `(page, info)`, which
-    is guaranteed to be the SAME object whose identity was checked and
-    whose lock is held (see guarded_page's docstring for why a
+    SessionInfo now gets it as guarded_api's yielded `(payload, info)`,
+    which is guaranteed to be the SAME object whose identity was checked
+    and whose lock is held (see guarded_api's docstring for why a
     separately-resolved `info` can go stale while queued on the lock).
     """
     app = ctx.request_context.lifespan_context
@@ -277,164 +286,9 @@ async def resolve_session(ctx: Context) -> SessionInfo | None:
     return app.session_pool.get_session(session_id)
 
 
-@asynccontextmanager
-async def guarded_page(
-    ctx: Context,
-    url: str,
-    before_goto: Callable[[SessionInfo], Awaitable[None]] | None = None,
-) -> AsyncIterator[tuple[Page, SessionInfo]]:
-    """Resolve the session, hold its lock for the whole region, navigate to
-    `url` (the ONLY navigation this performs), settle, check the
-    non-navigating auth predicate, and yield (page, info).
-
-    ★ Has NO production call site as of the JSON-API messaging migration
-    (tools/messaging.py's three tools were the last ones using this; they
-    now go through guarded_api instead, exactly like the five résumé/job
-    tools already did). `login()` drives the browser directly and never
-    used this function either. It is kept — not deleted — for one cycle:
-    removing an unexercised guard before its replacement has been verified
-    against the live site would invert the safe order and fold two
-    independent risks into one commit. `guarded_page(` appearing nowhere
-    under `src/mcp104/` except this definition is swept by
-    tests/test_messaging.py, so a reintroduced call site cannot silently
-    reappear unnoticed. Once that live verification passes, this function
-    and `attach_request_counter` are removal candidates, at which point
-    `steering/structure.md`'s boundary rule naming `guarded_page` also
-    needs rewording — both are a follow-up requiring user confirmation,
-    not part of this change.
-
-    The call-site convention it defined, when it had callers, is unchanged
-    and is still what `guarded_api` below follows:
-
-        try:
-            async with guarded_page(ctx, URL) as (page, info):
-                ... tool body ...
-        except GuardAbort as e:
-            return e.payload
-
-    `info` is yielded (not just `page`) because it is the SAME SessionInfo
-    object whose identity was validated and whose lock is held — any DB
-    write keyed on info.account_email inside the guarded region (or inside
-    before_goto) must read it from here, not from a separately-resolved
-    `info` captured before entering this function. A caller that resolves
-    its own `info` before queuing on the lock and then uses THAT object's
-    account_email after waking up can be reading a stale value: see the
-    identity check below for why the object itself can change while queued.
-
-    random_delay() (browser/session.py) is deliberately NOT called in
-    here — it was meant to belong after the guard returns, pacing a tool's
-    own interactions, and must not be what supplies the settle window
-    below. It now has no caller anywhere either, for the same reason this
-    function has none: messaging.py's five call sites were its only users
-    (the five API read tools never adopted it).
-
-    before_goto: optional async callable, run inside the session lock
-    before the navigation (and after the request-throttle gate — a
-    throttled call never reaches before_goto at all), receiving the
-    validated `info`. It may raise
-    GuardAbort (or a subclass) itself to abort without navigating — use
-    ToolAbort for a rejection unrelated to session health (e.g. a daily-cap
-    hit), not SessionUnavailable. This exists for send_message's daily-cap
-    check: the count read and the cap decision must happen atomically with
-    respect to any concurrent send_message call on the same session, but
-    `info.lock` is not reentrant, so the check can't be wrapped in its own
-    `async with info.lock` around a call to this function — it has to run
-    inside THIS lock acquisition instead.
-
-    A before_goto hook MUST NOT acquire info.lock (or any SessionInfo's
-    lock) and MUST NOT call guarded_page itself — the lock is already held
-    non-reentrantly, there is no acquisition timeout (bounded waiting was
-    explicitly waived), and cleanup_stale skips locked sessions, so doing
-    either self-deadlocks permanently with nothing to reclaim it.
-    """
-    app = ctx.request_context.lifespan_context
-    info = await resolve_session(ctx)
-    if not info:
-        raise SessionUnavailable(ERROR_NOT_LOGGED_IN, kind="not_logged_in")
-
-    session_id = get_session_id(ctx)
-    async with info.lock:
-        # Re-check presence AND identity, not just presence. logout()+
-        # login() can remove this session and register a brand-new
-        # SessionInfo (new lock, new BrowserContext) under the same
-        # session_id while this call was queued waiting for `info.lock` —
-        # a presence-only check (is_logged_in) would pass against that NEW
-        # entry even though we hold the OLD entry's lock, silently
-        # defeating the whole point of per-session locking (two calls
-        # could then drive the same page concurrently, believing
-        # themselves serialized).
-        if app.session_pool.get_session(session_id) is not info:
-            raise SessionUnavailable(ERROR_NOT_LOGGED_IN, kind="not_logged_in")
-
-        # Request-level throttling (browser/throttle.py) — applied here,
-        # not inside individual tools, so every tool call is covered by
-        # the same session-wide budget/pacing/rest gate. A throttle
-        # rejection is a ToolAbort, not SessionUnavailable: like the
-        # daily-cap check below, it has nothing to do with whether the
-        # session itself is healthy — it's a self-imposed pace limit.
-        attach_request_counter(info.browser_context, info.throttle)
-        throttle_result = await enforce_throttle(
-            info.throttle,
-            max_requests_per_hour=app.config.max_requests_per_hour,
-            max_inline_wait_seconds=app.config.max_inline_wait_seconds,
-            activity_streak_limit_minutes=app.config.activity_streak_limit_minutes,
-            rest_duration_minutes=app.config.rest_duration_minutes,
-            min_call_interval_seconds=app.config.min_call_interval_seconds,
-        )
-        if throttle_result is not None:
-            raise ToolAbort(throttle_result, kind="throttled")
-
-        if before_goto is not None:
-            await before_goto(info)
-
-        # Resolve the page from the validated `info` directly rather than
-        # looking session_id up in the pool again — that would reopen the
-        # exact identity gap the check above just closed.
-        pages = info.browser_context.pages
-        page = pages[0] if pages else await info.browser_context.new_page()
-        try:
-            response = await page.goto(url, wait_until="domcontentloaded", timeout=15000)
-        except Exception as exc:
-            log.error("guarded_page: navigation to %s failed: %s", url, exc)
-            # nav_failed is a kind nothing else in this design uses — page
-            # navigation is the one failure the API path (guarded_api)
-            # cannot have, so it never appears in send_message's NOT_SENT
-            # enumeration and no send path can produce it.
-            raise SessionUnavailable(ERROR_NAV_FAILED, kind="nav_failed")
-
-        # Settle window: this is a Vue SPA and can still redirect
-        # client-side right after domcontentloaded fires, so sampling
-        # page.url immediately would race the redirect.
-        await asyncio.sleep(SETTLE_SECONDS)
-
-        status = check_session_expired(page.url, response)
-        if status == "expired":
-            log.warning("guarded_page: session %s expired at %s", session_id, page.url)
-            raise SessionUnavailable(ERROR_EXPIRED, kind="expired")
-        if status == "blocked":
-            log.warning("guarded_page: request blocked (403) for session %s at %s", session_id, page.url)
-            raise SessionUnavailable(ERROR_BLOCKED, kind="blocked")
-
-        # Must run before any tool body's own zero-rows/anchor check: a
-        # challenge page is HTTP 200 on the correct host with zero of
-        # whatever selector the tool is about to look for, so it would
-        # otherwise fall straight into "legitimate empty result" — telling
-        # the Agent to keep searching is exactly the wrong reaction here.
-        body_text = await page.inner_text("body")
-        is_challenge, ray_id = _detect_cloudflare_challenge(body_text)
-        if is_challenge:
-            log.warning(
-                "guarded_page: Cloudflare challenge detected for session %s at %s (Ray ID: %s)",
-                session_id, page.url, ray_id or "unknown",
-            )
-            raise SessionUnavailable(ERROR_CHALLENGE, kind="challenge")
-
-        yield page, info
-
-
 # Kind (from browser.api_client.Verdict) -> (payload builder, abort class).
-# "expired"/"blocked" mean the SESSION itself is the problem (SessionUnavailable,
-# same as guarded_page's own vocabulary); everything else is a per-call
+# "expired"/"blocked" mean the SESSION itself is the problem
+# (SessionUnavailable); everything else is a per-call
 # problem the session may still be perfectly healthy for (ToolAbort) — a
 # configuration bug (wrong_host/header_fault) or a shape/status this call's
 # response didn't satisfy. "blocked" is special-cased separately in
@@ -483,13 +337,14 @@ async def guarded_api(
     body: dict | None = None,
     before_request: Callable[[SessionInfo], Awaitable[None]] | None = None,
 ) -> AsyncIterator[tuple[object, SessionInfo]]:
-    """The API-path equivalent of guarded_page: resolve the session, hold
-    its lock for the whole region, issue exactly ONE HTTP request (no
-    navigation, no settle window — an HTTP response has no client-side
-    after-state the way a Vue SPA page does), and yield (payload, info).
+    """Resolve the session, hold its lock for the whole region, issue
+    exactly ONE HTTP request (no navigation, no settle window — an HTTP
+    response has no client-side after-state the way a Vue SPA page does),
+    and yield (payload, info).
 
-    All eight read/write tools (tools/search.py, tools/messaging.py) use
-    this identically:
+    Every read/write tool (tools/search.py, tools/messaging.py) plus
+    restore verification and server-side logout (tools/auth.py) use this
+    identically:
 
         try:
             async with guarded_api(ctx, ENDPOINTS["search_resumes"], params=params) as (payload, info):
@@ -497,24 +352,15 @@ async def guarded_api(
         except GuardAbort as e:
             return e.payload
 
-    What is reused verbatim from guarded_page, and why: the session lock
-    and the identity re-check (logout()+login() can swap in a brand-new
-    SessionInfo under the same session id while this call is queued —
-    presence alone is not identity, see guarded_page's docstring); the
-    GuardAbort/SessionUnavailable/ToolAbort hierarchy and the
-    `except GuardAbort as e: return e.payload` call-site convention; and
-    the Cloudflare body screen, run BEFORE any shape inspection, in the
-    same relative position guarded_page runs it.
+    check_session_expired is not called here — its URL half cannot fire
+    (redirects are not followed) and its HTTP-status half maps 403 to a
+    single "blocked" wording that would pre-empt the clearance-vs-block
+    distinction below. browser/api_client.classify()'s own Error Handling
+    rows cover both statuses instead.
 
-    What does NOT transfer: check_session_expired is not called here — its
-    URL half cannot fire (redirects are not followed) and its HTTP-status
-    half maps 403 to a single "blocked" wording that would pre-empt the
-    clearance-vs-block distinction below. browser/api_client.classify()'s
-    own Error Handling rows cover both statuses instead.
-
-    before_request keeps before_goto's contract exactly: runs inside the
-    lock, after the throttle gate, and may raise ToolAbort to abort
-    without issuing a request.
+    before_request runs inside the lock, after the throttle gate (when the
+    endpoint declares one), and may raise ToolAbort to abort without
+    issuing a request.
 
     `body` is forwarded to fetch() unchanged, for a POST endpoint's request
     body. The method/body mismatch check below (a body handed to a GET
@@ -528,13 +374,14 @@ async def guarded_api(
     請稍後再試") — reporting a caller's own bug as a transient network blip
     to an Agent whose reasonable next move is to retry.
 
-    Cookies are read from the live BrowserContext on every call, inside the
-    held lock — not snapshotted into a longer-lived jar. Not for freshness
-    (after login the browser never navigates again, so nothing rotates
-    them) but because a snapshot would be a second copy of state that
-    already has one owner (the BrowserContext), and this project has
-    twice been bitten by exactly that pattern — one fact living in two
-    places with only one kept up to date.
+    Cookies are read from `info.cookies` on every call, inside the held
+    lock — not from a browser object, because there is no browser object
+    to read from after login completes (SessionInfo is the sole holder of
+    credentials post-login; see browser/session.py). Reading it fresh
+    inside the lock rather than capturing it once outside is still not for
+    freshness within a call (nothing rotates it mid-region) but the same
+    single-owner discipline this project has twice been bitten by
+    violating elsewhere — one fact, one place it is read from.
     """
     app = ctx.request_context.lifespan_context
     info = await resolve_session(ctx)
@@ -543,21 +390,40 @@ async def guarded_api(
 
     session_id = get_session_id(ctx)
     async with info.lock:
-        # Re-check presence AND identity — see guarded_page's identical
-        # check above for why presence alone (is_logged_in) is not enough.
+        # Re-check presence AND identity: logout()+login() can remove this
+        # session and register a brand-new SessionInfo under the same
+        # session_id while this call was queued waiting for `info.lock` —
+        # a presence-only check (is_logged_in) would pass against that NEW
+        # entry even though we hold the OLD entry's lock, silently
+        # defeating the whole point of per-session locking.
         if app.session_pool.get_session(session_id) is not info:
             raise SessionUnavailable(ERROR_NOT_LOGGED_IN, kind="not_logged_in")
 
-        throttle_result = await enforce_throttle(
-            info.throttle,
-            max_requests_per_hour=app.config.max_requests_per_hour,
-            max_inline_wait_seconds=app.config.max_inline_wait_seconds,
-            activity_streak_limit_minutes=app.config.activity_streak_limit_minutes,
-            rest_duration_minutes=app.config.rest_duration_minutes,
-            min_call_interval_seconds=app.config.min_call_interval_seconds,
-        )
-        if throttle_result is not None:
-            raise ToolAbort(throttle_result, kind="throttled")
+        if endpoint.throttle_gated:
+            abort = await enforce_throttle(
+                info.throttle,
+                path=app.config.throttle_state_path,
+                max_requests_per_hour=app.config.max_requests_per_hour,
+                max_inline_wait_seconds=app.config.max_inline_wait_seconds,
+                activity_streak_limit_minutes=app.config.activity_streak_limit_minutes,
+                rest_duration_minutes=app.config.rest_duration_minutes,
+                min_call_interval_seconds=app.config.min_call_interval_seconds,
+            )
+            if abort is not None:
+                # The abort's own `kind` is what reaches ToolAbort, never a
+                # kind decided at this call site — a state-file read
+                # failure must surface as "internal_config", not as
+                # "throttled" with no retry_after_seconds pretending to be
+                # an ordinary pace rejection (see ThrottleAbort's
+                # docstring). Only "throttled" carries its own payload;
+                # every other kind hands back nothing but `detail`, and
+                # this is the one place authorised to turn that detail
+                # into the same "code bug, not a site condition" wording
+                # family as _error_wrong_host/_error_header_fault —
+                # browser/throttle.py never imports tools/ and never
+                # writes this Agent-facing prose itself.
+                payload = abort.payload if abort.kind == "throttled" else _error_internal_config(abort.detail)
+                raise ToolAbort(payload, kind=abort.kind)
 
         if before_request is not None:
             await before_request(info)
@@ -573,8 +439,7 @@ async def guarded_api(
                 kind="internal_config",
             )
 
-        cookies = await info.browser_context.cookies()
-        cookie_header = select_cookies_for_host(cookies, hostname_for(endpoint))
+        cookie_header = select_cookies_for_host(info.cookies, hostname_for(endpoint))
 
         # note_request runs in `finally`, not after a bare `await fetch(...)`
         # line: a timeout or connection error raises out of the `try` below
@@ -582,9 +447,13 @@ async def guarded_api(
         # rolling-window volume count reading zero on exactly the calls
         # most worth counting — 104 refusing or timing out under load is
         # the condition the volume cap exists to react to, not to miss.
-        # attach_request_counter cannot see this traffic at all (it is a
-        # browser-navigation listener), so this is the only place any
-        # aiohttp request — successful or not — is ever counted.
+        # this is the only place any aiohttp request — successful or not —
+        # is ever counted. Runs unconditionally, regardless of
+        # endpoint.throttle_gated: the gate above may be waived, the
+        # ledger never is (§C6/§C8) — a route exempt from the judgment
+        # gate is still a real request against 104 and still belongs in
+        # the rolling-window volume count and the inter-call pacing
+        # anchor.
         try:
             raw = await fetch(endpoint, cookie_header=cookie_header, params=params, body=body)
         except Exception as exc:
@@ -598,13 +467,13 @@ async def guarded_api(
             # that has nothing to do with session health.
             raise ToolAbort(ERROR_API_REQUEST_FAILED, kind="transport")
         finally:
-            note_request(info.throttle)
+            note_request(info.throttle, path=app.config.throttle_state_path)
 
-        # Must run before any shape inspection, same ordering rule as
-        # guarded_page: a challenge page has no measured shape resembling
-        # either family's success OR any of classify()'s named failures,
-        # so it must be screened out first, not fall through into one of
-        # those and be reported as something else.
+        # Must run before any shape inspection: a challenge page has no
+        # measured shape resembling either family's success OR any of
+        # classify()'s named failures, so it must be screened out first,
+        # not fall through into one of those and be reported as something
+        # else.
         is_challenge, ray_id = _detect_cloudflare_challenge(raw.body)
         if is_challenge:
             log.warning(
