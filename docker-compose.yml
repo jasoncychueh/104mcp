@@ -1,0 +1,21 @@
+services:
+  mcp-104:
+    build:
+      context: .
+    ports:
+      - "8082:8080"   # auth web server (noVNC login pages) — host 8082 → container 8080
+      - "8081:8081"   # MCP streamable-http transport
+    environment:
+      - DB_PATH=/data/104.db
+      - MAX_DAILY_MESSAGES=50
+      # How long the login watcher waits for a human to finish the noVNC
+      # login (OAuth2 + PKCE + MFA, plus possible product-selection /
+      # repeatLogin clicks — see docs/104-site-facts.md). A live login
+      # measured at 265s; default covers that with margin.
+      - LOGIN_TIMEOUT_SECONDS=900
+    volumes:
+      - ./data:/data
+    shm_size: 2gb
+    security_opt:
+      - seccomp:unconfined
+    restart: unless-stopped

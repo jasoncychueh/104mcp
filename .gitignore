@@ -1,0 +1,61 @@
+# No `**/` needed on these, unlike their .dockerignore counterparts: git's own
+# ignore-pattern semantics (not Docker's filepath.Match-based one) already match a
+# slash-less pattern like `__pycache__/` or `*.pyc` at ANY depth by default — only a
+# pattern containing a slash in the middle is anchored to the directory the
+# .gitignore file lives in. Confirmed: `git check-ignore -v
+# src/mcp104/tools/__pycache__/foo.pyc` and `src/mcp104.egg-info/PKG-INFO` both
+# resolve to these bare rules. The two ignore files look like they share a pattern
+# language; they do not — do not carry a `**/` decision from one file to the other in
+# either direction.
+__pycache__/
+*.pyc
+.env
+.pytest_cache/
+.ruff_cache/
+
+# `pip install -e .` / `pip install --no-deps .` build metadata and in-tree build
+# output — regenerated on every install, not source. `build/` is what setuptools
+# leaves behind (a second copy of the package under build/lib/) if a build is ever run
+# outside the Dockerfile's own same-layer cleanup; `dist/` is sdist/wheel output,
+# never produced by this project's install/build commands today but excluded
+# pre-emptively for the same reason.
+*.egg-info/
+build/
+dist/
+
+# Runtime data — never commit. cookies.json holds live 104 session cookies.
+data/*.db
+data/*.json
+# *.sqlite as well: the extension list, not the directory, is what excludes these,
+# so a file this project writes under a third extension would be committable. A
+# verification script left three verify_*.sqlite here and git offered to add them.
+data/*.sqlite
+
+# Measurement captures — real candidates' résumés, names and e-mail addresses
+# scraped from a live 104 enterprise session. Never commit. The probe scripts in
+# research/probes/ ARE committed: they are the reproducible method and hold no
+# personal data. See research/README.md.
+research/captures/
+
+# research/results/ is deliberately NOT ignored, and the split is structural
+# rather than a per-file exception. `captures/` holds RAW responses, which carry
+# other people's résumés; `results/` holds DERIVED measurements — totals, ratios,
+# echoed parameter values, our own filter inputs — which carry none.
+#
+# The distinction was learned the hard way twice, in opposite directions. A
+# results file was first ignored by inheriting the captures rule, which made the
+# corpus behind a safety-relevant decision unavailable on a clean clone — the
+# same unauditability that had just been diagnosed one round earlier, reproduced
+# by the fix for it. Then a pattern-based sweep of that same file reported four
+# "phone numbers" that were digit runs inside floating-point ratios.
+#
+# So: decide by WHICH FIELDS a file can contain, never by what its bytes look
+# like. A regex over digits under-detects a person with no e-mail address and
+# over-detects a decimal, and this project has now done both.
+#
+# The certification corpus that motivated this rule (certify_conditions_results.json)
+# has SINCE moved out of this directory, to src/mcp104/assets/certification/ (the
+# package-layout restructure — setuptools can only ship data that lives inside the
+# package it belongs to). This rule still stands for what remains here
+# (messaging_endpoints.json) and for anything future work adds to this directory, for
+# the identical reason: derived measurements, no personal data.

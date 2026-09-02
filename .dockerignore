@@ -1,0 +1,77 @@
+# Docker's build context does NOT consult .gitignore, and is uploaded to the Docker
+# daemon in full (minus what this file excludes) BEFORE any Dockerfile instruction
+# runs — independent of which files a Dockerfile later chooses to COPY. Since the
+# package-layout restructure, Dockerfile carries an ALLOWLIST of three explicit COPY
+# lines (requirements.txt, pyproject.toml, src/) and no `COPY . .`, so this file no
+# longer decides what reaches the final image — the allowlist does. This file's one
+# remaining job: personal data must not leave the machine via the build context at
+# all, and that context should stay small. This file and .gitignore still have to be
+# maintained together for the personal-data rules specifically (enforced by
+# tests/test_ignore_files.py), even though the consequence of a gap changed shape.
+#
+# This was written after an early image (built with a since-removed `COPY . .`) was
+# found to contain 9.4 MB of real candidates' résumés and a live 104 enterprise
+# session cookie jar. The exclusion had been stated as a hard constraint in three
+# documents and enforced against git alone.
+
+# Real candidates' résumés, names, e-mail addresses, phone numbers, and raw traffic
+# recordings from a live enterprise session.
+research/captures/
+
+# Live session cookies and the local SQLite database. The cookies are a working 104
+# enterprise session; the database is bind-mounted at runtime anyway, so baking a
+# copy in only creates a stale one that also carries candidate ids.
+data/
+
+# Not needed at runtime, and .git carries the full history of everything above.
+.git/
+.gitignore
+.spec/
+tests/
+docs/
+*.md
+
+# ⚠ Root-scoped, deliberately NOT widened to `**/*.md`: Docker's ignore matching is
+# filepath.Match-based, where a single `*` does not cross a `/`. Widening this rule
+# would silently exclude src/mcp104/assets/104-categories/README.md and
+# src/mcp104/assets/certification/README.md — both cited from module docstrings and
+# both required package data (`[tool.setuptools.package-data]` in pyproject.toml) —
+# even though `src/` is itself allowlisted by the Dockerfile's COPY line; a build
+# context that never contained them in the first place cannot ship them regardless of
+# what the COPY line asks for.
+#
+# This is the SAME `filepath.Match` mechanism the "Local noise" rules below get `**/`
+# prefixes for, pointed the opposite direction: there, root-scoping was the bug
+# (excluding nothing at the nested location that actually needs it); here, root-
+# scoping is the fix (widening would exclude files that must stay). Two neighbouring
+# sections deliberately handling the same mechanism oppositely — read both before
+# changing either.
+
+# Local noise
+#
+# `**/` matters here, not cosmetic: Docker's ignore matching anchors a single `*` at
+# the context root, and only `**/` crosses a `/` to reach nested occurrences — the
+# same filepath.Match semantics the `*.md` rule above relies on, applied in the
+# OPPOSITE direction. `__pycache__/`, `*.pyc` and `*.egg-info/` all genuinely occur at
+# depth in this repo (e.g. src/mcp104/tools/__pycache__/, and — created directly by
+# the `pip install -e ".[dev]"` this project's own dev setup requires —
+# src/mcp104.egg-info/, one level inside src/, not at the root). A root-scoped rule
+# for any of these would silently exclude nothing at the actual location while still
+# passing a presence-only check that a rule merely exists.
+**/__pycache__/
+**/*.pyc
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+**/*.egg-info/
+
+# `build/` and `dist/` are, BY CONTRAST, genuinely root-only for this project: both
+# are setuptools' own build-tool output, always written relative to wherever
+# `pyproject.toml` is invoked from — which for every build/install path this project
+# actually uses (the Dockerfile's `RUN pip install ... .`, and any local `python -m
+# build`) is the repository root, never a subdirectory. Root-scoped is therefore
+# correct here, not merely convenient — `**/` would cost nothing but would also be
+# asserting a depth risk that does not exist for these two.
+build/
+dist/

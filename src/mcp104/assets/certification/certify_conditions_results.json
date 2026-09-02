@@ -1,0 +1,552 @@
+{
+  "jobcat": {
+    "baseline_total": 532002,
+    "treatment_total": 4637,
+    "ratio": 114.72978218675868,
+    "order_of_magnitude": true,
+    "echoed": {
+      "jobcat": [
+        "2010001023"
+      ]
+    },
+    "filters_sent": {
+      "jobcat": "2010001023"
+    }
+  },
+  "city": {
+    "baseline_total": 532004,
+    "treatment_total": 148297,
+    "ratio": 3.5874225372057427,
+    "order_of_magnitude": false,
+    "echoed": {
+      "city": [
+        "6001006000"
+      ]
+    },
+    "filters_sent": {
+      "city": "6001006000"
+    }
+  },
+  "home": {
+    "baseline_total": 532004,
+    "treatment_total": 50933,
+    "ratio": 10.445173070504389,
+    "order_of_magnitude": true,
+    "echoed": {
+      "home": [
+        "6001006000"
+      ]
+    },
+    "filters_sent": {
+      "home": "6001006000"
+    }
+  },
+  "workExpInd": {
+    "baseline_total": 532004,
+    "treatment_total": 79646,
+    "ratio": 6.679607262134947,
+    "order_of_magnitude": false,
+    "echoed": {
+      "workExpInd": [
+        "1001006002"
+      ]
+    },
+    "filters_sent": {
+      "workExpInd": "半導體製造業"
+    }
+  },
+  "expectInd": {
+    "baseline_total": 532003,
+    "treatment_total": 399405,
+    "ratio": 1.3319888333896672,
+    "order_of_magnitude": false,
+    "echoed": {
+      "expectInd": [
+        "1001006002"
+      ]
+    },
+    "filters_sent": {
+      "expectInd": "半導體製造業"
+    }
+  },
+  "major": {
+    "baseline_total": 532003,
+    "treatment_total": 52023,
+    "ratio": 10.226303750264305,
+    "order_of_magnitude": true,
+    "echoed": {
+      "major": [
+        "3011011000"
+      ]
+    },
+    "filters_sent": {
+      "major": "機械工程相關"
+    }
+  },
+  "goodTools": {
+    "baseline_total": 532002,
+    "treatment_total": 539,
+    "ratio": 987.0166975881261,
+    "order_of_magnitude": true,
+    "echoed": {
+      "goodTools": [
+        "12001001001"
+      ]
+    },
+    "filters_sent": {
+      "goodTools": "AIX"
+    }
+  },
+  "certificates": {
+    "baseline_total": 532003,
+    "treatment_total": 3160,
+    "ratio": 168.35537974683544,
+    "order_of_magnitude": true,
+    "echoed": {
+      "certificates": [
+        "4023001001"
+      ]
+    },
+    "filters_sent": {
+      "certificates": "國際專案管理師PMP"
+    }
+  },
+  "studyAbroad": {
+    "baseline_total": 532003,
+    "treatment_total": 503673,
+    "ratio": 1.0562468109269307,
+    "order_of_magnitude": false,
+    "echoed": {
+      "studyAbroad": "7001053000"
+    },
+    "filters_sent": {
+      "studyAbroad": "台灣"
+    }
+  },
+  "nationality": {
+    "baseline_total": 532002,
+    "treatment_total": 212,
+    "ratio": 2509.443396226415,
+    "order_of_magnitude": true,
+    "echoed": {
+      "nationality": [
+        "7001010000"
+      ]
+    },
+    "filters_sent": {
+      "nationality": "7001010000"
+    }
+  },
+  "agemin+agemax": {
+    "baseline_total": 532002,
+    "treatment_total": 169804,
+    "ratio": 3.133035735318367,
+    "order_of_magnitude": false,
+    "echoed": {
+      "agemin": "20",
+      "agemax": "30"
+    },
+    "filters_sent": {
+      "agemin": "20",
+      "agemax": "30"
+    }
+  },
+  "sex": {
+    "baseline_total": 532000,
+    "treatment_total": 109746,
+    "ratio": 4.847557086363056,
+    "order_of_magnitude": false,
+    "echoed": {
+      "sex": "1"
+    },
+    "filters_sent": {
+      "sex": "1"
+    }
+  },
+  "empStatus": {
+    "baseline_total": 531999,
+    "treatment_total": 291909,
+    "ratio": 1.8224823489512143,
+    "order_of_magnitude": false,
+    "echoed": {
+      "empStatus": "1"
+    },
+    "filters_sent": {
+      "empStatus": "1"
+    }
+  },
+  "updateDateType": {
+    "baseline_total": 531999,
+    "treatment_total": 4539,
+    "ratio": 117.20621282220753,
+    "order_of_magnitude": true,
+    "echoed": {
+      "updateDateType": "2"
+    },
+    "filters_sent": {
+      "updateDateType": "2"
+    }
+  },
+  "plastActionDateType": {
+    "baseline_total": 531998,
+    "treatment_total": 178727,
+    "ratio": 2.9765955899220597,
+    "order_of_magnitude": false,
+    "echoed": {
+      "plastActionDateType": "8"
+    },
+    "filters_sent": {
+      "plastActionDateType": "8"
+    }
+  },
+  "schoolKeyword": {
+    "baseline_total": 531998,
+    "treatment_total": 3662,
+    "ratio": 145.2752594210814,
+    "order_of_magnitude": true,
+    "echoed": {
+      "schoolKeyword": "台灣大學"
+    },
+    "filters_sent": {
+      "schoolKeyword": "台灣大學"
+    }
+  },
+  "workShift": {
+    "baseline_total": 532001,
+    "treatment_total": 206158,
+    "ratio": 2.5805498695175544,
+    "order_of_magnitude": false,
+    "echoed": {
+      "workShift": "1"
+    },
+    "filters_sent": {
+      "workShift": "1"
+    }
+  },
+  "auto": {
+    "baseline_total": 532001,
+    "treatment_total": 380341,
+    "ratio": 1.3987474397974449,
+    "order_of_magnitude": false,
+    "echoed": {
+      "auto": "1"
+    },
+    "filters_sent": {
+      "auto": "1"
+    }
+  },
+  "photo": {
+    "baseline_total": 532001,
+    "treatment_total": 439783,
+    "ratio": 1.2096897788227376,
+    "order_of_magnitude": false,
+    "echoed": {
+      "photo": "1"
+    },
+    "filters_sent": {
+      "photo": "1"
+    }
+  },
+  "disability": {
+    "baseline_total": 532001,
+    "treatment_total": 3004,
+    "ratio": 177.09753661784288,
+    "order_of_magnitude": true,
+    "echoed": {
+      "disability": 1
+    },
+    "filters_sent": {
+      "disability": "1"
+    }
+  },
+  "edu": {
+    "baseline_total": 532000,
+    "treatment_total": 317805,
+    "ratio": 1.6739824735293656,
+    "order_of_magnitude": false,
+    "echoed": {
+      "edu": [
+        "4",
+        "8"
+      ]
+    },
+    "filters_sent": {
+      "edu": [
+        "4",
+        "8"
+      ]
+    }
+  },
+  "role": {
+    "baseline_total": 531998,
+    "treatment_total": 55942,
+    "ratio": 9.509813735654784,
+    "order_of_magnitude": false,
+    "echoed": {
+      "role": [
+        "2"
+      ]
+    },
+    "filters_sent": {
+      "role": [
+        "2"
+      ]
+    }
+  },
+  "driver": {
+    "baseline_total": 531999,
+    "treatment_total": 359658,
+    "ratio": 1.4791802212101497,
+    "order_of_magnitude": false,
+    "echoed": {
+      "driver": [
+        "1"
+      ]
+    },
+    "filters_sent": {
+      "driver": [
+        "1"
+      ]
+    }
+  },
+  "transport": {
+    "baseline_total": 532001,
+    "treatment_total": 61968,
+    "ratio": 8.585092305706171,
+    "order_of_magnitude": false,
+    "echoed": {
+      "transport": [
+        "1"
+      ]
+    },
+    "filters_sent": {
+      "transport": [
+        "1"
+      ]
+    }
+  },
+  "specialStatus": {
+    "baseline_total": 532001,
+    "treatment_total": 47262,
+    "ratio": 11.256421649528162,
+    "order_of_magnitude": true,
+    "echoed": {
+      "specialStatus": [
+        "1"
+      ]
+    },
+    "filters_sent": {
+      "specialStatus": [
+        "1"
+      ]
+    }
+  },
+  "work_exp_time": {
+    "baseline_total": 532000,
+    "treatment_total": 175757,
+    "ratio": 3.026906467452221,
+    "order_of_magnitude": false,
+    "echoed": {
+      "workExpTimeType": "to",
+      "workExpTimeMin": "1",
+      "workExpTimeMax": "5"
+    },
+    "filters_sent": {
+      "work_exp_time": {
+        "mode": "to",
+        "min": 1,
+        "max": 5
+      }
+    }
+  },
+  "language_skills": {
+    "baseline_total": 531999,
+    "treatment_total": 54094,
+    "ratio": 9.834713646615151,
+    "order_of_magnitude": false,
+    "echoed": {
+      "language": [
+        "1"
+      ],
+      "languageAbility1": [
+        "2",
+        "2",
+        "2",
+        "2"
+      ],
+      "languageAbility2": null,
+      "languageAbility3": null,
+      "langAbilityFulfills": null
+    },
+    "filters_sent": {
+      "language_skills": {
+        "languages": [
+          {
+            "language": "1",
+            "abilities": [
+              "2",
+              "2",
+              "2",
+              "2"
+            ]
+          }
+        ],
+        "fulfills_all": false
+      }
+    }
+  },
+  "expect_pay": {
+    "baseline_total": 531999,
+    "treatment_total": 10184,
+    "ratio": 52.238707776904945,
+    "order_of_magnitude": true,
+    "echoed": {
+      "expectPayType": [
+        "1"
+      ],
+      "expectPayMonthType": "down",
+      "expectPayMonthMin": [
+        "3",
+        "0"
+      ],
+      "expectPayMonthMax": null
+    },
+    "filters_sent": {
+      "expect_pay": {
+        "types": [
+          "1"
+        ],
+        "month": {
+          "mode": "down",
+          "min": 30000
+        }
+      }
+    }
+  },
+  "military": {
+    "baseline_total": 531998,
+    "treatment_total": 175184,
+    "ratio": 3.0367955977714858,
+    "order_of_magnitude": false,
+    "echoed_value": [
+      "5"
+    ],
+    "echo_is_null_as_expected": false,
+    "filters_sent": {
+      "military": [
+        "5"
+      ]
+    }
+  },
+  "workInterval": {
+    "baseline_total": 531998,
+    "treatment_total": 516287,
+    "ratio": 1.0304307487889488,
+    "order_of_magnitude": false,
+    "echoed_value": [
+      "1"
+    ],
+    "echo_is_null_as_expected": false,
+    "filters_sent": {
+      "workInterval": [
+        "1"
+      ]
+    }
+  },
+  "contactPrivacy": {
+    "row_count": 50,
+    "rows_not_public": [],
+    "all_rows_public": true,
+    "filters_sent": {
+      "contactPrivacy": "1"
+    },
+    "note": "bespoke per-row check — order-of-magnitude does not apply here by design",
+    "echoed": {
+      "contactPrivacy": "1"
+    },
+    "echoed_value": "1",
+    "provenance_note": "echo captured by a targeted follow-up request on 2026-08-14, not by the main certification run: that run reached contactPrivacy through the bespoke row-level path, which recorded rows and privacy flags and never captured an echo at all. That gap is why this condition read  rather than either measured outcome, and it is closed at source by Phase 6 task 1 now requiring the echo to be captured on the row-level path too."
+  },
+  "expect_pay_up_inert": {
+    "amounts": [
+      10000,
+      48000,
+      150000
+    ],
+    "totals": [
+      64739,
+      64739,
+      64739
+    ],
+    "all_identical": true
+  },
+  "omitted_companion": {
+    "params_sent": [
+      [
+        "kws",
+        "工程師"
+      ],
+      [
+        "workExpTimeType",
+        "to"
+      ],
+      [
+        "workExpTimeMin",
+        "1"
+      ]
+    ],
+    "http_status": 400,
+    "verdict_ok": false,
+    "verdict_kind": "missing_param",
+    "verdict_detail": "{\"workExpTimeMax\":[\"總年資：需選擇由小到大\"]}",
+    "interpretation": "server rejected it (verdict_ok=False) — settles the open question this test exists to answer: 104 rejects rather than silently ignoring"
+  },
+  "workExpJob": {
+    "baseline_total": 531979,
+    "treatment_total": 7817,
+    "ratio": 68.05411283100933,
+    "order_of_magnitude": true,
+    "echoed": {
+      "workExpJob": [
+        "2001001002"
+      ]
+    },
+    "echoed_value": [
+      "2001001002"
+    ],
+    "filters_sent": {
+      "workExpJob": "2001001002"
+    },
+    "row_level_confirmation": {
+      "sampled_rows": 50,
+      "rows_carrying_category_in_work_history": 50,
+      "fields": [
+        "expJobArr[].expJobDesc",
+        "expJobArr[].expTitle"
+      ]
+    },
+    "provenance_note": "measured 2026-08-14 by a targeted follow-up, not by the main run, which SKIPPED this condition rather than guessing: the archive preserved only its total and never the code that produced it. The code used here is a JobCat.json leaf (2001001002 儲備幹部). The row-level check is what settles the code space -- a moved total alone cannot, since two distinct code spaces holding the same ten-digit number produce an identical observation."
+  },
+  "workExpJob_branch": {
+    "baseline_total": 531943,
+    "filters_sent": {
+      "workExpJob": "2010001000"
+    },
+    "echoed": {
+      "workExpJob": [
+        "2010001000"
+      ]
+    },
+    "treatment_total": 73304,
+    "ratio": 7.256670850158245,
+    "order_of_magnitude": true,
+    "control": {
+      "description": "same branch code (2010001000) submitted through jobcat in the same session, to confirm the two parameters answer independently rather than one silently ignoring it",
+      "filters_sent": {
+        "jobcat": "2010001000"
+      },
+      "treatment_total": 60165
+    },
+    "provenance_note": "measured 2026-08-14 on a live session, targeted Phase 6 task 3 follow-up (not the main certify_conditions.py run): tests whether workExpJob accepts a branch code, since branch-code acceptance is measured per (dataset, condition) pair and is never inherited across conditions sharing one dataset file -- JobCat.json accepting a branch through jobcat was never evidence about workExpJob. Result: accepted, not inherited -- echoed verbatim, and the total fell 458,639 against a same-session drift band under five, to a non-zero total, which certifies under this project's certification criterion (a fall clearing the drift band by orders of magnitude, landing on a non-zero total). The jobcat control returning a DIFFERENT total (60,165) for the identical branch code is kept as part of this entry because it is what confirms the two parameters are independently wired rather than one shadowing the other. This measurement shows the branch is accepted, echoed and moves the total; it does not separately verify the branch expands to the semantically correct work-history subtree -- the same standard jobcat's own branch acceptance was held to, not a new gap."
+  }
+}
