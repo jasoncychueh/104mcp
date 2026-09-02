@@ -14,9 +14,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import datetime as dt
 import inspect
 import json
+import logging
 import types
 from dataclasses import fields, is_dataclass
 from pathlib import Path
@@ -1098,7 +1098,7 @@ async def _drive_to_watching(app_ctx, token: str):
 
 
 @pytest.mark.asyncio
-async def test_t042_hostname_alone_is_not_enough_keeps_waiting(tmp_path, monkeypatch):
+async def test_t042_hostname_alone_is_not_enough_keeps_waiting(tmp_path, monkeypatch, caplog):
     """R9.1/R9.2: the main frame settles on vip.104.com.tw, but the
     app-session cookie never shows up -- the predicate must not treat the
     hostname alone as completion; the login must still be judged
@@ -1113,6 +1113,7 @@ async def test_t042_hostname_alone_is_not_enough_keeps_waiting(tmp_path, monkeyp
     token = "tok-t042"
     resource, page, context, browser, stream = make_driven_pending_login(app_ctx, token)
 
+    caplog.set_level(logging.WARNING, logger="104-mcp.auth")
     task = await _drive_to_watching(app_ctx, token)
     page.navigate_to("https://vip.104.com.tw/rms/index")
     # No its/ithp cookie is ever added to `context._cookies`.
@@ -1122,10 +1123,15 @@ async def test_t042_hostname_alone_is_not_enough_keeps_waiting(tmp_path, monkeyp
     assert not app_ctx.config.cookies_path.exists()
     assert app_ctx._finished_logins.get(token) == "abandoned"
     assert token not in app_ctx._pending_logins
+    # I2-D: the abandon reason must be that the cookie never showed up
+    # AFTER the hostname was already seen -- not "never navigated at
+    # all", which is a different failure this case does not exercise.
+    assert "vip.104.com.tw session cookie never appeared" in caplog.text
+    assert "timed out waiting for vip.104.com.tw navigation" not in caplog.text
 
 
 @pytest.mark.asyncio
-async def test_t043_browser_session_only_cookie_is_not_enough(tmp_path, monkeypatch):
+async def test_t043_browser_session_only_cookie_is_not_enough(tmp_path, monkeypatch, caplog):
     """R9.1: a cookie that only lives in the browser session (PHPSESSID)
     must not satisfy the second factor -- only its/ithp count, per the
     VIP_SESSION_COOKIE_NAMES contract."""
@@ -1138,6 +1144,7 @@ async def test_t043_browser_session_only_cookie_is_not_enough(tmp_path, monkeypa
     token = "tok-t043"
     resource, page, context, browser, stream = make_driven_pending_login(app_ctx, token)
 
+    caplog.set_level(logging.WARNING, logger="104-mcp.auth")
     task = await _drive_to_watching(app_ctx, token)
     page.navigate_to("https://vip.104.com.tw/rms/index")
     context._cookies = [
@@ -1150,6 +1157,10 @@ async def test_t043_browser_session_only_cookie_is_not_enough(tmp_path, monkeypa
     assert not app_ctx.config.cookies_path.exists()
     assert app_ctx._finished_logins.get(token) == "abandoned"
     assert token not in app_ctx._pending_logins
+    # I2-D: hostname WAS seen, only the session cookie is missing -- the
+    # abandon reason must reflect that, not "never navigated".
+    assert "vip.104.com.tw session cookie never appeared" in caplog.text
+    assert "timed out waiting for vip.104.com.tw navigation" not in caplog.text
 
 
 @pytest.mark.asyncio
@@ -1157,7 +1168,7 @@ async def test_t043_browser_session_only_cookie_is_not_enough(tmp_path, monkeypa
     "bad_hostname",
     ["https://evil-vip.104.com.tw/rms/index", "https://x.vip.104.com.tw/rms/index"],
 )
-async def test_t044_hostname_match_is_exact_not_substring(tmp_path, monkeypatch, bad_hostname):
+async def test_t044_hostname_match_is_exact_not_substring(tmp_path, monkeypatch, caplog, bad_hostname):
     """R9.1: hostname comparison must be an exact match against
     vip.104.com.tw -- neither a prefixed nor a subdomain-prefixed
     look-alike host may pass. The app-session cookie is made available
@@ -1173,6 +1184,7 @@ async def test_t044_hostname_match_is_exact_not_substring(tmp_path, monkeypatch,
     resource, page, context, browser, stream = make_driven_pending_login(app_ctx, token)
     context._cookies = [{"name": "its", "domain": ".vip.104.com.tw", "value": "x"}]
 
+    caplog.set_level(logging.WARNING, logger="104-mcp.auth")
     task = await _drive_to_watching(app_ctx, token)
     page.navigate_to(bad_hostname)
     await asyncio.wait_for(task, timeout=5)
@@ -1181,6 +1193,10 @@ async def test_t044_hostname_match_is_exact_not_substring(tmp_path, monkeypatch,
     assert not app_ctx.config.cookies_path.exists()
     assert app_ctx._finished_logins.get(token) == "abandoned"
     assert token not in app_ctx._pending_logins
+    # I2-D: the look-alike hostname never counts as "vip.104.com.tw seen",
+    # so this must time out on navigation itself, not on the cookie factor.
+    assert "timed out waiting for vip.104.com.tw navigation" in caplog.text
+    assert "vip.104.com.tw session cookie never appeared" not in caplog.text
 
 
 # --- T-45 (R9.3, R9.4): abandon-on-timeout releases every resource -------
@@ -2304,10 +2320,10 @@ async def test_t008_settle_window_survives_for_exactly_the_named_duration(tmp_pa
             self.stopped_at = None
 
         async def announce_completed(self):
-            self.announced_at = asyncio.get_event_loop().time()
+            self.announced_at = asyncio.get_running_loop().time()
 
         async def stop(self):
-            self.stopped_at = asyncio.get_event_loop().time()
+            self.stopped_at = asyncio.get_running_loop().time()
             await super().stop()
 
     timed_stream = _TimedStream(page)

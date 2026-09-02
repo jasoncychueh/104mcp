@@ -30,10 +30,13 @@ it only goes red when CLAUDE.md fails to follow.
 """
 from __future__ import annotations
 
+import ast
 import inspect
 import re
 import tomllib
 from pathlib import Path
+
+import pytest
 
 import mcp104.config as config_module
 from mcp104.tools.auth import register_auth_tools
@@ -314,6 +317,51 @@ def test_claude_md_env_var_table_names_and_required_marks_match_config():
         f"call-form-derived required set: code says {sorted(code_required)}, "
         f"CLAUDE.md's '{_REQUIRED_MARKER}' cells say {sorted(doc_required)}"
     )
+
+
+def test_env_var_regex_extraction_does_not_miss_a_fourth_call_form():
+    """I2-N: `_ENV_VAR_CALL_RE` only recognizes three call shapes
+    (`os.getenv(...)`, `_parse_int_env(...)`, `_parse_optional_int_env(...)`).
+    If `get_config()`/`resolve_data_dir()` ever read an environment variable
+    through a fourth shape the regex does not match (e.g. `os.environ["X"]`,
+    an f-string built name, or a new helper), the regex-based extraction
+    above would silently miss it rather than fail loudly — since the
+    variable's own literal name still has to appear SOMEWHERE in the source
+    as an ENV_VAR-shaped string constant, walking the AST for every such
+    string constant and checking each is one the regex already accounted for
+    catches that miss.
+    """
+    env_name_re = re.compile(r"^[A-Z][A-Z0-9_]+$")
+    for func in (config_module.get_config, config_module.resolve_data_dir):
+        source = inspect.getsource(func)
+
+        # What the regex itself actually matched in THIS function's source --
+        # not `_env_vars_from_config_source()`'s filtered `code_names`, which
+        # deliberately drops resolve_data_dir()'s non-MCP104_-prefixed
+        # matches (APPDATA/LOCALAPPDATA/XDG_DATA_HOME are platform-convention
+        # fallbacks, not knobs this project owns, per that function's own
+        # docstring). Comparing against the filtered set would flag those as
+        # "missed by the regex" when the regex caught them fine and a later
+        # filter intentionally discarded them -- this must test the regex's
+        # own miss, not the filter's own choice.
+        regex_matched_names = set()
+        for m in _ENV_VAR_CALL_RE.finditer(source):
+            name = m.group("getenv_name") or m.group("int_name") or m.group("opt_name")
+            if name is not None:
+                regex_matched_names.add(name)
+
+        tree = ast.parse(source)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                candidate = node.value
+                if env_name_re.match(candidate) and candidate not in regex_matched_names:
+                    pytest.fail(
+                        f"{func.__name__} contains the ENV-VAR-shaped string "
+                        f"constant {candidate!r}, which _ENV_VAR_CALL_RE's "
+                        "three recognized call forms did not pick up -- a "
+                        "fourth call form reading an environment variable "
+                        "was likely added without updating the regex"
+                    )
 
 
 def test_env_var_defaults_in_claude_md_match_config_defaults(monkeypatch):

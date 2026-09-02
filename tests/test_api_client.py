@@ -321,6 +321,38 @@ def test_endpoint_construction_enforces_family_b_shape_invariant():
                  family_b_shape=FamilyBShape(is_list=False, inner_key="resume"), throttle_gated=True)
 
 
+def test_opaque_family_endpoint_classifies_a_bare_redirect_as_ok():
+    # I2-B(a): family "non_json" was renamed to "opaque" (Verdict.kind for
+    # the non-JSON *failure* case is unaffected — it stays "non_json", see
+    # the neighbouring family-A non-JSON case above). An "opaque" endpoint,
+    # declared the same shape logout_session uses (family_b_shape=None,
+    # throttle_gated=False), must classify a plain 302 with no body and a
+    # non-JSON content-type as success without ever touching family B's
+    # is_list/inner_key shape logic (there is none to touch: family_b_shape
+    # is None for this endpoint).
+    ep = Endpoint(key="probe_opaque", host="vip", path="/api/probe", method="POST", family="opaque",
+                  extra_headers=(), family_b_shape=None, throttle_gated=False)
+    raw = _raw(302, "text/html", "", None, location="https://vip.104.com.tw/rms/index")
+
+    verdict = classify(ep, raw)
+
+    assert verdict.ok is True
+
+
+def test_endpoint_construction_rejects_unknown_family():
+    # I2-B(b): only "A", "B" and "opaque" are valid `family` values. "C"
+    # (never a real family) and "non_json" (the old, pre-rename spelling)
+    # must both be rejected at construction, alongside the existing method
+    # whitelist case's ValueError-on-construction pattern.
+    with pytest.raises(ValueError):
+        Endpoint(key="probe_family_c", host="vip", path="/api/probe", method="GET", family="C",
+                 extra_headers=(), family_b_shape=None, throttle_gated=True)
+
+    with pytest.raises(ValueError):
+        Endpoint(key="probe_family_old_name", host="vip", path="/api/probe", method="GET", family="non_json",
+                 extra_headers=(), family_b_shape=None, throttle_gated=True)
+
+
 # ── T-56 (interface): matches_auth_host ──────────────────────────────────
 
 def test_auth_vip_host_is_not_classified_as_auth_host():

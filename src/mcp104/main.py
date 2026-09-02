@@ -138,7 +138,16 @@ async def _shutdown_globals() -> None:
     # the last pending login is gone — this loop does not need to repeat
     # any of that itself.
     for token in list(_app_ctx._pending_logins.keys()):
-        await _finalize_pending_login(_app_ctx, token, "process shutdown")
+        try:
+            await _finalize_pending_login(_app_ctx, token, "process shutdown")
+        except Exception:
+            # One pending login's teardown must not strand the rest of this
+            # loop (their browsers) or the steps after it (session_pool
+            # cleanup, db close, auth_site release, stop_playwright) — log
+            # and keep going rather than let a single raise abort shutdown.
+            log.exception(
+                "shutdown: finalize of pending login %s failed, continuing", token
+            )
 
     _app_ctx.session_pool.cleanup_all()
     await _app_ctx.db.close()

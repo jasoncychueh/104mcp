@@ -57,6 +57,13 @@ log = logging.getLogger("104-mcp.cdp_stream")
 # format/quality/maxWidth/maxHeight 之後被改到不一致。
 _SCREENCAST_PARAMS = {"format": "jpeg", "quality": 80, "maxWidth": 1600, "maxHeight": 900}
 
+# Upper bound on closing a single viewer sink: aiohttp's close() waits for the peer's
+# close frame, which can take ~10s per viewer on a half-open TCP connection. stop() is
+# awaited inline inside logout() (a tool call), and CLAUDE.md requires a tool call's
+# worst case to stay under 20s — a hung viewer connection must not be able to hold
+# logout() or process shutdown hostage.
+VIEWER_CLOSE_TIMEOUT_SECONDS = 2.0
+
 # watchdog 多久檢查一次「上一張 frame 是多久以前」；超過 WATCHDOG_IDLE_SECONDS 沒有
 # 新 frame、且至少有一個檢視者連著，就重啟一次 screencast。真人停在一個不會自行重繪的
 # 畫面（等輸入的 MFA 欄位、還沒點的產品選擇頁）跟「這東西壞了」對操作者來說看起來
@@ -336,7 +343,7 @@ class CdpLoginStream:
     async def stop(self) -> None:
         """冪等。第一步是取消 watchdog（收尾順序是背壓約束的一部分——見模組頂端
         docstring 約束 1）：watchdog 隨時可能正停在「判定太久沒有新幀」與「送出那對
-        CDP 呼叫」之間，若排空還在飛的 ack 排在取消之前,那對呼叫就可能在 `stop()`
+        CDP 呼叫」之間，若排空還在飛的 ack 排在取消之前，那對呼叫就可能在 `stop()`
         已經回傳之後才送達一顆已完成認證的瀏覽器上。取消排在最前面，這個競態就不存在，
         而不是變得罕見。
 
@@ -366,9 +373,11 @@ class CdpLoginStream:
 
         for sink in list(self._viewers):
             try:
-                await sink.close()
-            except Exception:
-                pass
+                await asyncio.wait_for(sink.close(), timeout=VIEWER_CLOSE_TIMEOUT_SECONDS)
+            except asyncio.TimeoutError:
+                log.warning("cdp_stream: viewer sink close() timed out after %ss, moving on", VIEWER_CLOSE_TIMEOUT_SECONDS)
+            except Exception as exc:
+                log.warning("cdp_stream: viewer sink close() failed: %s", exc)
         self._viewers.clear()
 
     async def refresh_for_new_viewer(self) -> None:

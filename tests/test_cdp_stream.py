@@ -95,6 +95,9 @@ class FakeSink:
             raise RuntimeError("send_str failed")
         self.sent.append(data)
 
+    async def close(self) -> None:
+        self.closed = True
+
 
 class FlakySink:
     """Fails its first `fail_times` sends, then succeeds -- used to prove a
@@ -110,6 +113,25 @@ class FlakySink:
             self._remaining_fails -= 1
             raise RuntimeError("send_str failed")
         self.sent.append(data)
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+class HangingSink:
+    """A sink whose close() never returns -- used to prove stop() bounds its
+    wait on one uncooperative viewer via VIEWER_CLOSE_TIMEOUT_SECONDS rather
+    than hanging forever, and that the other viewers still get closed."""
+
+    def __init__(self):
+        self.closed = False
+        self.sent: list[str] = []
+
+    async def send_str(self, data: str) -> None:
+        self.sent.append(data)
+
+    async def close(self) -> None:
+        await asyncio.Event().wait()
 
 
 def _messages(sink) -> list[dict]:
@@ -746,6 +768,46 @@ async def test_t099_settling_period_still_refreshes_frames_and_reasserts_complet
     )
 
     await stream.stop()
+
+
+@pytest.mark.asyncio
+async def test_i2h_stop_closes_every_registered_viewer_sink():
+    # I2-H: design.md Sec.C4's stop() teardown closes each fanned-out sink, not
+    # just this stream's own CDP session. Two viewers registered, one stop()
+    # call, both must be closed and the viewer set left empty.
+    session = FakeCdpSession()
+    stream = CdpLoginStream(FakePage(session))
+    await stream.start()
+    sink_a = FakeSink()
+    sink_b = FakeSink()
+    stream.add_viewer(sink_a)
+    stream.add_viewer(sink_b)
+
+    await stream.stop()
+
+    assert sink_a.closed is True
+    assert sink_b.closed is True
+    assert len(stream._viewers) == 0
+
+
+@pytest.mark.asyncio
+async def test_i2h_stop_bounds_wait_on_a_sink_whose_close_never_returns(monkeypatch):
+    # I2-H: a single uncooperative viewer must not hang stop() forever --
+    # VIEWER_CLOSE_TIMEOUT_SECONDS bounds the wait per-sink, and the other
+    # sink must still be closed despite the first one timing out.
+    monkeypatch.setattr(cdp_stream_module, "VIEWER_CLOSE_TIMEOUT_SECONDS", 0.05)
+
+    session = FakeCdpSession()
+    stream = CdpLoginStream(FakePage(session))
+    await stream.start()
+    hanging = HangingSink()
+    good = FakeSink()
+    stream.add_viewer(hanging)
+    stream.add_viewer(good)
+
+    await asyncio.wait_for(stream.stop(), timeout=cdp_stream_module.VIEWER_CLOSE_TIMEOUT_SECONDS + 1.0)
+
+    assert good.closed is True
 
 
 async def _wait_for_condition(predicate, poll_interval: float = 0.005):

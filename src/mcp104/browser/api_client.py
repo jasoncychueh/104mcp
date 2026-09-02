@@ -79,11 +79,11 @@ _ALLOWED_METHODS = frozenset({"GET", "POST"})
 # The only three values Endpoint.family may declare — enforced in
 # Endpoint.__post_init__, the same construction-time whitelist as
 # _ALLOWED_METHODS above. "A" and "B" dispatch classify() to the two JSON
-# envelope shapes; "non_json" names a route measured to answer outside
+# envelope shapes; "opaque" names a route measured to answer outside
 # either envelope (currently only logout_session) and gets its own
 # explicit branch in classify() rather than falling through into either
 # family's shape-specific parsing.
-_ALLOWED_FAMILIES = frozenset({"A", "B", "non_json"})
+_ALLOWED_FAMILIES = frozenset({"A", "B", "opaque"})
 
 # 15 seconds because that was page.goto's own navigation timeout on the
 # now-removed page-navigation guard (guarded_page) this value was carried
@@ -153,7 +153,7 @@ class Endpoint:
     host: str  # "vip" | "auth"
     path: str  # may contain `{name}` placeholders filled from build_url's params
     method: str  # "GET" | "POST" — see _ALLOWED_METHODS
-    family: str  # "A" | "B" — dispatches classify(); "non_json" names a route measured to answer outside either JSON envelope (e.g. logout_session) — classify() is never reached for it in practice, see that endpoint's own comment
+    family: str  # "A" | "B" — dispatches classify(); "opaque" names a route measured to answer outside either JSON envelope (e.g. logout_session) — classify() is never reached for it in practice, see that endpoint's own comment
     extra_headers: tuple[tuple[str, str], ...]  # NAME/VALUE pairs sent verbatim, beyond the always-sent baseline (User-Agent, Accept-Language, Cookie)
     family_b_shape: FamilyBShape | None  # required (non-None) iff family == "B" — enforced below, not merely documented
     throttle_gated: bool  # whether this route passes through enforce_throttle's judgment gate (tools/helpers.py's guarded_api) — every row must answer this explicitly; the sole False today is logout_session (see ENDPOINTS below for why it qualifies for the exemption)
@@ -338,7 +338,7 @@ ENDPOINTS: dict[str, Endpoint] = {
     # logout request. Measured [M §8.8-4], not assumed: `GET` gets a
     # 302 (empty body) to boidc.104.com.tw, whose chain ends on an HTML
     # error page; `POST` (empty body) is 404 HTML. Neither is a JSON
-    # envelope of either family, hence family="non_json" — a value
+    # envelope of either family, hence family="opaque" — a value
     # classify() never actually dispatches on here, because guarded_api's
     # auth-host redirect check intercepts this route's 302 (Location ->
     # boidc.104.com.tw) before classify() is ever called, and always has
@@ -360,7 +360,7 @@ ENDPOINTS: dict[str, Endpoint] = {
         host="vip",
         path="/oidc/logout",
         method="GET",
-        family="non_json",
+        family="opaque",
         extra_headers=(),
         family_b_shape=None,
         throttle_gated=False,
@@ -627,14 +627,14 @@ def classify(endpoint: Endpoint, raw: RawResponse) -> Verdict:
 
     if endpoint.family == "A":
         return _classify_family_a(raw)
-    if endpoint.family == "non_json":
+    if endpoint.family == "opaque":
         # In practice this branch is never reached at all: guarded_api's
         # auth-host redirect check intercepts logout_session's 302 before
         # classify() is ever called, and the EXPIRY_MARKER check above
         # catches the same redirect's Location a second, independent way.
         # It is declared anyway because classify() is called directly in
         # tests and must not crash on a response shape its own Endpoint
-        # table admits — a non_json endpoint carries no family_b_shape
+        # table admits — an opaque endpoint carries no family_b_shape
         # (Endpoint.__post_init__ refuses one), so routing it into
         # _classify_family_b would read that shape as None and blow up on
         # the first attribute access. This route does not parse the
@@ -759,7 +759,7 @@ def _classify_family_b(endpoint: Endpoint, raw: RawResponse) -> Verdict:
     data = body["data"]
 
     # Guaranteed non-None: classify() only calls this function for
-    # family=="B" (family=="non_json" is handled by its own branch there,
+    # family=="B" (family=="opaque" is handled by its own branch there,
     # before this function is ever reached), and Endpoint.__post_init__
     # refuses to construct a family-B endpoint without a family_b_shape —
     # so there is no per-call default to fall back on here.
