@@ -3,34 +3,28 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import random
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
-from urllib.parse import urlparse
 
 from mcp104.browser.throttle import ThrottleState
-
-if TYPE_CHECKING:
-    from patchright.async_api import BrowserContext, Response
 
 log = logging.getLogger("104-mcp.session")
 
 
 @dataclass
 class PendingLogin:
-    display: str
     mcp_session_id: str
-
-
-DEFAULT_ACCOUNT = "default"
 
 
 @dataclass
 class SessionInfo:
-    browser_context: BrowserContext
-    account_email: str = DEFAULT_ACCOUNT
+    # Replaces a held BrowserContext: the browser only exists for the
+    # duration of login() (see browser/cdp_stream.py), so once login
+    # completes there is no context left to query cookies from. The
+    # session must hold its own credentials.
+    cookies: list[dict]
+    account_label: str
     last_active: datetime = field(default_factory=datetime.now)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     # Request-count/pacing bookkeeping (browser/throttle.py), one instance
@@ -68,18 +62,21 @@ class SessionPool:
 
     def find_pending_tokens_for_session(self, mcp_session_id: str) -> list[str]:
         """Tokens for pending (not-yet-completed) logins registered by this
-        mcp_session_id. Used to clean up a stale VNC stack before starting
-        a new one, rather than stacking a second Xvfb + x11vnc + headed
-        Chromium on top of an abandoned one."""
+        mcp_session_id. Used to clean up a stale login stack before starting
+        a new one, rather than stacking a second login browser on top of an
+        abandoned one."""
         return [t for t, sid in self._token_to_session.items() if sid == mcp_session_id]
 
     def activate(self, token: str, info: SessionInfo) -> bool:
-        """Register `info` under the mcp_session_id that requested `token`.
+        """Synchronously pop `token` out of both the pending and
+        token-to-session registries and register `info` as the active
+        session for the mcp_session_id that requested it.
 
-        Returns False (without registering anything) if the pending entry
-        was already consumed — e.g. by a concurrent caller — so the caller
-        knows the BrowserContext it built was never handed to the pool and
-        must close it itself rather than leak it.
+        The return value carries no obligation the caller must act on: it
+        only reports whether `token` was still pending (True) or had
+        already been consumed by a concurrent caller (False, and nothing
+        is registered). There is no BrowserContext to clean up on the
+        False branch — the caller holds no such resource.
         """
         pending = self._pending.pop(token, None)
         if not pending:
@@ -103,47 +100,18 @@ class SessionPool:
     def is_logged_in(self, mcp_session_id: str) -> bool:
         return mcp_session_id in self._sessions
 
-    async def remove(self, mcp_session_id: str):
+    def remove(self, mcp_session_id: str):
         # Deliberately does not acquire info.lock: cleanup_all() at shutdown
         # must not block behind a stuck tool call, and a caller that already
         # holds the lock (there are none today) would deadlock on itself.
-        info = self._sessions.pop(mcp_session_id, None)
-        if info:
-            await info.browser_context.close()
+        self._sessions.pop(mcp_session_id, None)
 
-    async def cleanup_stale(self, max_idle_minutes: int = 30):
-        now = datetime.now()
-        stale = [
-            sid for sid, info in self._sessions.items()
-            if (now - info.last_active).total_seconds() > max_idle_minutes * 60
-            and not info.lock.locked()
-        ]
-        for sid in stale:
-            await self.remove(sid)
-
-    async def cleanup_all(self):
+    def cleanup_all(self):
         for sid in list(self._sessions):
-            await self.remove(sid)
+            self.remove(sid)
 
 
-async def random_delay(min_sec: float = 3.0, max_sec: float = 8.0):
-    """Sleep a uniformly-drawn interval — meant to pace a tool's own
-    DOM interactions AFTER a guarded_page navigation returns (see
-    tools/helpers.py's guarded_page docstring for why it is never called
-    from inside the guard itself).
-
-    ★ Has NO caller anywhere under src/ or tests/ as of the JSON-API
-    messaging migration — tools/messaging.py's five call sites (the DOM
-    version of send_message) were its only users; the eight tools that now
-    go through guarded_api never adopted it, matching the same "kept, not
-    deleted, until guarded_page's replacement is verified live" ruling
-    guarded_page and attach_request_counter (browser/throttle.py) carry.
-    Same removal trigger: once §Verification's live steps pass.
-    """
-    await asyncio.sleep(random.uniform(min_sec, max_sec))
-
-
-# ── Auth host / status predicates ─────────────────────────────────────
+# ── Auth host predicate ───────────────────────────────────────────────
 #
 # Hostname matching (exact, or a dotted suffix) against AUTH_HOSTS is a
 # reliable login-flow signal — unlike a substring match, which would treat
@@ -175,119 +143,33 @@ def matches_auth_host(hostname: str) -> bool:
     return any(hostname == h or hostname.endswith("." + h) for h in AUTH_HOSTS)
 
 
-def check_session_expired(url: str, response: Response | None) -> str:
-    """Judge auth status from an already-completed navigation's settled
-    final URL and Response. Does NOT navigate — callers must have already
-    performed the goto and let the page settle (this is a Vue SPA; a
-    client-side redirect can still be in flight right after goto returns).
-
-    The hostname check ("expired" on a redirect to an auth host) is
-    measured (docs/104-site-facts.md). The 401/403 status handling is
-    NOT measured — docs/104-site-facts.md explicitly lists "session 過期
-    時受保護頁面的實際回應" as unobserved; the only confirmed unauthenticated
-    behaviour so far is the hostname redirect. 401/403 are a reasonable
-    inferred default (a login-form-at-200 on vip.104.com.tw is the failure
-    mode this predicate CANNOT currently detect — see the zero-results
-    fail-fast in tools/helpers.require_nonempty, which exists precisely
-    because this gap isn't measured yet), not an established fact.
-
-    Returns:
-        "expired" — redirected to an auth host, or HTTP 401 (inferred, see
-            above). A fresh login() will fix this.
-        "blocked" — HTTP 403 (inferred), a plausible bot-detection response.
-            A re-login would not help and would just generate more unpaced
-            traffic.
-        "ok" — no known expiry signal fired. Does NOT prove the session is
-            alive — see the caveat above.
-    """
-    hostname = urlparse(url).hostname or ""
-    if matches_auth_host(hostname):
-        return "expired"
-    status = response.status if response else None
-    if status == 401:
-        return "expired"
-    if status == 403:
-        return "blocked"
-    return "ok"
+# ── Cookie persistence ────────────────────────────────────────────────
+#
+# Paths are supplied by the caller (Config.cookies_path) rather than held
+# as a module-level constant — this is what lets these three functions run
+# against a temp directory in tests with no monkeypatching.
 
 
-LIVENESS_SETTLE_SECONDS = 2.0  # module-level so tests can shrink it
+def save_cookies(path: Path, cookies: list[dict]):
+    """Persist browser cookies to `path`. Creates the parent directory if
+    it does not already exist."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(cookies, ensure_ascii=False, indent=2))
 
 
-async def check_login_liveness(context: BrowserContext) -> str:
-    """Navigation-based liveness probe for a restored/existing session.
-
-    Unlike check_session_expired, this DOES navigate — it exists
-    specifically for tools/auth.py's login() restore / already-logged-in
-    paths, where there is no tool-of-the-caller's-own URL to piggyback an
-    auth check on.
-
-    Three states, not two — a boolean conflates "definitely logged out"
-    with "couldn't tell", and login() cannot treat those the same: MFA
-    (validation_type: unreliable_device) fires on every fresh browser
-    profile (docs/104-site-facts.md), so clearing cookies on a mere
-    hiccup — a 15s timeout, a transient Cloudflare interstitial, a 403
-    bot-challenge — would force a full human MFA cycle to recover a session
-    that may still have been perfectly healthy.
-
-    Returns:
-        "alive" — final hostname is vip.104.com.tw (and not a 403
-            challenge on that host).
-        "logged_out" — final hostname is a known auth host. This is the
-            ONLY state safe to react to with clear_cookies() + remove().
-        "indeterminate" — the navigation raised (timeout, DNS, a transient
-            interstitial), or resolved to vip.104.com.tw with a 403 status
-            (agrees with check_session_expired's "blocked" — a bot
-            challenge is not proof of either logged-in or logged-out).
-            Callers must leave the session/cookies untouched and ask the
-            caller to retry.
-    """
-    page = context.pages[0] if context.pages else await context.new_page()
-    try:
-        response = await page.goto(
-            "https://vip.104.com.tw/rms/index",
-            wait_until="domcontentloaded",
-            timeout=15000,
-        )
-        await asyncio.sleep(LIVENESS_SETTLE_SECONDS)  # settle window for client-side redirects
-    except Exception as exc:
-        log.warning("check_login_liveness: navigation failed, indeterminate: %s", exc)
-        return "indeterminate"
-
-    hostname = urlparse(page.url).hostname or ""
-    if hostname == "vip.104.com.tw":
-        if response is not None and response.status == 403:
-            log.warning("check_login_liveness: 403 on vip.104.com.tw, indeterminate")
-            return "indeterminate"
-        return "alive"
-    if matches_auth_host(hostname):
-        return "logged_out"
-    log.warning("check_login_liveness: unrecognized final host %s, indeterminate", hostname)
-    return "indeterminate"
-
-
-# ── Cookie persistence (single-user) ─────────────────────────────────
-
-COOKIES_FILE = Path("/data/cookies.json")
-
-
-def save_cookies(cookies: list[dict]):
-    """Persist browser cookies to disk."""
-    COOKIES_FILE.parent.mkdir(parents=True, exist_ok=True)
-    COOKIES_FILE.write_text(json.dumps(cookies, ensure_ascii=False, indent=2))
-
-
-def load_cookies() -> list[dict] | None:
-    """Load persisted cookies. Returns cookies list or None."""
-    if not COOKIES_FILE.exists():
+def load_cookies(path: Path) -> list[dict] | None:
+    """Load persisted cookies from `path`. Returns None (never raises) if
+    the file does not exist or its contents are not valid JSON."""
+    if not path.exists():
         return None
     try:
-        return json.loads(COOKIES_FILE.read_text())
+        return json.loads(path.read_text())
     except (json.JSONDecodeError, ValueError):
         return None
 
 
-def clear_cookies():
-    """Remove persisted cookies."""
-    if COOKIES_FILE.exists():
-        COOKIES_FILE.unlink()
+def clear_cookies(path: Path):
+    """Remove the persisted cookies file at `path`. Safe to call when the
+    file does not exist."""
+    if path.exists():
+        path.unlink()
