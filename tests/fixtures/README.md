@@ -164,15 +164,11 @@ several fixtures (`custno`, `Buserid`, `pid`, distinct from the operator's name/
 categorizes the bodies they appear in ("zero-row", "unauthenticated") as carrying no personal
 data; this script follows that categorization rather than widening it unilaterally.
 
-**Update from the `failure_*` re-measurement:** decoding the session JWT found in those captures'
-`request_headers_sent.Cookie` (see "How these were obtained" above) confirmed that `pid`
-(`90000001`) is tied directly to the operator's real e-mail address via that JWT's `sub` claim —
-it is a person-identifier, not a pure business-entity identifier the way `custno` is. It is still
-left unredacted in the résumé/row fixtures under the policy above (following design.md's explicit
-categorization, and consistent across every fixture that carries it), but this is flagged here
-with the stronger evidence now in hand rather than left as a softer claim than what was actually
-found. If a future reviewer wants `pid` redacted too given this, that is a one-line addition to
-`_redact_operator_envelope`'s scope.
+**Update (pre-publish scrub):** `pid`, `custno` and `Buserid` are no longer the real business
+account identifiers captured from the live session — every occurrence across every fixture that
+carries them (including inside URL query strings such as `manage_pid`) has been replaced with a
+synthetic value of the same digit length, applied consistently so the same real identifier maps
+to the same synthetic one everywhere it appears.
 
 ## Bystanders in the activity log — a third population the original sweep missed
 
@@ -191,7 +187,7 @@ recruiter, on dozens of entries, with **no e-mail or phone number anywhere near 
 Han-character names sitting between two pipe delimiters, next to department and job-title
 segments of the same shape. It also confirmed the pair the independent review reported: one
 `remark` entry read (translated) *"forwarded full résumé to [name]([e-mail]), [name]([e-mail])"*
-— two more real people, this time with corporate `@example.invalid`/`@example.invalid` addresses.
+— two more real people, this time with two corporate addresses.
 None of the four are the row's own candidate, and none is the signed-in operator (`data.userName`
 on a résumé-detail response, confirmed by the JWT `sub` claim) — they are the account holder's own
 colleagues, named in passing in an activity log that nothing in design.md's fixture table
