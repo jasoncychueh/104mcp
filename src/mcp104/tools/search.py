@@ -639,6 +639,10 @@ _LIST_MATCHED_DESCRIPTION = f"""列出某個職缺「配對」的履歷清單（
 Args:
     jobno: 職缺代碼，必填 —— 權威來源是 list_jobs() 回傳每筆結果的 jobno 欄位。
     page: 頁碼，預設 1。
+    update_date_type: 選填，字面透傳到 104 的 updateDateType（不做任何映射）。
+        "2" 已量測＝本日更新（即 104 網頁的「當日配對」分頁）；省略＝全部配對。
+        其餘代碼（1、3–8，與搜尋篩選鍵 updateDateType 同一套詞彙）在這條路由
+        未量測，不驗證、不猜測。只有空白字串在送出前就被拒絕。
 
 未帶 jobno 時 104 回傳 HTTP 400，本工具轉譯為 {{"error": "...缺少必要參數..."}}。
 
@@ -796,8 +800,14 @@ def register_search_tools(mcp: FastMCP):
 
     _register_tool(mcp, list_recommended_resumes, _LIST_RECOMMENDED_DESCRIPTION)
 
-    async def list_matched_resumes(jobno: str, ctx: Context, page: int = 1) -> dict:
+    async def list_matched_resumes(
+        jobno: str, ctx: Context, page: int = 1, update_date_type: str | None = None
+    ) -> dict:
+        if update_date_type is not None and not update_date_type.strip():
+            return {"error": "update_date_type 不可為空白"}
         params = [("jobno", jobno), ("page", str(page))]
+        if update_date_type is not None:
+            params.append(("updateDateType", update_date_type))
         try:
             async with guarded_api(ctx, ENDPOINTS["list_matched_resumes"], params=params) as (result, _info):
                 return _build_match_response(result)
