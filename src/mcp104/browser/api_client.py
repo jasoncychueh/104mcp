@@ -118,14 +118,41 @@ class FamilyBShape:
     further inner key and no nested `error` field to check.
     [M research/captures/resume_correct_host.json, reco_match_bodies.json]
 
-    Neither field has a default: a family-B endpoint built without one
-    fails at Endpoint construction (see Endpoint.__post_init__ below),
-    which is earlier and louder than failing the first time classify()
-    happens to see that endpoint's response.
+    No field has a default: a family-B endpoint built without one fails at
+    Endpoint construction (see Endpoint.__post_init__ below), which is
+    earlier and louder than failing the first time classify() happens to
+    see that endpoint's response. `sibling_keys` follows the same
+    discipline for the same reason — every FamilyBShape(...) construction
+    site under src/, tests/, and research/probes/ must state its sibling
+    set explicitly, even when that set is empty (`()`).
+
+    `sibling_keys` names top-level envelope keys that ride ALONGSIDE
+    `data`/`metadata` — not under either of them — and that classify()
+    should copy into the Verdict's payload when they are present. The
+    motivating case is `failed`, the outbound-contact event/message
+    routes' own per-recipient failure list [M docs/104-site-facts.md
+    §8.13/§8.17]: it is a THIRD top-level key, not a `data` or `metadata`
+    field, so neither the is_list branch nor the inner_key branch below
+    ever sees it. Declaring "data" or "metadata" here is a construction
+    error (__post_init__) — those two keys already have their own,
+    single, extraction path (the is_list/inner_key branches), and letting
+    them ALSO ride in sibling_keys would give one envelope key two
+    different ways to reach the tool layer, which is exactly the kind of
+    duplicate-source-of-truth this module's construction-time checks exist
+    to rule out before a test ever has to catch it at runtime.
     """
 
     is_list: bool
     inner_key: str | None  # required key under `data` when is_list is False; ignored (must be None) when is_list is True
+    sibling_keys: tuple[str, ...]  # top-level envelope keys (besides data/metadata) to copy into the payload when present and the verdict is ok — never "data" or "metadata" (see class docstring)
+
+    def __post_init__(self) -> None:
+        for reserved in ("data", "metadata"):
+            if reserved in self.sibling_keys:
+                raise ValueError(
+                    f"FamilyBShape.sibling_keys must not contain {reserved!r} "
+                    "— it already has its own extraction path"
+                )
 
 
 @dataclass(frozen=True)
@@ -249,7 +276,7 @@ ENDPOINTS: dict[str, Endpoint] = {
         method="GET",
         family="B",
         extra_headers=(),
-        family_b_shape=FamilyBShape(is_list=False, inner_key="resume"),
+        family_b_shape=FamilyBShape(is_list=False, inner_key="resume", sibling_keys=()),
         throttle_gated=True,
     ),
     "list_jobs": Endpoint(
@@ -259,7 +286,7 @@ ENDPOINTS: dict[str, Endpoint] = {
         method="GET",
         family="B",
         extra_headers=(),
-        family_b_shape=FamilyBShape(is_list=True, inner_key=None),
+        family_b_shape=FamilyBShape(is_list=True, inner_key=None, sibling_keys=()),
         throttle_gated=True,
     ),
     # ── Messaging (§6b.7-§6b.9): all three on auth.vip.104.com.tw, all
@@ -279,7 +306,7 @@ ENDPOINTS: dict[str, Endpoint] = {
         method="POST",
         family="B",
         extra_headers=(),
-        family_b_shape=FamilyBShape(is_list=True, inner_key=None),
+        family_b_shape=FamilyBShape(is_list=True, inner_key=None, sibling_keys=()),
         throttle_gated=True,
     ),
     "get_conversation": Endpoint(
@@ -289,7 +316,7 @@ ENDPOINTS: dict[str, Endpoint] = {
         method="GET",
         family="B",
         extra_headers=(),
-        family_b_shape=FamilyBShape(is_list=True, inner_key=None),
+        family_b_shape=FamilyBShape(is_list=True, inner_key=None, sibling_keys=()),
         throttle_gated=True,
     ),
     # family_b_shape is [INF], not [M]: only 104's own front-end reading
@@ -307,7 +334,87 @@ ENDPOINTS: dict[str, Endpoint] = {
         method="POST",
         family="B",
         extra_headers=(),
-        family_b_shape=FamilyBShape(is_list=True, inner_key=None),
+        family_b_shape=FamilyBShape(is_list=True, inner_key=None, sibling_keys=("failed",)),
+        throttle_gated=True,
+    ),
+    # ── Outbound contact (§8.13-§8.19): four routes newly declared for
+    # send_inquiry / list_templates, all on auth.vip.104.com.tw, all
+    # family B. extra_headers=() on all four for the same "not measured,
+    # not measured unnecessary" reason as the three messaging routes
+    # above — this table has never extended the vip-only Referer
+    # measurement to this host. get_template (GET
+    # /bc-comm/template/{id}) is deliberately NOT declared here: nothing
+    # in this project calls it (list_templates' rows already carry the
+    # full template body; send_inquiry sends template_id verbatim without
+    # looking it up) and an endpoint with no call site is a standing
+    # invitation for the next reader to assume one exists.
+    "list_templates": Endpoint(
+        key="list_templates",
+        host="auth",
+        path="/bc-comm/template",
+        method="GET",
+        family="B",
+        extra_headers=(),
+        family_b_shape=FamilyBShape(is_list=True, inner_key=None, sibling_keys=()),
+        throttle_gated=True,
+    ),
+    # resolve_candidate_idno: the reverse bridge send_inquiry's first
+    # sub-request uses to turn the pId the caller supplied into the idNo
+    # the event route's wire body actually wants [M §8.14-2 #3]. inner_key
+    # ="idNo" is a real (true-valued) structural floor, not decoration:
+    # this request exists FOR that one field — losing it here, at the
+    # transport layer, is earlier and louder than a tool-level `if` a few
+    # frames up the stack. [M §8.15] measured its 404 shape: an
+    # unrecognised pId answers {"code": "00004", "message": "找不到對應資源",
+    # "detail": []} — the same family-B {code, message, detail: []} shape
+    # _classify_family_b already dispatches by HTTP STATUS, not by code —
+    # deliberately: message/info's 404 for "conversation doesn't exist
+    # yet" is a different code (00207) and an unrecognised template id is
+    # a third (00802, §8.15) — three different codes for the same status,
+    # which is exactly why nothing here keys off any of them.
+    "resolve_candidate_idno": Endpoint(
+        key="resolve_candidate_idno",
+        host="auth",
+        path="/bc-comm/message/resume/{job_no}-{p_id}",
+        method="GET",
+        family="B",
+        extra_headers=(),
+        family_b_shape=FamilyBShape(is_list=False, inner_key="idNo", sibling_keys=()),
+        throttle_gated=True,
+    ),
+    # event_last_info: send_inquiry's second sub-request, taken only for
+    # data.emailCC. inner_key=None (not "emailCC"): _classify_family_b's
+    # inner_key check is a TRUTHY check, and the measured shape for
+    # emailCC can legitimately be an empty list — treating that as a
+    # missing-key failure would misclassify a healthy, empty-CC response
+    # as malformed. `data` still has to be an object; that much is
+    # unconditional in _classify_family_b regardless of inner_key.
+    "event_last_info": Endpoint(
+        key="event_last_info",
+        host="auth",
+        path="/bc-comm/event/last-info",
+        method="GET",
+        family="B",
+        extra_headers=(),
+        family_b_shape=FamilyBShape(is_list=False, inner_key=None, sibling_keys=()),
+        throttle_gated=True,
+    ),
+    # send_willingness_event: send_inquiry's third and only send-bearing
+    # sub-request — the one that reaches _send_verdict. sibling_keys=
+    # ("failed",) for the same reason as send_message above: `failed` is
+    # a third top-level envelope key riding alongside `data`/`metadata`,
+    # measured on this exact route [§8.13/§8.17], and the send-outcome
+    # classification in tools/messaging.py needs to see it (present vs.
+    # absent, not merely truthy) to tell "confirmed" apart from
+    # "unconfirmed".
+    "send_willingness_event": Endpoint(
+        key="send_willingness_event",
+        host="auth",
+        path="/bc-comm/event/willingness",
+        method="POST",
+        family="B",
+        extra_headers=(),
+        family_b_shape=FamilyBShape(is_list=True, inner_key=None, sibling_keys=("failed",)),
         throttle_gated=True,
     ),
     # ── Restore verification ─────────────────────────────────────────────
@@ -719,6 +826,23 @@ def _family_b_error_detail(parsed_json: object) -> str:
     return base
 
 
+def _family_b_payload(shape: FamilyBShape, body: dict, data: object) -> dict:
+    """Build an ok-verdict family-B payload: `data`/`metadata` plus any of
+    `shape.sibling_keys` present in `body`. A sibling key that is absent
+    from `body` is left OUT of the payload entirely, never filled with
+    `None` — "104 didn't send this key" and "104 sent null" are different
+    facts, and the tool layer (§C4's回傳形狀判定, e.g. `failed` present-
+    but-absent driving the confirmed/ambiguous split) reads absence itself
+    as a signal. Only called on the ok=True path — a failed verdict never
+    carries a payload at all, so there is nothing to copy siblings onto.
+    """
+    payload: dict = {"data": data, "metadata": body.get("metadata")}
+    for key in shape.sibling_keys:
+        if key in body:
+            payload[key] = body[key]
+    return payload
+
+
 def _classify_family_b(endpoint: Endpoint, raw: RawResponse) -> Verdict:
     # HTTP status is the floor for family B — structural checks below are
     # additional, never a substitute for it. Family B's own authentication
@@ -772,7 +896,7 @@ def _classify_family_b(endpoint: Endpoint, raw: RawResponse) -> Verdict:
         # to whichever tool reads this payload, not something this
         # transport layer discards on the caller's behalf. See Verdict's
         # docstring.
-        return Verdict(True, payload={"data": data, "metadata": body.get("metadata")})
+        return Verdict(True, payload=_family_b_payload(shape, body, data))
 
     if not isinstance(data, dict):
         return Verdict(False, kind="malformed", detail="data is not an object")
@@ -781,4 +905,4 @@ def _classify_family_b(endpoint: Endpoint, raw: RawResponse) -> Verdict:
         return Verdict(False, kind="malformed", detail=f"missing {inner_key}")
     if data.get("error"):
         return Verdict(False, kind="malformed", detail=str(data.get("error")))
-    return Verdict(True, payload={"data": data, "metadata": body.get("metadata")})
+    return Verdict(True, payload=_family_b_payload(shape, body, data))

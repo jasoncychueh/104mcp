@@ -42,6 +42,23 @@ through this one ThrottleState, with no second traffic shape sharing it.
 300/hour is therefore a call-volume budget for the whole tool surface,
 not a number that binds some tools and is slack for others.
 
+★ The outbound-contact feature adds ONE exception to "exactly one counted
+HTTP request per call": send_inquiry issues three (a reverse-bridge GET,
+an event/last-info GET, then the willingness-event POST itself), all
+through guarded_sequence rather than guarded_api, and all three still
+land in this same ThrottleState via note_request — the 300/hour budget
+counts each of the three individually, not once per tool call. What
+changes in THIS module is the gate, not the ledger: evaluate() and
+enforce_throttle() both take a `slots_needed` parameter (default 1, the
+single-request case every other tool still uses) so the rolling-window
+check can ask "does the window have room for this many MORE requests",
+not just "is it already full" — a caller that reserves 3 slots is refused
+up front if only 1 is free, rather than being admitted and then blowing
+the cap by 2 partway through its own burst. See evaluate()'s and
+enforce_throttle()'s own docstrings for the mechanism; this module still
+computes the reservation, never the English words describing why it was
+refused (that stays the guard's job, per the caveat below).
+
 This single-path state does NOT retire the caveats below it used to
 carry for the five-tool case — if anything the migration makes them
 apply more widely, not less: every constant in this module is still a
@@ -187,12 +204,27 @@ def evaluate(
     activity_streak_limit_seconds: float,
     rest_duration_seconds: float,
     min_call_interval_seconds: float,
+    slots_needed: int = 1,
 ) -> ThrottleDecision:
     """Pure decision function — no sleeping, no I/O. Mutates `state` only
     when it commits to a verdict (a rejected call leaves state exactly as
     it found it, except for entering a fresh rest period, which IS the
     verdict). Deterministic given `now`, which is the whole point: tests
     inject it and never need a real clock or real sleep.
+
+    `slots_needed` (default 1, bit-identical to every prior single-request
+    call site) asks a different question than the old check did: not "is
+    the window already full" but "does the window have room for this many
+    MORE requests". A multi-request caller (guarded_sequence's
+    send_inquiry, three requests in one tool call) that started when the
+    window had only 1 free slot would otherwise be admitted here and then
+    blow the hourly cap by 2 on its own — the window is charged per
+    request (note_request, once per sub-request) but this gate would have
+    looked at it only once, for the whole burst. See the budget branch
+    below for how the refusal's retry_after_seconds is computed to match:
+    the caller needs ALL `slots_needed` slots free, not just one, so the
+    wait is timed to when the Nth-oldest entry (not simply the oldest)
+    expires.
     """
     # 1. Already resting from an earlier mandatory-rest trigger?
     if state.resting_until is not None:
@@ -219,13 +251,21 @@ def evaluate(
         # rejected, not performed.
         return ThrottleDecision(False, rest_duration_seconds, "rest")
 
-    # 3. Hourly request budget, rolling window.
+    # 3. Hourly request budget, rolling window. The question is "does the
+    # window have room for `slots_needed` MORE requests", not "is it
+    # already full" — for slots_needed=1 these are the same question
+    # (len + 1 > max  <=>  len >= max), which is what keeps every existing
+    # single-request call site's verdict bit-identical.
     cutoff = now - REQUEST_WINDOW_SECONDS
     while state.request_timestamps and state.request_timestamps[0] <= cutoff:
         state.request_timestamps.popleft()
-    if len(state.request_timestamps) >= max_requests_per_hour:
-        oldest = state.request_timestamps[0]
-        wait = max(0.0, oldest + REQUEST_WINDOW_SECONDS - now)
+    if len(state.request_timestamps) + slots_needed > max_requests_per_hour:
+        # Exactly this many entries must expire before `slots_needed` slots
+        # are free. For slots_needed=1 this is always 1, so the index below
+        # is always 0 — the same "oldest" this branch always waited on.
+        entries_that_must_expire = len(state.request_timestamps) + slots_needed - max_requests_per_hour
+        nth_oldest = state.request_timestamps[entries_that_must_expire - 1]
+        wait = max(0.0, nth_oldest + REQUEST_WINDOW_SECONDS - now)
         return ThrottleDecision(False, wait, "budget")
 
     # 4. Inter-action pacing: a FLOOR, not a drawn distribution — see the
@@ -487,6 +527,7 @@ async def enforce_throttle(
     rest_duration_minutes: float,
     min_call_interval_seconds: float,
     now_fn=time.time,
+    slots_needed: int = 1,
 ) -> ThrottleAbort | None:
     """Async boundary around evaluate(): rereads `path` and folds it into
     `state` (see load_throttle_state / _merge_loaded_state), performs the
@@ -507,7 +548,28 @@ async def enforce_throttle(
     CAN raise (load_throttle_state, on an existing-but-unreadable state
     file) is caught here and turned into a returned ThrottleAbort instead
     of being let through. Returns None to mean "proceed, already paced".
+
+    `slots_needed` (default 1) is a caller-declared reservation for a
+    multi-request tool call (guarded_sequence) — see evaluate()'s
+    docstring for what it changes about the budget check. A `slots_needed`
+    that could never fit in the window regardless of its current state
+    (greater than `max_requests_per_hour`) is a caller configuration bug,
+    not a throttling outcome — evaluate()'s Nth-oldest index would run
+    negative trying to answer it, so it is refused HERE, before
+    evaluate() is ever called, as a returned (never raised)
+    ThrottleAbort(kind="internal_config") — this module writes no
+    Agent-facing wording (see the module docstring); the guard turns
+    "internal_config" into its own existing "this is a program bug,
+    please report it" phrasing the same way it already does for every
+    other internal_config abort.
     """
+    if slots_needed > max_requests_per_hour:
+        detail = (
+            f"slots_needed={slots_needed} exceeds max_requests_per_hour="
+            f"{max_requests_per_hour}"
+        )
+        return ThrottleAbort(kind="internal_config", payload=None, detail=detail)
+
     now = now_fn()
     try:
         loaded = load_throttle_state(path)
@@ -525,6 +587,7 @@ async def enforce_throttle(
         activity_streak_limit_seconds=activity_streak_limit_minutes * 60,
         rest_duration_seconds=rest_duration_minutes * 60,
         min_call_interval_seconds=min_call_interval_seconds,
+        slots_needed=slots_needed,
     )
     if not decision.proceed:
         log.warning(
