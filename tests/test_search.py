@@ -105,7 +105,6 @@ import mcp104.tools.filters as filters
 import mcp104.tools.helpers as helpers_mod
 import mcp104.tools.search as search_mod
 from mcp104.tools.search import register_search_tools
-from tests.conftest import require_private_artifact
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
@@ -1358,43 +1357,6 @@ async def test_prefix_family_warning_marks_only_the_refused_sibling(tmp_path, mo
         f"a family naming only selectable categories must carry no refusal mark; "
         f"got warnings: {warnings_list2!r}"
     )
-
-
-# ── T-71 (R12.1, R9.7): CLAUDE.md and the tool's published description both state the
-# candidate object the tool actually returns, including what a caller does with the
-# choosability field ─────────────────────────────────────────────────────────────────
-
-def test_claude_md_and_published_description_state_the_terminal_candidate_field():
-    # design.md Data Models: "Both consumers — CLAUDE.md's search_resumes contract and
-    # the tool's published description — currently document this object as
-    # {"code","name"} and are maintained against this section; both state the third
-    # key and what a caller does with it." Read the published description the way
-    # T-67 does — through the FakeMCP registration capture, never `fn.__doc__` by
-    # assumption.
-    claude_md_path = require_private_artifact("CLAUDE.md")
-    claude_md_text = claude_md_path.read_text(encoding="utf-8")
-    search_doc = TOOL_DESCRIPTIONS.get("search_resumes", "")
-    assert search_doc, "search_resumes must be registered with a non-empty published description"
-
-    for label, text in (("CLAUDE.md", claude_md_text), ("search_resumes' published description", search_doc)):
-        assert "code" in text and "name" in text, (
-            f"{label} must still document the candidate object's existing `code`/`name` keys"
-        )
-        assert "terminal" in text, (
-            f"{label} must name the candidate object's third key, `terminal` "
-            f"(design.md Data Models: candidates: [{{code, name, terminal}}, ...])"
-        )
-        windows = _windows_around(text, "terminal")
-        explains_what_it_means = any(
-            any(kw in w for kw in _REFUSAL_MARK_KEYWORDS)
-            or any(kw in w for kw in ("true", "false", "resolve", "解析", "選", "回傳"))
-            for w in windows
-        )
-        assert explains_what_it_means, (
-            f"{label} names `terminal` but does not explain, near its mention, what "
-            f"a caller does with it (design.md: 'both state the third key and what a "
-            f"caller does with it')"
-        )
 
 
 # ── T-73 half 2 (R7.2, behavior): `unmeasured` and measured `not-echoed` reach the

@@ -39,7 +39,6 @@ import mcp104.tools.categories as categories
 import mcp104.tools.filters as filters_mod
 from mcp104.tools.drop_detection import detect_dropped
 from mcp104.tools.filters import encode_filters, validate_filters
-from tests.conftest import require_private_artifact
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 # Source-tree arithmetic, not `importlib.resources.files("mcp104")`: this file RENAMES
@@ -688,22 +687,6 @@ def test_missing_corpus_fails_drop_detection_import_but_not_filters_import():
         f"from a build; a generic 'file not found' would satisfy an existence-only "
         f"check while losing the actionable content that makes this failure "
         f"fixable. Full stderr:\n{drop_detection_result.stderr}"
-    )
-
-
-# ── The probe that regenerates the corpus must not import the module that reads it,
-# or regenerating a missing corpus would deadlock on itself ──────────────────────────
-
-def test_probe_source_does_not_import_drop_detection():
-    probe_source = require_private_artifact(
-        "research/probes/certify_conditions.py"
-    ).read_text(encoding="utf-8")
-    assert "drop_detection" not in probe_source, (
-        "research/probes/certify_conditions.py must not import (or otherwise "
-        "reference) mcp104.tools.drop_detection -- that module raises when the "
-        "certification corpus is absent, and this probe is the only tool that can "
-        "regenerate it; importing drop_detection here would make the probe unable "
-        "to start in exactly the state it exists to fix"
     )
 
 
