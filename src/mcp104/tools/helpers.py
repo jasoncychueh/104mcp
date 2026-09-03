@@ -4,6 +4,7 @@ import logging
 import re
 from contextlib import asynccontextmanager
 from functools import wraps
+from pathlib import Path
 from typing import AsyncIterator, Awaitable, Callable, Sequence
 from urllib.parse import urlparse
 from uuid import uuid4
@@ -328,6 +329,212 @@ def _error_internal_config(detail: str) -> dict:
     return {"error": f"內部設定錯誤：{detail}，這是程式問題，請回報"}
 
 
+async def _issue_one(
+    info: SessionInfo,
+    endpoint: Endpoint,
+    params: Sequence[tuple[str, str]] | None,
+    body: dict | None,
+    *,
+    session_id: str,
+    throttle_state_path: Path,
+) -> object:
+    """Issue exactly ONE HTTP request against `endpoint` and return its
+    payload, or raise a GuardAbort subclass. This is the one unit both
+    guarded_api (one request per tool call) and guarded_sequence (N
+    requests, one call each) run — see the module's own §C5 design note:
+    "多一條守衛路徑" is a real risk, and having both entry points call the
+    SAME function, rather than two copies that happen to agree today, is
+    the only mitigation that stays true after the next edit.
+
+    method/body check -> select cookie -> fetch (note_request in
+    `finally`) -> Cloudflare challenge screen -> auth-host redirect check
+    -> classify() -> info.has_succeeded_api_call = True -> return
+    verdict.payload. Every step here is verbatim what guarded_api used to
+    do inline; moving it here changes no observable behaviour (see T-61).
+
+    Every failure-path log statement below names only the endpoint key,
+    the HTTP status code (once a response exists to have one), and 104's
+    own message (`verdict.detail`, already 104's text via
+    browser.api_client._family_b_error_detail/_family_a's own message
+    field) — never `body` (candidate content, event content, emailCC —
+    see tools/messaging.py's send_inquiry) and never the Cookie header.
+    That is this function's own property, not a discipline each call site
+    has to remember: both guarded_api and guarded_sequence route every
+    request through here, so a log line written once, here, is the whole
+    guarantee (requirements.md R7.3/R7.4; see T-81).
+
+    `body` is forwarded to fetch() unchanged. The method/body mismatch
+    check below (a body handed to a GET endpoint, or a POST endpoint
+    called with body=None) is deliberately a CALL-TIME check, not a
+    construction-time one on Endpoint: the body does not exist until a
+    caller supplies it. It is also deliberately placed ahead of the `try`
+    that wraps fetch() below: fetch() runs inside this function's own
+    broad `except Exception`, which converts anything raised there into
+    ERROR_API_REQUEST_FAILED ("可能是逾時或網路問題，請稍後再試") — reporting
+    a caller's own bug as a transient network blip to an Agent whose
+    reasonable next move is to retry.
+
+    Cookies are read from `info.cookies` on every call — not from a
+    browser object, because there is no browser object to read from after
+    login completes (SessionInfo is the sole holder of credentials
+    post-login; see browser/session.py).
+    """
+    if endpoint.method == "POST" and body is None:
+        raise ToolAbort(
+            _error_internal_config(f"{endpoint.key} 是 POST 端點但未帶 body"),
+            kind="internal_config",
+        )
+    if endpoint.method != "POST" and body is not None:
+        raise ToolAbort(
+            _error_internal_config(f"{endpoint.key} 不是 POST 端點卻帶了 body"),
+            kind="internal_config",
+        )
+
+    cookie_header = select_cookies_for_host(info.cookies, hostname_for(endpoint))
+
+    # note_request runs in `finally`, not after a bare `await fetch(...)`
+    # line: a timeout or connection error raises out of the `try` below
+    # and skips anything placed after it, which would leave the
+    # rolling-window volume count reading zero on exactly the calls
+    # most worth counting — 104 refusing or timing out under load is
+    # the condition the volume cap exists to react to, not to miss.
+    # this is the only place any aiohttp request — successful or not —
+    # is ever counted. Runs unconditionally, regardless of
+    # endpoint.throttle_gated: the gate may be waived, the ledger never
+    # is — a route exempt from the judgment gate is still a real request
+    # against 104 and still belongs in the rolling-window volume count
+    # and the inter-call pacing anchor. Called once per sub-request in a
+    # guarded_sequence burst, not once per tool call (T-60).
+    try:
+        raw = await fetch(endpoint, cookie_header=cookie_header, params=params, body=body)
+    except Exception as exc:
+        log.error("_issue_one: request to %s failed: %s", endpoint.key, exc)
+        # A timeout/connection error says nothing about whether the
+        # session itself is usable — the next call may succeed outright
+        # — so this is ToolAbort, not SessionUnavailable: the design
+        # treats transport failure as transient, and SessionUnavailable's
+        # contract (a future session-recovery handler may react to it,
+        # e.g. by clearing cookies) must not misfire on a network blip
+        # that has nothing to do with session health.
+        raise ToolAbort(ERROR_API_REQUEST_FAILED, kind="transport")
+    finally:
+        note_request(info.throttle, path=throttle_state_path)
+
+    # Must run before any shape inspection: a challenge page has no
+    # measured shape resembling either family's success OR any of
+    # classify()'s named failures, so it must be screened out first,
+    # not fall through into one of those and be reported as something
+    # else.
+    is_challenge, ray_id = _detect_cloudflare_challenge(raw.body)
+    if is_challenge:
+        log.warning(
+            "_issue_one: Cloudflare challenge detected for session %s calling %s (status=%s, Ray ID: %s)",
+            session_id, endpoint.key, raw.status, ray_id or "unknown",
+        )
+        raise SessionUnavailable(ERROR_CHALLENGE, kind="challenge")
+
+    # A redirect (not followed — see fetch()'s docstring) is handled
+    # here, ahead of classify(), only for the auth-host check, which
+    # needs matches_auth_host — a dependency classify() deliberately
+    # does not carry (it depends on nothing beyond the endpoint
+    # declaration). classify() separately checks the same redirect's
+    # Location for the company-switch marker string, so a family A/B
+    # redirect that is neither an auth host NOR that marker still
+    # falls through to classify()'s empty-body "non_json" failure kind
+    # and is reported loudly rather than silently. This does not
+    # describe logout_session (family="opaque"): its only measured
+    # redirect target is boidc.104.com.tw, an auth host, so this very
+    # check — which runs before classify() in call order — always
+    # intercepts it first; classify()'s own opaque branch (which
+    # returns success unconditionally) is never reached in practice,
+    # see that endpoint's own comment.
+    if raw.location is not None:
+        hostname = urlparse(raw.location).hostname or ""
+        if matches_auth_host(hostname):
+            log.warning(
+                "_issue_one: session %s redirected to auth host at %s (status=%s)",
+                session_id, endpoint.key, raw.status,
+            )
+            # An expiry signal, not a transport failure — must declare
+            # "expired", not fall in with the transport kind above.
+            raise SessionUnavailable(ERROR_EXPIRED, kind="expired")
+
+    verdict = classify(endpoint, raw)
+    if not verdict.ok:
+        if verdict.kind == "blocked":
+            payload = (
+                ERROR_BLOCKED_API_AFTER_SUCCESS if info.has_succeeded_api_call
+                else ERROR_BLOCKED_API_FIRST_CALL
+            )
+            log.warning(
+                "_issue_one: request blocked (403) for session %s calling %s (status=%s)",
+                session_id, endpoint.key, raw.status,
+            )
+            raise SessionUnavailable(payload, kind="blocked")
+        error_payload, abort_cls = _api_error_for_kind(verdict.kind, endpoint, verdict.detail)
+        log.warning(
+            "_issue_one: %s failed status=%s kind=%s detail=%s",
+            endpoint.key, raw.status, verdict.kind, verdict.detail,
+        )
+        # The classifier's own kind, passed through verbatim — never
+        # re-mapped here, so a kind classify() has never been taught
+        # about still reaches send_message's ambiguous fallthrough
+        # rather than silently landing on whatever this line happened
+        # to default to.
+        raise abort_cls(error_payload, kind=verdict.kind)
+
+    info.has_succeeded_api_call = True
+    return verdict.payload
+
+
+def _project_field(which: str, obj: object, keys: tuple[str, ...] | None) -> dict:
+    """Apply one half (`data` or `metadata`) of a guarded_sequence
+    `request()` projection. `keys is None` is never passed here — the
+    caller only calls this once it knows at least one of pick_data/
+    pick_metadata was given (see _project_payload) — `()` and a non-empty
+    tuple are the only two shapes this function ever sees.
+
+    `()` means "keep nothing" and short-circuits before even asking
+    whether `obj` is a dict — an empty pick is a valid, meaningful
+    request regardless of what shape sits underneath (§C5: "()  = 這一半
+    一個鍵都不留"). A non-empty pick against a non-dict `obj` (metadata
+    absent from the envelope entirely, e.g.) is treated the same as
+    "named key missing" — there is nothing under `which` for any key to
+    live in.
+    """
+    if not keys:
+        return {}
+    if not isinstance(obj, dict):
+        raise ToolAbort(_error_malformed(f"{which}.{keys[0]} missing"), kind="malformed")
+    projected: dict = {}
+    for key in keys:
+        if key not in obj:
+            raise ToolAbort(_error_malformed(f"{which}.{key} missing"), kind="malformed")
+        projected[key] = obj[key]
+    return projected
+
+
+def _project_payload(
+    payload: dict,
+    pick_data: tuple[str, ...] | None,
+    pick_metadata: tuple[str, ...] | None,
+) -> dict:
+    """`None` for BOTH pick_data and pick_metadata means "no projection at
+    all" — the caller never reaches this function in that case (see
+    guarded_sequence's `request()`); this function only runs once at
+    least one of them is not None, and each half is projected
+    independently. Top-level keys other than `data`/`metadata` (a
+    FamilyBShape's sibling_keys, e.g. `failed`) are carried through
+    unfiltered — request()'s two pick_* parameters name only these two
+    halves, deliberately (§C5: "信封本來就是兩個並列的鍵"), so there is no
+    third parameter asking this function to touch anything else.
+    """
+    projected = dict(payload)
+    projected["data"] = _project_field("data", payload.get("data"), pick_data)
+    projected["metadata"] = _project_field("metadata", payload.get("metadata"), pick_metadata)
+    return projected
+
+
 @asynccontextmanager
 async def guarded_api(
     ctx: Context,
@@ -362,26 +569,13 @@ async def guarded_api(
     endpoint declares one), and may raise ToolAbort to abort without
     issuing a request.
 
-    `body` is forwarded to fetch() unchanged, for a POST endpoint's request
-    body. The method/body mismatch check below (a body handed to a GET
-    endpoint, or a POST endpoint called with body=None) is deliberately a
-    CALL-TIME check here, not a construction-time one on Endpoint: the body
-    does not exist until a caller supplies it, so no __post_init__ could
-    ever see it. It is also deliberately placed ahead of the `try` that
-    wraps fetch() below, not inside fetch() itself: fetch() runs inside
-    guarded_api's own broad `except Exception`, which converts anything
-    raised there into ERROR_API_REQUEST_FAILED ("可能是逾時或網路問題，
-    請稍後再試") — reporting a caller's own bug as a transient network blip
-    to an Agent whose reasonable next move is to retry.
-
-    Cookies are read from `info.cookies` on every call, inside the held
-    lock — not from a browser object, because there is no browser object
-    to read from after login completes (SessionInfo is the sole holder of
-    credentials post-login; see browser/session.py). Reading it fresh
-    inside the lock rather than capturing it once outside is still not for
-    freshness within a call (nothing rotates it mid-region) but the same
-    single-owner discipline this project has twice been bitten by
-    violating elsewhere — one fact, one place it is read from.
+    The actual request/response handling (method/body check, cookie
+    selection, fetch, challenge/redirect/classify) lives in `_issue_one`
+    now, shared with guarded_sequence below — this function's own job is
+    reduced to session resolution, the lock, the throttle gate, and the
+    before_request hook, in that order, exactly as before (§C5; T-61: this
+    refactor changes no observable behaviour of any of the eight existing
+    call sites — signature and yield shape are unchanged).
     """
     app = ctx.request_context.lifespan_context
     info = await resolve_session(ctx)
@@ -428,102 +622,134 @@ async def guarded_api(
         if before_request is not None:
             await before_request(info)
 
-        if endpoint.method == "POST" and body is None:
-            raise ToolAbort(
-                _error_internal_config(f"{endpoint.key} 是 POST 端點但未帶 body"),
-                kind="internal_config",
+        payload = await _issue_one(
+            info, endpoint, params, body,
+            session_id=session_id,
+            throttle_state_path=app.config.throttle_state_path,
+        )
+        yield payload, info
+
+
+@asynccontextmanager
+async def guarded_sequence(
+    ctx: Context,
+    *,
+    slots_needed: int,
+    before_first: Callable[[SessionInfo], Awaitable[None]] | None = None,
+) -> AsyncIterator[tuple[Callable[..., Awaitable[object]], SessionInfo]]:
+    """The multi-request counterpart to guarded_api — same lock, same
+    throttle gate, same `_issue_one` per sub-request, but ONE lock hold
+    and ONE throttle-gate check for the whole sequence rather than one
+    each per sub-request (§C5; T-55). Used today by exactly one caller
+    (tools/messaging.py's send_inquiry, three sub-requests), but nothing
+    here is send_inquiry-specific — the sequence length is entirely the
+    caller's business (see `slots_needed` below).
+
+        async with guarded_sequence(ctx, slots_needed=3) as (request, info):
+            idno_payload = await request(ENDPOINTS["resolve_candidate_idno"], params=..., pick_data=("idNo",), pick_metadata=())
+            ...
+
+    `slots_needed` is forwarded to `enforce_throttle` VERBATIM — this
+    function never inspects, rewrites, or defaults it beyond the type
+    itself; how many requests a sequence needs is the calling tool's own
+    fact, not something the guard should know or guess (§C5: "helpers.py
+    裡不得出現 3 這個數字"; T-62).
+
+    `before_first` runs once, after the throttle gate and before the
+    first sub-request — the sequence-level analogue of guarded_api's
+    `before_request`. Per-sub-request checks (e.g. send_inquiry's daily-
+    cap re-check ahead of its third sub-request) are NOT this parameter's
+    job; they are the `before_request` argument to an individual
+    `request(...)` call instead.
+
+    A sub-request that fails raises straight out of `request()` — no
+    `except` here catches it, so it propagates out of this
+    asynccontextmanager, the `async with info.lock:` block exits (lock
+    released), and no further sub-request is issued (T-56).
+
+    `request()`'s pick_data/pick_metadata are the projection mechanism —
+    see `_project_payload`/`_project_field` above and this file's module
+    docstring reference to §C5 for the None-vs-() distinction: `None`
+    (the default for both) means no projection at all, the SAME full
+    envelope guarded_api has always yielded (T-57 case b/c); a
+    non-`None` value projects that half down to exactly the named keys,
+    raising ToolAbort(kind="malformed") — sharing `_error_malformed`,
+    classify()'s own inner_key floor's payload, so this needs no new
+    handler at any call site's `except GuardAbort` (T-59) — the instant a
+    named key turns out absent. Projection is refused up front, before
+    `_issue_one` (and therefore before fetch()'s own try/except) is ever
+    reached, for an endpoint whose family_b_shape is `is_list=True` (its
+    `data` is a list with no keys to pick from) or has no family_b_shape
+    at all — ToolAbort(kind="internal_config"), the same "this is a
+    program bug, please report it" family guarded_api already uses for a
+    caller's own method/body mismatch (T-58).
+    """
+    app = ctx.request_context.lifespan_context
+    info = await resolve_session(ctx)
+    if not info:
+        raise SessionUnavailable(ERROR_NOT_LOGGED_IN, kind="not_logged_in")
+
+    session_id = get_session_id(ctx)
+    async with info.lock:
+        # Same identity re-check as guarded_api, same reason: this call
+        # may have queued on `info.lock` behind a logout()+login() pair
+        # that replaced the pool entry under the same session_id.
+        if app.session_pool.get_session(session_id) is not info:
+            raise SessionUnavailable(ERROR_NOT_LOGGED_IN, kind="not_logged_in")
+
+        # One throttle-gate check for the WHOLE sequence, not one per
+        # sub-request — unconditional (not gated behind any single
+        # sub-request's endpoint.throttle_gated) because a sequence
+        # reserves slots for however many requests it is about to issue,
+        # a fact that belongs to the caller, not to any one endpoint in
+        # the burst.
+        abort = await enforce_throttle(
+            info.throttle,
+            path=app.config.throttle_state_path,
+            max_requests_per_hour=app.config.max_requests_per_hour,
+            max_inline_wait_seconds=app.config.max_inline_wait_seconds,
+            activity_streak_limit_minutes=app.config.activity_streak_limit_minutes,
+            rest_duration_minutes=app.config.rest_duration_minutes,
+            min_call_interval_seconds=app.config.min_call_interval_seconds,
+            slots_needed=slots_needed,
+        )
+        if abort is not None:
+            payload = abort.payload if abort.kind == "throttled" else _error_internal_config(abort.detail)
+            raise ToolAbort(payload, kind=abort.kind)
+
+        if before_first is not None:
+            await before_first(info)
+
+        async def request(
+            endpoint: Endpoint,
+            *,
+            params: Sequence[tuple[str, str]] | None = None,
+            body: dict | None = None,
+            before_request: Callable[[SessionInfo], Awaitable[None]] | None = None,
+            pick_data: tuple[str, ...] | None = None,
+            pick_metadata: tuple[str, ...] | None = None,
+        ) -> object:
+            if pick_data is not None or pick_metadata is not None:
+                shape = endpoint.family_b_shape
+                if shape is None or shape.is_list:
+                    raise ToolAbort(
+                        _error_internal_config(
+                            f"{endpoint.key} 不支援欄位投影（pick_data/pick_metadata 只能用在 "
+                            "is_list=False 的端點）"
+                        ),
+                        kind="internal_config",
+                    )
+
+            if before_request is not None:
+                await before_request(info)
+
+            payload = await _issue_one(
+                info, endpoint, params, body,
+                session_id=session_id,
+                throttle_state_path=app.config.throttle_state_path,
             )
-        if endpoint.method != "POST" and body is not None:
-            raise ToolAbort(
-                _error_internal_config(f"{endpoint.key} 不是 POST 端點卻帶了 body"),
-                kind="internal_config",
-            )
+            if pick_data is None and pick_metadata is None:
+                return payload
+            return _project_payload(payload, pick_data, pick_metadata)
 
-        cookie_header = select_cookies_for_host(info.cookies, hostname_for(endpoint))
-
-        # note_request runs in `finally`, not after a bare `await fetch(...)`
-        # line: a timeout or connection error raises out of the `try` below
-        # and skips anything placed after it, which would leave the
-        # rolling-window volume count reading zero on exactly the calls
-        # most worth counting — 104 refusing or timing out under load is
-        # the condition the volume cap exists to react to, not to miss.
-        # this is the only place any aiohttp request — successful or not —
-        # is ever counted. Runs unconditionally, regardless of
-        # endpoint.throttle_gated: the gate above may be waived, the
-        # ledger never is — a route exempt from the judgment
-        # gate is still a real request against 104 and still belongs in
-        # the rolling-window volume count and the inter-call pacing
-        # anchor.
-        try:
-            raw = await fetch(endpoint, cookie_header=cookie_header, params=params, body=body)
-        except Exception as exc:
-            log.error("guarded_api: request to %s failed: %s", endpoint.key, exc)
-            # A timeout/connection error says nothing about whether the
-            # session itself is usable — the next call may succeed outright
-            # — so this is ToolAbort, not SessionUnavailable: the design
-            # treats transport failure as transient, and SessionUnavailable's
-            # contract (a future session-recovery handler may react to it,
-            # e.g. by clearing cookies) must not misfire on a network blip
-            # that has nothing to do with session health.
-            raise ToolAbort(ERROR_API_REQUEST_FAILED, kind="transport")
-        finally:
-            note_request(info.throttle, path=app.config.throttle_state_path)
-
-        # Must run before any shape inspection: a challenge page has no
-        # measured shape resembling either family's success OR any of
-        # classify()'s named failures, so it must be screened out first,
-        # not fall through into one of those and be reported as something
-        # else.
-        is_challenge, ray_id = _detect_cloudflare_challenge(raw.body)
-        if is_challenge:
-            log.warning(
-                "guarded_api: Cloudflare challenge detected for session %s calling %s (Ray ID: %s)",
-                session_id, endpoint.key, ray_id or "unknown",
-            )
-            raise SessionUnavailable(ERROR_CHALLENGE, kind="challenge")
-
-        # A redirect (not followed — see fetch()'s docstring) is handled
-        # here, ahead of classify(), only for the auth-host check, which
-        # needs matches_auth_host — a dependency classify() deliberately
-        # does not carry (it depends on nothing beyond the endpoint
-        # declaration). classify() separately checks the same redirect's
-        # Location for the company-switch marker string, so a family A/B
-        # redirect that is neither an auth host NOR that marker still
-        # falls through to classify()'s empty-body "non_json" failure kind
-        # and is reported loudly rather than silently. This does not
-        # describe logout_session (family="opaque"): its only measured
-        # redirect target is boidc.104.com.tw, an auth host, so this very
-        # check — which runs before classify() in call order — always
-        # intercepts it first; classify()'s own opaque branch (which
-        # returns success unconditionally) is never reached in practice,
-        # see that endpoint's own comment.
-        if raw.location is not None:
-            hostname = urlparse(raw.location).hostname or ""
-            if matches_auth_host(hostname):
-                log.warning("guarded_api: session %s redirected to auth host at %s", session_id, endpoint.key)
-                # An expiry signal, not a transport failure — must declare
-                # "expired", not fall in with the transport kind above.
-                raise SessionUnavailable(ERROR_EXPIRED, kind="expired")
-
-        verdict = classify(endpoint, raw)
-        if not verdict.ok:
-            if verdict.kind == "blocked":
-                payload = (
-                    ERROR_BLOCKED_API_AFTER_SUCCESS if info.has_succeeded_api_call
-                    else ERROR_BLOCKED_API_FIRST_CALL
-                )
-                log.warning("guarded_api: request blocked (403) for session %s calling %s", session_id, endpoint.key)
-                raise SessionUnavailable(payload, kind="blocked")
-            payload, abort_cls = _api_error_for_kind(verdict.kind, endpoint, verdict.detail)
-            log.warning(
-                "guarded_api: %s failed kind=%s detail=%s", endpoint.key, verdict.kind, verdict.detail,
-            )
-            # The classifier's own kind, passed through verbatim — never
-            # re-mapped here, so a kind classify() has never been taught
-            # about still reaches send_message's ambiguous fallthrough
-            # rather than silently landing on whatever this line happened
-            # to default to.
-            raise abort_cls(payload, kind=verdict.kind)
-
-        info.has_succeeded_api_call = True
-        yield verdict.payload, info
+        yield request, info
