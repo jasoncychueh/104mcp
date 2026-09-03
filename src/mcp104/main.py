@@ -1,6 +1,9 @@
 import asyncio
 import logging
+import os
 import sys
+import threading
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -98,6 +101,13 @@ async def _init_globals() -> None:
     Any failure here propagates to the caller, which is responsible for the
     stderr/non-zero-exit/clean-stdout contract — this function does not
     touch stdout or sys.exit itself.
+
+    Every failure path below releases what it already opened before
+    re-raising: db.init() failing (e.g. SharedDataDirectoryError from the
+    account-label isolation check) still leaves aiosqlite's own connection
+    open with a live, non-daemon worker thread — without closing it here,
+    that thread keeps the interpreter alive past main()'s sys.exit(1), and a
+    stdio MCP client sees a hang/timeout instead of the startup error.
     """
     global _app_ctx
 
@@ -107,7 +117,11 @@ async def _init_globals() -> None:
     config.data_dir.mkdir(parents=True, exist_ok=True)
 
     db = Database(config.db_path)
-    await db.init(config.account_label)
+    try:
+        await db.init(config.account_label)
+    except Exception:
+        await db.close()
+        raise
 
     compact_state_file(config.throttle_state_path)
 
@@ -206,6 +220,37 @@ async def main() -> None:
         await _init_globals()
     except Exception as exc:
         log.error("104-mcp 啟動失敗：%s", exc)
+        # sys.exit(1) below relies on every resource _init_globals opened
+        # having already been released (see that function's own docstring)
+        # so no non-daemon thread is left holding the interpreter open at
+        # shutdown — that is the normal, clean path, and SystemExit
+        # propagating out of main()/run() is what tests observe as the
+        # process's exit code. The daemon watchdog thread started just
+        # before it is a last-resort fallback only, for a future leak this
+        # fix doesn't anticipate: a non-daemon thread blocks interpreter
+        # shutdown *after* SystemExit has already unwound every frame, so
+        # sys.exit(1) itself has no opportunity to notice or react to that —
+        # only a separate thread racing the shutdown can force it via
+        # os._exit(1), which skips the thread-join Python normally does on
+        # exit. Being a daemon thread, the watchdog never itself holds the
+        # process open when shutdown succeeds normally within the grace
+        # period, so it costs nothing on the clean path. Flush the logging
+        # handlers first so the error above is never lost to a hard exit.
+        for handler in logging.getLogger().handlers:
+            try:
+                handler.flush()
+            except Exception:
+                pass
+
+        def _force_exit_if_still_alive() -> None:
+            time.sleep(5)
+            os._exit(1)
+
+        watchdog = threading.Thread(
+            target=_force_exit_if_still_alive, daemon=True, name="startup-failure-exit-watchdog"
+        )
+        watchdog.start()
+
         sys.exit(1)
 
     try:

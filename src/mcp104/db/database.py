@@ -144,7 +144,9 @@ class Database:
             "keeping yourself once you know who they belong to. This costs "
             "today's send count and throttling window for this account — "
             "both restart at zero in the new directory — a bounded, "
-            "one-time cost chosen knowingly, not a silent reset."
+            "one-time cost chosen knowingly, not a silent reset. The new "
+            "directory also has no login credentials (cookies.json) yet, "
+            "so you will need to run login() again there."
         )
         raise SharedDataDirectoryError("\n".join(lines))
 
@@ -221,8 +223,15 @@ class Database:
             log.info("DB migration: candidates migrated (%d pre-existing row(s) tagged %r)", row_count, ID_SOURCE_UNKNOWN)
 
     async def close(self):
+        """Idempotent: safe to call more than once, and safe to call after a
+        failed init() (e.g. Database(path) constructed, then await
+        aiosqlite.connect() succeeded but a later init() step raised before
+        this Database was ever handed off) — self._conn is set to None once
+        closed so a second close() is a no-op rather than an error on an
+        already-closed connection."""
         if self._conn:
             await self._conn.close()
+            self._conn = None
 
     async def upsert_candidate(self, candidate_id: str, id_source: str, account_label: str, **fields):
         existing = await self.get_candidate(candidate_id, id_source, account_label)
