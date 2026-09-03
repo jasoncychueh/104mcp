@@ -3,8 +3,9 @@
 Answers: which host and path does each read tool call, what does its
 response envelope look like when it succeeds or fails, and how is a
 request actually issued. Deliberately does NOT decide what a failure means
-to the caller (tools/helpers.py's guarded_api owns turning a Verdict into
-the payload an MCP tool returns) and does NOT know about sessions, the
+to the caller (tools/helpers.py's `_issue_one` — the per-request unit
+shared by `guarded_api` and `guarded_sequence` — owns turning a Verdict
+into the payload an MCP tool returns) and does NOT know about sessions, the
 throttle, or the browser context that owns the cookies (browser/session.py
 and tools/helpers.py own those).
 
@@ -183,7 +184,7 @@ class Endpoint:
     family: str  # "A" | "B" — dispatches classify(); "opaque" names a route measured to answer outside either JSON envelope (e.g. logout_session) — classify() is never reached for it in practice, see that endpoint's own comment
     extra_headers: tuple[tuple[str, str], ...]  # NAME/VALUE pairs sent verbatim, beyond the always-sent baseline (User-Agent, Accept-Language, Cookie)
     family_b_shape: FamilyBShape | None  # required (non-None) iff family == "B" — enforced below, not merely documented
-    throttle_gated: bool  # whether this route passes through enforce_throttle's judgment gate (tools/helpers.py's guarded_api) — every row must answer this explicitly; the sole False today is logout_session (see ENDPOINTS below for why it qualifies for the exemption)
+    throttle_gated: bool  # whether this route passes through enforce_throttle's judgment gate (tools/helpers.py's guarded_api/guarded_sequence) — every row must answer this explicitly; the sole False today is logout_session (see ENDPOINTS below for why it qualifies for the exemption)
 
     def __post_init__(self) -> None:
         if self.method not in _ALLOWED_METHODS:
@@ -446,9 +447,10 @@ ENDPOINTS: dict[str, Endpoint] = {
     # 302 (empty body) to boidc.104.com.tw, whose chain ends on an HTML
     # error page; `POST` (empty body) is 404 HTML. Neither is a JSON
     # envelope of either family, hence family="opaque" — a value
-    # classify() never actually dispatches on here, because guarded_api's
-    # auth-host redirect check intercepts this route's 302 (Location ->
-    # boidc.104.com.tw) before classify() is ever called, and always has
+    # classify() never actually dispatches on here, because `_issue_one`'s
+    # auth-host redirect check (tools/helpers.py's per-request unit shared
+    # by guarded_api and guarded_sequence) intercepts this route's 302
+    # (Location -> boidc.104.com.tw) before classify() is ever called, and always has
     # in every measured run of this route. `method="GET"` per the same
     # measurement (`POST` is 404, not accepted). Post-hoc verification
     # (three send styles, one shared session) found the vip application
@@ -555,9 +557,11 @@ def select_cookies_for_host(cookies: Sequence[dict], host: str) -> str:
     comparing) would let a cookie scoped host-only to vip.104.com.tw leak
     into a request to auth.vip.104.com.tw — a different host under the
     same "*.104.com.tw" strings-look-similar family. This is why
-    guarded_api must re-read cookies per call rather than cache a single
-    header string across both hosts it may need to call: which cookies
-    apply differs by host, not just by session.
+    `_issue_one` (tools/helpers.py's per-request unit shared by
+    guarded_api and guarded_sequence) must re-read cookies per request
+    rather than cache a single header string across both hosts it may
+    need to call: which cookies apply differs by host, not just by
+    session.
     """
     parts = []
     for cookie in cookies:
@@ -606,19 +610,20 @@ async def fetch(
     `endpoint.method`. Redirects are NOT followed: following one into an
     HTML login page and parsing it as JSON is exactly the silent
     substitution this whole design exists to prevent. The unfollowed 3xx
-    body is empty, so the redirect's Location header (read by guarded_api,
-    not here — see that function's docstring for why the auth-host check
-    does not belong in this module) is surfaced via RawResponse.location
-    instead.
+    body is empty, so the redirect's Location header (read by
+    `_issue_one`, not here — see that function's docstring for why the
+    auth-host check does not belong in this module) is surfaced via
+    RawResponse.location instead.
 
     `body` is only meaningful for a POST endpoint — the method/body
     mismatch check (a body handed to a GET endpoint, or a POST endpoint
-    called with body=None) lives in tools/helpers.py's guarded_api, ahead
+    called with body=None) lives in tools/helpers.py's `_issue_one` (the
+    per-request unit shared by guarded_api and guarded_sequence), ahead
     of the `try` that wraps this call, not here: it is a call-time check
     (the body does not exist at Endpoint construction, so no
-    __post_init__ can see it) and it must not be swallowed by guarded_api's
-    broad `except Exception` around fetch(), which would report a caller
-    bug as a transient network failure.
+    __post_init__ can see it) and it must not be swallowed by
+    `_issue_one`'s broad `except Exception` around fetch(), which would
+    report a caller bug as a transient network failure.
 
     `Content-Type: application/json` is never declared in
     `endpoint.extra_headers` — aiohttp sets it as a consequence of
@@ -682,10 +687,11 @@ class Verdict:
     matters is not this module's job, only extracting it correctly is) —
     and nothing else. `ok=False` carries a
     `kind` naming which failure condition fired plus a human-readable
-    `detail` (typically 104's own message), and NO payload — guarded_api
-    reads `kind` to pick the abort class and the Chinese error text, never
-    `detail` alone, so a condition this module has not been taught about
-    cannot silently fall through as success.
+    `detail` (typically 104's own message), and NO payload — `_issue_one`
+    (tools/helpers.py's per-request unit shared by guarded_api and
+    guarded_sequence) reads `kind` to pick the abort class and the
+    Chinese error text, never `detail` alone, so a condition this module
+    has not been taught about cannot silently fall through as success.
     """
 
     ok: bool
@@ -726,16 +732,16 @@ def classify(endpoint: Endpoint, raw: RawResponse) -> Verdict:
 
     # A bot block (measured cause: expired clearance cookie OR active bot
     # detection) is the same HTTP status on both families, and the two
-    # causes need opposite remedies — guarded_api decides the wording
-    # (first-call vs. after-a-prior-success on this session); classify()
-    # only names the condition.
+    # causes need opposite remedies — `_issue_one`'s caller decides the
+    # wording (first-call vs. after-a-prior-success on this session);
+    # classify() only names the condition.
     if raw.status == 403:
         return Verdict(False, kind="blocked")
 
     if endpoint.family == "A":
         return _classify_family_a(raw)
     if endpoint.family == "opaque":
-        # In practice this branch is never reached at all: guarded_api's
+        # In practice this branch is never reached at all: `_issue_one`'s
         # auth-host redirect check intercepts logout_session's 302 before
         # classify() is ever called, and the EXPIRY_MARKER check above
         # catches the same redirect's Location a second, independent way.
@@ -831,9 +837,9 @@ def _family_b_payload(shape: FamilyBShape, body: dict, data: object) -> dict:
     `shape.sibling_keys` present in `body`. A sibling key that is absent
     from `body` is left OUT of the payload entirely, never filled with
     `None` — "104 didn't send this key" and "104 sent null" are different
-    facts, and the tool layer (§C4's回傳形狀判定, e.g. `failed` present-
-    but-absent driving the confirmed/ambiguous split) reads absence itself
-    as a signal. Only called on the ok=True path — a failed verdict never
+    facts, and the tool layer's own return-shape decision (e.g. `failed`
+    present-but-absent driving the confirmed/ambiguous split) reads
+    absence itself as a signal. Only called on the ok=True path — a failed verdict never
     carries a payload at all, so there is nothing to copy siblings onto.
     """
     payload: dict = {"data": data, "metadata": body.get("metadata")}

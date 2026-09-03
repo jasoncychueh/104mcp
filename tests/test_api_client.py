@@ -854,10 +854,11 @@ def test_all_declared_endpoints_construct_without_error():
     # ENDPOINTS itself is built at module import time — reaching this line at all
     # already proves every entry constructs cleanly under the required fields.
     # Fourteen today: the ten pinned pre-this-round (five pre-existing + three
-    # messaging endpoints + the two §C8 additions: verify_session,
-    # logout_session) + this round's four new §C7 endpoints (list_templates,
+    # messaging endpoints + the two prior additions verify_session,
+    # logout_session) + this round's four new endpoints (list_templates,
     # resolve_candidate_idno, event_last_info, send_willingness_event).
-    # get_template is deliberately NOT among them - see T-68.
+    # get_template is deliberately NOT among them - see the test below that
+    # pins it as an intentional omission.
     assert len(ENDPOINTS) == 14
 
 

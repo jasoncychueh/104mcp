@@ -33,26 +33,31 @@ clips only the fastest tail.
 
 ★ MAX_REQUESTS_PER_HOUR's default was lowered (1800 -> 300) around the
 same time this ThrottleState first served only five tools going through
-guarded_api and issuing exactly one HTTP request per call. **That is no
-longer the qualified statement it was** — the JSON-API messaging
-migration (read_messages / get_conversation / send_message) moved the
-remaining three tools onto guarded_api too, so as of that migration ALL
-EIGHT read/write tools issue exactly one counted HTTP request per call,
-through this one ThrottleState, with no second traffic shape sharing it.
-300/hour is therefore a call-volume budget for the whole tool surface,
-not a number that binds some tools and is slack for others.
+guarded_api and issuing exactly one HTTP request per call. The JSON-API
+messaging migration (read_messages / get_conversation / send_message)
+moved the remaining three tools onto the same per-request unit too — the
+budget is counted per REQUEST, not per tool call, through this one
+ThrottleState, with no second traffic shape sharing it. 300/hour is
+therefore a call-volume budget for the whole tool surface, sized by how
+many requests actually go out, not a number that binds some tools and is
+slack for others.
 
-★ The outbound-contact feature adds ONE exception to "exactly one counted
-HTTP request per call": send_inquiry issues three (a reverse-bridge GET,
-an event/last-info GET, then the willingness-event POST itself), all
-through guarded_sequence rather than guarded_api, and all three still
-land in this same ThrottleState via note_request — the 300/hour budget
-counts each of the three individually, not once per tool call. What
-changes in THIS module is the gate, not the ledger: evaluate() and
-enforce_throttle() both take a `slots_needed` parameter (default 1, the
-single-request case every other tool still uses) so the rolling-window
-check can ask "does the window have room for this many MORE requests",
-not just "is it already full" — a caller that reserves 3 slots is refused
+★ The outbound-contact feature adds ONE exception to "one request per
+tool call": send_inquiry issues three (a reverse-bridge GET, an
+event/last-info GET, then the willingness-event POST itself). The
+per-request unit both this module's callers ultimately share is
+`tools/helpers.py`'s `_issue_one` — `guarded_api` (one request per tool
+call) and its sibling `guarded_sequence` (N requests, one lock, one
+throttle-gate check for the whole sequence) both call it once per
+sub-request, and `_issue_one` calls `note_request` once per sub-request
+in turn, so all three of send_inquiry's requests still land in this same
+ThrottleState — the 300/hour budget counts each of the three
+individually, not once per tool call. What changes in THIS module is the
+gate, not the ledger: evaluate() and enforce_throttle() both take a
+`slots_needed` parameter (default 1, the single-request case every other
+tool still uses) so the rolling-window check can ask "does the window
+have room for this many MORE requests", not just "is it already full" —
+a caller that reserves 3 slots is refused
 up front if only 1 is free, rather than being admitted and then blowing
 the cap by 2 partway through its own burst. See evaluate()'s and
 enforce_throttle()'s own docstrings for the mechanism; this module still
@@ -66,9 +71,9 @@ conservative guess anchored on ONE 4-minute human recording whose
 idle-gap distribution likely UNDERSTATES real pauses (see the module's
 opening paragraphs); and that recording's own traffic SHAPE — a page
 load firing ~44-106 requests with near-zero gaps between them — is now
-something production never produces at all, on any of the eight tools,
-which puts the derivation basis further from what actually ships than it
-was before this migration, not closer to it. A client that fetches only
+something production never produces at all, on any tool this project
+registers, which puts the derivation basis further from what actually
+ships than it was before this migration, not closer to it. A client that fetches only
 JSON and never the surrounding page assets is itself a distinguishing
 signature (steering/tech.md §6b.6: "量少不等於可疑度低" — low request
 volume is not the same as low suspicion), which is a reason to keep
@@ -109,9 +114,12 @@ class ThrottleState:
 
     request_timestamps: epoch-second floats, counted toward the rolling
         hourly budget. Populated by note_request only — every tool now
-        goes through guarded_api's aiohttp-based API client, which issues
-        exactly one counted HTTP request per call, so this is the sole
-        source of counted requests. Tests populate this directly with
+        goes through `tools/helpers.py`'s `_issue_one`, the per-request
+        unit shared by `guarded_api` (one request per tool call) and
+        `guarded_sequence` (N requests, one per sub-request), calling
+        note_request once per sub-request; the aiohttp-based API client
+        never issues a counted request outside that path, so this is the
+        sole source of counted requests. Tests populate this directly with
         fake-clock values instead of real time.time() values — never mix
         real and fake clocks within one instance, or the rolling-window
         pruning compares them against each other.
@@ -611,10 +619,13 @@ def note_request(state: ThrottleState, *, path: Path, now_fn=time.time) -> None:
     the request's timestamp to the on-disk state file so it survives past
     this process.
 
-    Called once per call from guarded_api (tools/helpers.py), regardless
-    of whether that call ultimately succeeds — this is the only place any
-    request is ever counted, so without it the hourly window would count
-    zero requests while 104 received every one the session actually made.
+    Called once per sub-request from `_issue_one` (tools/helpers.py) —
+    the per-request unit shared by `guarded_api` (one request per tool
+    call) and `guarded_sequence` (N requests per tool call) — regardless
+    of whether that sub-request ultimately succeeds — this is the only
+    place any request is ever counted, so without it the hourly window
+    would count zero requests while 104 received every one the session
+    actually made.
 
     The logged interval is this module's own self-check, at zero
     production cost: the interval floor's justification rests on the
@@ -626,7 +637,7 @@ def note_request(state: ThrottleState, *, path: Path, now_fn=time.time) -> None:
     reflect the lock's queue rather than the caller's own rhythm. Nothing
     reacts to the logged value automatically; it exists to be read later.
 
-    Called from guarded_api's `finally`, so this never raises — an
+    Called from `_issue_one`'s `finally`, so this never raises — an
     exception here would clobber the outcome of the request it's just
     finishing recording. That means an append failure can't be handled by
     aborting the call it belongs to (the request has already gone out by
