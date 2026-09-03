@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+import json
 import re
 import tomllib
 from pathlib import Path
@@ -709,4 +710,229 @@ def test_no_ctx_param_module_uses_future_annotations():
         "AND carry `from __future__ import annotations`, which stringifies the "
         "`ctx: Context` annotation and breaks FastMCP's issubclass()-based "
         f"auto-injection detection: {offenders}"
+    )
+
+
+# ── outbound-contact Phase 5 (T-76..T-80): send_inquiry / list_templates land this
+# cycle, plus a CLAUDE.md/.mcp.json rewrite ──────────────────────────────────────────
+#
+# T-76 ("every registered tool's description fits budget with >=100 headroom",
+# measured via _all_tool_descriptions) and T-80 ("no tool leaks ctx into
+# inputSchema" + "tools/messaging.py carries no `from __future__ import
+# annotations`") are ALREADY covered, generically, by
+# test_every_tool_description_fits_claude_code_budget_with_headroom (above) and by
+# test_no_registered_tool_exposes_ctx_as_a_caller_field /
+# test_no_ctx_param_module_uses_future_annotations (above) -- all three sweep the
+# live registry / tools/*.py directory rather than a hard-coded tool list, so
+# send_inquiry and list_templates (registered inside messaging.py's
+# register_messaging_tools) are covered automatically the moment they exist, with
+# no new test needed for either case.
+
+_WS_RUN_RE = re.compile(r"\s+")
+
+
+def _normalize_ws(text: str) -> str:
+    """Strip every run of whitespace -- including a newline a wrapped
+    docstring inserts mid-sentence -- entirely (not collapse to a single
+    space). CJK text wraps without spaces between characters, so replacing a
+    mid-phrase newline with a space would leave a spurious space the
+    original phrase never had -- observed on send_inquiry's positive
+    warning, which wraps mid-phrase in the registered description. Apply to
+    BOTH sides of any substring check that matches a Chinese phrase against
+    text that may itself be wrapped -- the target phrase constants below
+    happen to contain no whitespace of their own today, so normalising them
+    is a no-op, but a caller must not assume that keeps holding.
+    """
+    return _WS_RUN_RE.sub("", text)
+
+
+_POSITIVE_WARNING_ZH = "會立刻送到一位真實求職者手上"
+
+
+def test_search_resumes_description_keeps_at_least_100_chars_headroom():
+    """T-77 (R8.1): search_resumes is design.md's §C8 budget table's one
+    perpetually-tight description (121 chars headroom as of the outbound-contact
+    design) -- it must clear the >=100-char headroom bar on its own, not merely
+    survive as part of the whole-registry sweep the budget test above already
+    runs."""
+    descriptions = _all_tool_descriptions()
+    assert "search_resumes" in descriptions, "sanity: search_resumes not registered"
+    length = len(descriptions["search_resumes"])
+    headroom = _TOOL_DESCRIPTION_CHAR_BUDGET - length
+    assert headroom >= _TOOL_DESCRIPTION_HEADROOM, (
+        f"search_resumes must keep at least {_TOOL_DESCRIPTION_HEADROOM} chars of "
+        f"headroom under the {_TOOL_DESCRIPTION_CHAR_BUDGET}-char budget -- got "
+        f"{length} chars, {headroom} headroom (design.md §C8: this is the one "
+        f"description with essentially no slack, so any future addition to a "
+        f"constant it references -- e.g. SECOND_IDENTIFIER_NOTE -- risks pushing "
+        f"it over)"
+    )
+
+
+def test_send_message_and_send_inquiry_each_carry_the_positive_warning_and_name_the_other():
+    """T-78 (R8.2): both send tools must state plainly that the call reaches a
+    real jobseeker immediately, and each must name the OTHER tool -- send_message
+    covering the plain-text case, send_inquiry covering the event case -- so a
+    caller reading either description is pointed at the one it doesn't cover."""
+    descriptions = _all_tool_descriptions()
+    for name in ("send_message", "send_inquiry"):
+        assert name in descriptions, f"sanity: {name} not registered"
+
+    other_tool = {"send_message": "send_inquiry", "send_inquiry": "send_message"}
+    for name, other_name in other_tool.items():
+        desc = _normalize_ws(descriptions[name])
+        assert _normalize_ws(_POSITIVE_WARNING_ZH) in desc, (
+            f"{name}'s description must carry the positive warning "
+            f"{_POSITIVE_WARNING_ZH!r} (R8.2) -- got: {desc!r}"
+        )
+        assert other_name in desc, (
+            f"{name}'s description must name {other_name!r} -- each of the two "
+            f"send tools must point the caller at the other tool for the case it "
+            f"does not cover (R8.2): {desc!r}"
+        )
+
+
+_CLAUDE_MD_TOOL_SIGNATURE_RE = re.compile(r"^([a-zA-Z_][a-zA-Z0-9_]*)\(", re.MULTILINE)
+
+
+def _claude_md_tool_section_names(markdown: str) -> set[str]:
+    """Every name CLAUDE.md's MCP Tools spec introduces in the `name(...)` shape
+    every tool section uses at the start of a line -- `login()`,
+    `search_resumes(keyword: str, ...` (multi-line signatures only need their
+    first line to match), `send_message(job_id: str, ...`, and so on. Also picks
+    up the handful of inline `name(args)` mentions in the "工作流程" prose
+    (`list_recommended_resumes(jobno)` etc.) -- harmless, since those name
+    registered tools too and the result is a set.
+    """
+    return set(_CLAUDE_MD_TOOL_SIGNATURE_RE.findall(markdown))
+
+
+def test_claude_md_documents_send_inquiry_and_list_templates_and_matches_registered_tools():
+    """T-79 (R8.6): CLAUDE.md's MCP Tools spec must gain sections for both new
+    tools, and the set of tool-shaped names it documents must equal exactly the
+    set of registered tool names -- nothing registered left undocumented, nothing
+    documented that isn't actually registered."""
+    markdown = _claude_md_text()
+    documented = _claude_md_tool_section_names(markdown)
+
+    assert "send_inquiry" in documented, "CLAUDE.md has no send_inquiry(...) section"
+    assert "list_templates" in documented, "CLAUDE.md has no list_templates(...) section"
+
+    registered = set(_all_tool_descriptions())
+    missing_from_doc = registered - documented
+    extra_in_doc = documented - registered
+    assert not missing_from_doc, (
+        f"registered tools CLAUDE.md's MCP Tools spec does not document: "
+        f"{sorted(missing_from_doc)}"
+    )
+    assert not extra_in_doc, (
+        f"CLAUDE.md documents tool-shaped names ({sorted(extra_in_doc)}) that are "
+        f"not among the registered tools ({sorted(registered)})"
+    )
+
+
+# code -> Traditional-Chinese label, the six measured template categories
+# (design.md §C8 / requirements.md R3.7, wire-confirmed via PUT, §8.15/§8.17).
+_TEMPLATE_CATEGORIES_ZH = {
+    "1": "詢問意願",
+    "2": "邀約面試",
+    "3": "感謝函",
+    "4": "到職日期提醒",
+    "5": "邀性格測驗",
+    "0": "不分類",
+}
+
+
+def _code_precedes_label(text: str, code: str, label: str, window: int = 6) -> bool:
+    """True iff `label` appears in `text` with `code` somewhere in the `window`
+    characters immediately before it -- tolerant of whatever separator the
+    description actually uses (`1=詢問意願`, "`1` 詢問意願", "(1)詢問意願", ...)
+    without asserting a specific one, since no separator is specified by the
+    design basis, only that code and name are both present together.
+    """
+    start = 0
+    while True:
+        pos = text.find(label, start)
+        if pos == -1:
+            return False
+        if code in text[max(0, pos - window):pos]:
+            return True
+        start = pos + 1
+
+
+def test_list_templates_description_lists_all_six_measured_categories_as_account_archival():
+    """T-79 (R3.7): list_templates' description must name all six measured
+    template categories (code + Traditional-Chinese label each) and must say
+    these categories are the account's own archival categorisation -- not a
+    vocabulary this project defines."""
+    descriptions = _all_tool_descriptions()
+    assert "list_templates" in descriptions, "sanity: list_templates not registered"
+    desc = _normalize_ws(descriptions["list_templates"])
+
+    missing = [
+        f"{code} {label}" for code, label in _TEMPLATE_CATEGORIES_ZH.items()
+        if not _code_precedes_label(desc, code, label)
+    ]
+    assert not missing, (
+        f"list_templates' description must name all six measured template "
+        f"categories, code immediately preceding its label -- missing: {missing}. "
+        f"Description: {desc!r}"
+    )
+    # R3.7's own wording ("這個帳號自己的歸檔分類") is descriptive prose, not a
+    # verbatim-transcription contract like CANDIDATE_TERMINAL_ZH -- so this checks
+    # for the two content words ("帳號自己" ownership, "歸檔" archival/filing) it
+    # must convey, not the exact phrase or grammar around them.
+    assert "帳號自己" in desc and "歸檔" in desc, (
+        "list_templates' description must say these categories are the "
+        f"account's own archival/filing categorisation (R3.7: '這個帳號自己的歸檔"
+        f"分類'), not a project-defined vocabulary: {desc!r}"
+    )
+
+
+# Marks the "what to do after a timeout" guidance: check the back office or
+# read_messages, and do NOT resend -- R8.7 requires this land in BOTH the tool
+# description and CLAUDE.md, since a timed-out Agent may only have one of the two
+# in front of it at the moment it needs the instruction.
+_TIMEOUT_GUIDANCE_MARKERS = ("read_messages", "重送")
+
+
+def _has_timeout_guidance(text: str) -> bool:
+    return all(marker in text for marker in _TIMEOUT_GUIDANCE_MARKERS)
+
+
+def test_timeout_after_guidance_appears_in_both_send_inquiry_description_and_claude_md():
+    """T-79 (R8.7): the post-timeout instruction (check the back office or
+    read_messages to confirm; do not resend) must be readable from EITHER the
+    send_inquiry tool description or CLAUDE.md alone -- R8.7 requires both, not
+    either-or."""
+    descriptions = _all_tool_descriptions()
+    assert "send_inquiry" in descriptions, "sanity: send_inquiry not registered"
+    desc = _normalize_ws(descriptions["send_inquiry"])
+    assert _has_timeout_guidance(desc), (
+        f"send_inquiry's description must carry the post-timeout guidance "
+        f"(mentions read_messages and tells the caller not to resend, R8.7) -- "
+        f"got: {desc!r}"
+    )
+
+    markdown = _normalize_ws(_claude_md_text())
+    assert _has_timeout_guidance(markdown), (
+        "CLAUDE.md must ALSO carry the post-timeout guidance (R8.7) -- it must "
+        "not live only in the tool description"
+    )
+
+
+def test_mcp_json_104_mcp_entry_carries_120000ms_timeout():
+    """T-79 (§C9): the `104-mcp` server entry in .mcp.json must set
+    `"timeout": 120000` (120s) -- headroom over send_inquiry's ~50s worst case
+    (the one path that issues three requests in a single tool call)."""
+    mcp_json_path = REPO_ROOT / ".mcp.json"
+    data = json.loads(mcp_json_path.read_text(encoding="utf-8"))
+    servers = data.get("mcpServers", {})
+    assert "104-mcp" in servers, (
+        f".mcp.json has no '104-mcp' server entry -- found {sorted(servers)}"
+    )
+    entry = servers["104-mcp"]
+    assert entry.get("timeout") == 120000, (
+        f"the '104-mcp' entry in .mcp.json must carry \"timeout\": 120000 -- got "
+        f"{entry.get('timeout')!r}"
     )
