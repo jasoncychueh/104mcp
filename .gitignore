@@ -69,3 +69,13 @@ research/captures/
 # package it belongs to). This rule still stands for what remains here
 # (messaging_endpoints.json) and for anything future work adds to this directory, for
 # the identical reason: derived measurements, no personal data.
+
+# Maintainer-only files: kept in the working tree, never committed or published.
+# CLAUDE.md / .spec / .claude are the AI-assisted workflow's notes; docs/ holds the
+# measurement record and research/ the probes and captures behind every 104 URL.
+CLAUDE.md
+.spec/
+.claude/
+.mcp.json
+docs/
+research/
