@@ -130,25 +130,34 @@ RESUME_ROW_FIELD_GLOSS: dict[str, str] = {
     "wcityNoDesc": "居住地敘述",
 }
 
-# `p_id` is a THIRD candidate-id key space — not the résumé `candidate_id`, not the
-# messaging `candidate_id`. Moved here (from tools/search.py) rather than duplicated, so
+# `p_id` is the résumé row's second identifier — measured (§8.12, 6 samples across
+# two sweeps) to be the SAME value as the messaging system's own `pId`, not a third,
+# unrelated key space. Moved here (from tools/search.py) rather than duplicated, so
 # search_resumes' docstring and describe_result_fields' payload read the identical text —
 # see this module's own docstring for why the import direction runs tools/search.py ->
 # here, never the reverse.
 #
-# Restated as UNMEASURED IN BOTH DIRECTIONS, not "known distinct" (the JSON-API
-# messaging migration): docs/104-site-facts.md §6b.8-2 measured only that the inbox
-# row's own `pId` is the id the conversation path takes — it says nothing about
-# whether THIS row's `p_id` (search_resumes/list_recommended_resumes/
-# list_matched_resumes/get_resume_detail) shares that space, in either direction. The
-# operational ban does not weaken for this — it strengthens: "we do not know they are
-# the same" is firmer ground for refusing to bridge them than the old "we know they
-# differ", which was never actually measured.
+# A MEASUREMENT, not a guarantee: docs/104-site-facts.md §8.12 confirmed the bridge on
+# 6 samples (4 via a 104-generated conversation link embedded in `remark`, cross-checked
+# against a 7th sample's read_messages/get_conversation trail) — it did not sample every
+# candidate, and a résumé with no prior conversation is unmeasured. This is why
+# MESSAGING_CANDIDATE_ID_NOTE below still names an inbox row's own `candidate_id` as a
+# source too, not `p_id` alone.
 SECOND_IDENTIFIER_NOTE = (
-    "每筆結果也帶有 p_id（104 的另一個識別碼）。p_id 與 candidate_id 是否同一個 key "
-    "space 雙向皆未量測（不是「已知不同」），與 messaging 工具的 candidate_id 是否相同"
-    "也未確認 —— 正因為未知，才更不能用 p_id 呼叫任何要求 candidate_id 的工具（見 "
-    "CLAUDE.md「候選人 id 不是同一個 key space」）。"
+    "每筆結果也帶有 p_id（104 的另一個識別碼）。已量測（6 個樣本）：p_id 就是訊息系統的 "
+    "pId——要用訊息工具聯繫這位候選人，傳的就是它；本列的 candidate_id（idNo）只給 "
+    "get_resume_detail 用。量測不是保證，見 CLAUDE.md「候選人 id 不是同一個 key space」。"
+)
+
+# Messaging tools' `candidate_id` PARAMETER — what it accepts, not what a result row
+# carries (that is SECOND_IDENTIFIER_NOTE's job; the two constants deliberately stay
+# separate, see this module's docstring). Imported by tools/messaging.py for
+# send_message/send_inquiry/get_conversation's own docstrings — three call sites, one
+# text, so the id explanation cannot drift between them.
+MESSAGING_CANDIDATE_ID_NOTE = (
+    "candidate_id 接受兩種來源：read_messages 既有對話列的 candidate_id（訊息系統自己的 "
+    "pId），或履歷列的 p_id（已量測與其相同，見 SECOND_IDENTIFIER_NOTE）；不可傳履歷的 "
+    "candidate_id（idNo）——位數 ≥ 12 在送出任何請求前就會被拒絕。"
 )
 
 
@@ -580,18 +589,65 @@ def _describe_message_fields() -> dict:
     return {"fields": fields}
 
 
+# `list_templates` row field gloss — keyed on the DELIVERED name already (`type_id`/
+# `type_desc`, not `typeId`/`typeDesc`), unlike RESUME/INBOX/MESSAGE_ROW_FIELD_GLOSS
+# above which are keyed raw-camelCase because tools/search.py and tools/messaging.py
+# filter the RAW pre-conversion dict against those two. `tools/messaging.py`'s row
+# conversion for `list_templates` has no such raw-filtering step to share a key-space
+# with, so there is nothing gained by keying this one raw too — §C8 of design.md is
+# explicit that this table's keys must already be the published names.
+#
+# `type_desc` is the ACCOUNT's own filing category (§8.18, confirmed by six PUT
+# .../template/{id} edits matched typeId->name from wire, cross-checked against §8.15's
+# template-type route naming) — not a routing decision 104 makes: any template's
+# `description` may be sent through send_inquiry regardless of its type_id (§8.16-8.17),
+# and whether a non-詢問意願 category changes what 104 records for that send is
+# unmeasured (see send_inquiry's own docstring for the operational caveat).
+TEMPLATE_TYPE_LABELS: dict[str, str] = {
+    "0": "不分類",
+    "1": "詢問意願",
+    "2": "邀約面試",
+    "3": "感謝函",
+    "4": "到職日期提醒",
+    "5": "邀性格測驗",
+}
+
+TEMPLATE_ROW_FIELD_GLOSS: dict[str, str] = {
+    "id": "範本 id；list_templates(type_id=...) 篩選用的不是這個鍵，是 type_id",
+    "title": "範本標題",
+    "description": "完整信件本文；send_inquiry 若帶 template_id，104 記錄的訊息內容一律"
+                    "由呼叫端自己的 message 決定，不是這裡的 description（見 send_inquiry"
+                    "自己的說明）",
+    "type_id": "帳號自己整理的歸檔分類代碼，不是 104 的事件路由——六個已知代碼："
+               + "、".join(f"{code}={label}" for code, label in TEMPLATE_TYPE_LABELS.items())
+               + "。帶哪個類別的範本送出，104 記成哪一種事件未量測",
+    "type_desc": "type_id 對應的中文標籤，104 自己回傳、與上面 TEMPLATE_TYPE_LABELS 一致",
+}
+
+
+def _describe_template_fields() -> dict:
+    """`list_templates` rows are already keyed on their delivered names
+    (`TEMPLATE_ROW_FIELD_GLOSS`'s own keys) — no `_row_facing_key`-style rename step,
+    unlike `_describe_resume_fields`/`_describe_inbox_fields`/`_describe_message_fields`
+    above, because `tools/messaging.py`'s template-row conversion has nothing raw to
+    filter against (see this table's own comment)."""
+    return {"fields": dict(TEMPLATE_ROW_FIELD_GLOSS)}
+
+
 _ROW_TYPE_DESCRIBERS = {
     "resume": _describe_resume_fields,
     "inbox": _describe_inbox_fields,
     "message": _describe_message_fields,
+    "template": _describe_template_fields,
 }
 
 
 def _describe_result_fields(row_type: str = "resume") -> dict:
     """Dispatches on `row_type` — `"resume"` (default, preserves today's behaviour
-    byte for byte), `"inbox"` (read_messages' rows) or `"message"`
-    (get_conversation's rows). An unknown value is an error naming the three legal
-    ones, never a silent fallback to `"resume"`."""
+    byte for byte), `"inbox"` (read_messages' rows), `"message"` (get_conversation's
+    rows), or `"template"` (list_templates' rows). An unknown value is an error naming
+    the four legal ones — generated from `_ROW_TYPE_DESCRIBERS`'s own keys, never a
+    silent fallback to `"resume"`."""
     describer = _ROW_TYPE_DESCRIBERS.get(row_type)
     if describer is None:
         return {
@@ -642,14 +698,17 @@ def _describe_result_fields_description() -> str:
 Args:
     row_type: "resume"（預設，search_resumes / list_recommended_resumes /
         list_matched_resumes 的列）｜"inbox"（read_messages 的列）｜"message"
-        （get_conversation 的列）。未帶時等同 "resume"，與這個參數新增前的行為
-        逐位元相同。不合法的值回傳 {{"error": str}}，附上三個合法值。
+        （get_conversation 的列）｜"template"（list_templates 的列）。未帶時等同
+        "resume"，與這個參數新增前的行為逐位元相同。不合法的值回傳
+        {{"error": str}}，附上四個合法值。
 
 回傳固定為 {{"fields": {{列上實際的欄位名: 繁體中文說明}}}}——鍵是列（row）轉換後
 真正看到的名稱（snake_case；resume 的 idNo 顯示為 candidate_id，inbox 的 jobNo/pId
-顯示為 job_id/candidate_id），不是 104 未轉換的原始名稱，三種 row_type 都是從各自
-的欄位允許清單依同一套轉換規則產生（單一定義來源，不是另一份手寫清單）。含義尚未
-量測的欄位會照 104 自己的欄位名稱標註「未量測」，不猜測意義。
+顯示為 job_id/candidate_id，template 本身已是發布用的名稱 type_id/type_desc），不是
+104 未轉換的原始名稱，四種 row_type 都是從各自的欄位允許清單依同一套規則產生（單一
+定義來源，不是另一份手寫清單）。含義尚未量測的欄位會照 104 自己的欄位名稱標註
+「未量測」，不猜測意義。template 的 type_desc 是帳號自己的歸檔分類，不是 104 的
+事件路由——帶哪個類別的範本送出，104 記成哪一種事件未量測。
 
 ⚠ inbox/message 兩種 row_type 額外會有「本工具不發布這個欄位」的條目：這些欄位（如
 idNo、hid、snapshotId、source）的 key space 未量測或本身是個資，delivered 的列上
