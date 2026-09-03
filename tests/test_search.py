@@ -105,6 +105,7 @@ import mcp104.tools.filters as filters
 import mcp104.tools.helpers as helpers_mod
 import mcp104.tools.search as search_mod
 from mcp104.tools.search import register_search_tools
+from tests.conftest import require_private_artifact
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
@@ -1370,7 +1371,7 @@ def test_claude_md_and_published_description_state_the_terminal_candidate_field(
     # key and what a caller does with it." Read the published description the way
     # T-67 does — through the FakeMCP registration capture, never `fn.__doc__` by
     # assumption.
-    claude_md_path = Path(__file__).resolve().parent.parent / "CLAUDE.md"
+    claude_md_path = require_private_artifact("CLAUDE.md")
     claude_md_text = claude_md_path.read_text(encoding="utf-8")
     search_doc = TOOL_DESCRIPTIONS.get("search_resumes", "")
     assert search_doc, "search_resumes must be registered with a non-empty published description"
