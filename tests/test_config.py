@@ -9,7 +9,7 @@ def _configure_env(monkeypatch, data_dir, label="tester@104.com"):
     """Set the two knobs get_config() needs to succeed: a required identity
     value and a data directory. Individual tests override either on top of
     this baseline."""
-    monkeypatch.setenv("MCP104_ACCOUNT_LABEL", label)
+    monkeypatch.setenv("MCP104_ACCOUNT", label)
     monkeypatch.setenv("MCP104_DATA_DIR", str(data_dir))
 
 
@@ -52,7 +52,7 @@ def test_config_from_env(monkeypatch, tmp_path):
 
 # ── I2-I: a non-numeric value for any of the numeric knobs is a startup
 # failure naming the offending variable and value, same pattern as T-104's
-# MCP104_ACCOUNT_LABEL coverage ────────────────────────────────────────────
+# MCP104_ACCOUNT coverage ────────────────────────────────────────────
 
 @pytest.mark.parametrize("var_name", [
     "MAX_DAILY_MESSAGES",
@@ -166,7 +166,7 @@ def test_t031_account_label_reflects_config_not_a_hardcoded_default(monkeypatch,
 @pytest.mark.parametrize("bad_value", ["", "   ", "\t\n "])
 def test_t031_account_label_blank_or_whitespace_is_startup_failure(monkeypatch, tmp_path, bad_value):
     _configure_env(monkeypatch, tmp_path, label="placeholder@104.com")
-    monkeypatch.setenv("MCP104_ACCOUNT_LABEL", bad_value)
+    monkeypatch.setenv("MCP104_ACCOUNT", bad_value)
 
     with pytest.raises(Exception):
         get_config()
@@ -174,7 +174,7 @@ def test_t031_account_label_blank_or_whitespace_is_startup_failure(monkeypatch, 
 
 def test_t031_account_label_missing_is_startup_failure(monkeypatch, tmp_path):
     monkeypatch.setenv("MCP104_DATA_DIR", str(tmp_path))
-    monkeypatch.delenv("MCP104_ACCOUNT_LABEL", raising=False)
+    monkeypatch.delenv("MCP104_ACCOUNT", raising=False)
 
     with pytest.raises(Exception):
         get_config()
@@ -190,18 +190,18 @@ def test_t031_account_label_missing_is_startup_failure(monkeypatch, tmp_path):
 def test_t104_missing_account_label_message_names_var_value_and_reason(monkeypatch, tmp_path, bad_value, label):
     monkeypatch.setenv("MCP104_DATA_DIR", str(tmp_path))
     if bad_value is None:
-        monkeypatch.delenv("MCP104_ACCOUNT_LABEL", raising=False)
+        monkeypatch.delenv("MCP104_ACCOUNT", raising=False)
     else:
-        monkeypatch.setenv("MCP104_ACCOUNT_LABEL", bad_value)
+        monkeypatch.setenv("MCP104_ACCOUNT", bad_value)
 
     with pytest.raises(Exception) as exc_info:
         get_config()
 
     message = str(exc_info.value)
 
-    # (1) names the environment variable — §C2 names MCP104_ACCOUNT_LABEL as
+    # (1) names the environment variable — §C2 names MCP104_ACCOUNT as
     # the one and only owner of this name.
-    assert "MCP104_ACCOUNT_LABEL" in message, (
+    assert "MCP104_ACCOUNT" in message, (
         f"[{label}] message must name the env var: {message!r}"
     )
 

@@ -123,15 +123,15 @@ def get_config() -> Config:
     # machine, not the 104 account, and would silently either merge two
     # different 104 accounts' records together or split one account's
     # records across machines.
-    account_label = os.getenv("MCP104_ACCOUNT_LABEL")
+    account_label = os.getenv("MCP104_ACCOUNT")
     if not account_label or not account_label.strip():
         raise ConfigError(
-            "MCP104_ACCOUNT_LABEL is not set. Set it to a value that "
+            "MCP104_ACCOUNT is not set. Set it to a value that "
             "identifies which 104 employer account this run is signed into "
             "(for example, that account's own login email) — "
             "candidate status and the daily send count are recorded under "
             "this value, so the same 104 account used from a different "
-            "machine must be given the same MCP104_ACCOUNT_LABEL, and "
+            "machine must be given the same MCP104_ACCOUNT, and "
             "switching to a different 104 account must be given a "
             "different one."
         )

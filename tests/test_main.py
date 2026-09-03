@@ -27,7 +27,7 @@ PYPROJECT = REPO_ROOT / "pyproject.toml"
 
 def _base_env(data_dir, label="tester@104.com"):
     env = dict(os.environ)
-    env["MCP104_ACCOUNT_LABEL"] = label
+    env["MCP104_ACCOUNT"] = label
     env["MCP104_DATA_DIR"] = str(data_dir)
     # Keep the auth site on an ephemeral local port unless a test overrides it.
     env.pop("MCP104_AUTH_BASE_URL", None)
@@ -150,7 +150,7 @@ def test_t032_selftest_browser_stdout_flag_writes_nothing_to_stdout():
 
 def test_t033_init_failure_writes_nothing_to_stdout(tmp_path):
     env = _base_env(tmp_path)
-    env["MCP104_ACCOUNT_LABEL"] = ""  # required, deliberately left unset
+    env["MCP104_ACCOUNT"] = ""  # required, deliberately left unset
 
     proc = subprocess.run(
         [sys.executable, "-m", "mcp104.main"],
@@ -189,7 +189,7 @@ def test_t035_info_level_messages_reach_diagnostic_output():
 
 def test_t036_init_failure_readable_reason_and_nonzero_exit(tmp_path):
     env = _base_env(tmp_path)
-    env["MCP104_ACCOUNT_LABEL"] = "   "  # whitespace-only, deliberately invalid
+    env["MCP104_ACCOUNT"] = "   "  # whitespace-only, deliberately invalid
 
     proc = subprocess.run(
         [sys.executable, "-m", "mcp104.main"],
@@ -202,7 +202,7 @@ def test_t036_init_failure_readable_reason_and_nonzero_exit(tmp_path):
     assert proc.stderr.strip() != b"", (
         "startup failure must write a readable reason to stderr"
     )
-    assert b"MCP104_ACCOUNT_LABEL" in proc.stderr, (
+    assert b"MCP104_ACCOUNT" in proc.stderr, (
         "the failure reason should name the offending setting"
     )
 
