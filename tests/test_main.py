@@ -126,7 +126,13 @@ def test_t032_selftest_browser_stdout_flag_writes_nothing_to_stdout():
         # 解法" #1: patchright's browser cache missing) -- any other
         # non-zero exit is a real failure and must not be swallowed by a
         # broad "looks browser-related" skip.
-        assert b"Executable doesn't exist" in proc.stderr, (
+        # stealth.py translates patchright's own "Executable doesn't exist"
+        # marker into its Chinese explanation before logging, so the
+        # subprocess's stderr carries the translation, not the marker. Match
+        # on the translation's ASCII token (the env var it names), which is
+        # unique to that message and survives whatever stderr encoding the
+        # host locale uses (cp950 on Windows, UTF-8 on Linux CI).
+        assert b"PLAYWRIGHT_BROWSERS_PATH" in proc.stderr, (
             f"non-zero exit for a reason other than the missing-browser-binary "
             f"pitfall must fail, not skip: returncode={proc.returncode}, "
             f"stderr={proc.stderr!r}"
