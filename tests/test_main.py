@@ -239,7 +239,8 @@ def test_t037_diagnostic_output_does_not_contain_full_token(tmp_path):
         )
         _read_jsonrpc_line(proc)
     finally:
-        proc.stdin.close()
+        # communicate() closes stdin itself; closing it here first makes
+        # POSIX Python's pre-communicate flush raise 'flush of closed file'.
         proc.terminate()
         try:
             _, stderr = proc.communicate(timeout=10)
