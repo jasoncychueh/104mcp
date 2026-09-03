@@ -528,12 +528,38 @@ def test_describe_result_fields_message_row_type():
     assert "user_name" not in result["fields"]
 
 
-def test_describe_result_fields_unknown_row_type_names_the_three_legal_values():
+def test_describe_result_fields_template_row_type():
+    """T-73: row_type="template" is a real, fourth describer -- and its fields dict
+    is keyed on the PUBLISHED names (id/title/description/type_id/type_desc), never
+    the raw wire names (typeId/typeDesc) -- same rule inbox/message already follow
+    for their own row-facing keys."""
+    result = _describe_result_fields("template")
+    assert "error" not in result
+    for key in ("id", "title", "description", "type_id", "type_desc"):
+        assert key in result["fields"], (
+            f"row_type=\"template\" is missing published key {key!r}: "
+            f"{sorted(result['fields'])}"
+        )
+    assert "typeId" not in result["fields"], (
+        "template row_type must key on the published type_id, not the raw typeId"
+    )
+    assert "typeDesc" not in result["fields"], (
+        "template row_type must key on the published type_desc, not the raw typeDesc"
+    )
+
+
+def test_describe_result_fields_unknown_row_type_names_the_four_legal_values():
+    """T-74: adding row_type="template" as a fourth describer means the unknown-value
+    error must now name FOUR legal values, not three -- this test (name and content
+    both) is the one place design.md warns will not "follow along" on its own."""
     result = _describe_result_fields("not-a-real-row-type")
     assert "error" in result
     assert "fields" not in result
-    for legal in ("resume", "inbox", "message"):
-        assert legal in result["error"]
+    for legal in ("resume", "inbox", "message", "template"):
+        assert legal in result["error"], (
+            f"unknown row_type error must name {legal!r} as a legal value: "
+            f"{result['error']!r}"
+        )
 
 
 def test_describe_result_fields_event_progress_gloss_is_generated_from_event_labels():
@@ -621,6 +647,43 @@ def test_second_identifier_note_is_reused_verbatim_by_search_module():
     tools/search.py's `_SECOND_IDENTIFIER_NOTE` holds."""
     import mcp104.tools.search as search_mod
     assert search_mod._SECOND_IDENTIFIER_NOTE == discovery_mod.SECOND_IDENTIFIER_NOTE
+
+
+def test_second_identifier_note_states_the_measured_relationship_not_the_stale_disclaimer():
+    """T-75: SECOND_IDENTIFIER_NOTE is rewritten in place to the MEASURED state (p_id
+    IS the messaging system's pId; the candidate_id on a résumé row is idNo, usable
+    only by get_resume_detail) -- it must no longer carry the old "both directions
+    unmeasured" / "must not call ... with p_id" disclaimer that CLAUDE.md's §C8 says
+    is now factually backwards."""
+    note = discovery_mod.SECOND_IDENTIFIER_NOTE
+    for stale_phrase in ("雙向皆未量測", "不能用 p_id 呼叫", "不得用 p_id 呼叫"):
+        assert stale_phrase not in note, (
+            f"SECOND_IDENTIFIER_NOTE still carries the stale disclaimer "
+            f"{stale_phrase!r}: {note!r}"
+        )
+    assert "pId" in note, "must name pId as what p_id measurably is"
+    assert "訊息工具" in note, (
+        "must point the caller at the messaging tools (訊息工具) as where the "
+        "p_id -- not this row's candidate_id -- is actually usable, per design.md §C8"
+    )
+
+
+def test_messaging_candidate_id_note_is_a_distinct_constant_naming_the_digit_guard():
+    """T-75: MESSAGING_CANDIDATE_ID_NOTE is a NEW constant (not a rename/alias of
+    SECOND_IDENTIFIER_NOTE, not identical text) -- it answers a different question
+    ("what does this PARAMETER take") than SECOND_IDENTIFIER_NOTE ("what is on this
+    ROW"), and per design.md's digit guard (§C4) it names the >=12-digit rejection
+    that protects the messaging tools' candidate_id from an accidentally-passed
+    résumé idNo."""
+    note = discovery_mod.MESSAGING_CANDIDATE_ID_NOTE
+    assert isinstance(note, str) and note, "MESSAGING_CANDIDATE_ID_NOTE must be a non-empty string"
+    assert note != discovery_mod.SECOND_IDENTIFIER_NOTE, (
+        "MESSAGING_CANDIDATE_ID_NOTE must not be identical to SECOND_IDENTIFIER_NOTE "
+        "-- the two constants answer different questions and must not be merged"
+    )
+    assert "12" in note, (
+        f"MESSAGING_CANDIDATE_ID_NOTE must name the >=12-digit rejection threshold: {note!r}"
+    )
 
 
 # ── T-67-style provenance, RE-HOMED here (Smell C, Round I1) ────────────────────────
