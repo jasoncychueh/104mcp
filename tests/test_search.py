@@ -557,6 +557,43 @@ async def test_match_closed_job_reports_servers_own_explanation(tmp_path, monkey
     assert "results" not in result
     assert "error" in result
     assert "此職務已關閉" in result["error"] or "DATA_NOT_FOUND" in result["error"]
+
+
+# ── update_date_type: omitted / passed through / rejected when blank ────────────────
+
+@pytest.mark.asyncio
+async def test_match_update_date_type_omitted_sends_no_wire_param(tmp_path, monkeypatch):
+    ctx, _info, _db = await _new_session(tmp_path)
+    spy = _install_fake_fetch(monkeypatch, _raw_from_bare_json("rows_match.json"))
+
+    result = await list_matched_resumes(jobno="12355016", ctx=ctx)
+
+    assert "error" not in result
+    _endpoint, params, _body = spy.calls[0]
+    assert all(key != "updateDateType" for key, _value in params)
+
+
+@pytest.mark.asyncio
+async def test_match_update_date_type_passed_through_verbatim(tmp_path, monkeypatch):
+    ctx, _info, _db = await _new_session(tmp_path)
+    spy = _install_fake_fetch(monkeypatch, _raw_from_bare_json("rows_match.json"))
+
+    result = await list_matched_resumes(jobno="12355016", ctx=ctx, update_date_type="2")
+
+    assert "error" not in result
+    _endpoint, params, _body = spy.calls[0]
+    assert params.count(("updateDateType", "2")) == 1
+
+
+@pytest.mark.asyncio
+async def test_match_update_date_type_blank_rejected_before_request(tmp_path, monkeypatch):
+    ctx, _info, _db = await _new_session(tmp_path)
+    _install_never_called_fetch(monkeypatch)
+
+    result = await list_matched_resumes(jobno="12355016", ctx=ctx, update_date_type="  ")
+
+    assert "results" not in result
+    assert "error" in result
     assert "內部設定錯誤" not in result["error"], (
         "must not be reported as a client configuration fault (Error Handling "
         "scenarios 1/8) — this is scenario 2, a server-reported not-found"
