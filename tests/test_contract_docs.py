@@ -105,7 +105,7 @@ def _env_vars_from_config_source() -> dict[str, dict]:
     alone: three variables (`MCP104_DATA_DIR`, `MCP104_AUTH_BASE_URL`,
     `MCP104_AUTH_BIND_PORT`) also have no literal default yet are genuinely
     optional (they resolve to `None` or a derived value when unset) — only
-    `MCP104_ACCOUNT_LABEL` is required. What actually marks a variable
+    `MCP104_ACCOUNT` is required. What actually marks a variable
     required in `get_config()`'s own body is that its `os.getenv(...)` call
     is followed, before the NEXT `os.getenv(...)` call, by `raise
     ConfigError` — exactly the shape of `account_label`'s own validation

@@ -10,7 +10,7 @@ which both drove guarded_api/guarded_sequence's scripted sub-request
 sequences through byte-for-byte identical copies of this class before it
 was consolidated here.
 
-`get_config()` now raises ConfigError when MCP104_ACCOUNT_LABEL is unset
+`get_config()` now raises ConfigError when MCP104_ACCOUNT is unset
 (config.py) — the identity value has no machine-derivable default (see that
 module's docstring for why). Several existing fake app-context classes
 (tests/test_api_client.py, tests/test_helpers.py, tests/test_messaging.py,
@@ -24,7 +24,7 @@ deliberate: it supplies a value that is obviously a test value, while still
 letting a test that needs to see "the variable is unset" delenv it itself
 inside its own body — see tests/test_config.py and
 tests/test_contract_docs.py, both of which do exactly that to exercise
-MCP104_ACCOUNT_LABEL's own required-value validation (T-104). An
+MCP104_ACCOUNT's own required-value validation (T-104). An
 unconditional supply here is what would make that validation permanently
 untestable, so this fixture must never become the thing that guarantees the
 value always has a value from a caller's point of view — it only supplies a
@@ -44,7 +44,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 @pytest.fixture(autouse=True)
 def _default_identity_env(monkeypatch, tmp_path):
-    monkeypatch.setenv("MCP104_ACCOUNT_LABEL", "test-account@104.example")
+    monkeypatch.setenv("MCP104_ACCOUNT", "test-account@104.example")
     monkeypatch.setenv("MCP104_DATA_DIR", str(tmp_path))
 
 

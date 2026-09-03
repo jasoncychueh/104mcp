@@ -1589,7 +1589,7 @@ def test_t087_login_timeout_seconds_default_is_at_least_measured_human_login_tim
     265s full human login time (MFA + product selection + repeatLogin)."""
     from mcp104.config import get_config
 
-    monkeypatch.setenv("MCP104_ACCOUNT_LABEL", "acct")
+    monkeypatch.setenv("MCP104_ACCOUNT", "acct")
     monkeypatch.delenv("LOGIN_TIMEOUT_SECONDS", raising=False)
 
     assert get_config().login_timeout_seconds >= 265

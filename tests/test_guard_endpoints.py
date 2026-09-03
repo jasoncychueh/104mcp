@@ -65,7 +65,7 @@ class _FakeCtx:
 
 @pytest.fixture(autouse=True)
 def _guard_env(monkeypatch, tmp_path):
-    monkeypatch.setenv("MCP104_ACCOUNT_LABEL", "test-account")
+    monkeypatch.setenv("MCP104_ACCOUNT", "test-account")
     monkeypatch.setenv("MCP104_DATA_DIR", str(tmp_path))
 
 

@@ -130,7 +130,7 @@ def _auth_env(monkeypatch, tmp_path):
     (mcp104/config.py, already implemented, explicitly readable). Neither is
     what any of these cases are about, so it's set once here rather than per
     test."""
-    monkeypatch.setenv("MCP104_ACCOUNT_LABEL", "test-account")
+    monkeypatch.setenv("MCP104_ACCOUNT", "test-account")
     monkeypatch.setenv("MCP104_DATA_DIR", str(tmp_path))
     monkeypatch.delenv("MCP104_AUTH_BIND_PORT", raising=False)
     monkeypatch.delenv("MCP104_AUTH_BASE_URL", raising=False)
