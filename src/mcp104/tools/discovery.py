@@ -156,7 +156,7 @@ SECOND_IDENTIFIER_NOTE = (
 # text, so the id explanation cannot drift between them.
 MESSAGING_CANDIDATE_ID_NOTE = (
     "candidate_id 接受兩種來源：read_messages 既有對話列的 candidate_id（訊息系統自己的 "
-    "pId），或履歷列的 p_id（已量測與其相同，見 SECOND_IDENTIFIER_NOTE）；不可傳履歷的 "
+    "pId），或履歷列的 p_id（已量測與其相同，見 search_resumes 結果列的 p_id 說明）；不可傳履歷的 "
     "candidate_id（idNo）——位數 ≥ 12 在送出任何請求前就會被拒絕。"
 )
 
@@ -621,7 +621,7 @@ TEMPLATE_ROW_FIELD_GLOSS: dict[str, str] = {
     "type_id": "帳號自己整理的歸檔分類代碼，不是 104 的事件路由——六個已知代碼："
                + "、".join(f"{code}={label}" for code, label in TEMPLATE_TYPE_LABELS.items())
                + "。帶哪個類別的範本送出，104 記成哪一種事件未量測",
-    "type_desc": "type_id 對應的中文標籤，104 自己回傳、與上面 TEMPLATE_TYPE_LABELS 一致",
+    "type_desc": "type_id 對應的中文標籤，由 104 自己回傳",
 }
 
 

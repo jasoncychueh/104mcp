@@ -898,6 +898,21 @@ def _has_timeout_guidance(text: str) -> bool:
     return all(marker in text for marker in _TIMEOUT_GUIDANCE_MARKERS)
 
 
+# Each tool's own spec block, not the whole document: "read_messages" and "重送"
+# both occur many times elsewhere in CLAUDE.md, so asserting against the full
+# text would still pass even if a tool's own post-timeout paragraph were
+# deleted entirely.
+_CLAUDE_MD_TOOL_BLOCK_BOUNDS = {
+    "send_message": ("send_message(job_id", "send_inquiry(job_id"),
+    "send_inquiry": ("send_inquiry(job_id", "list_templates(type_id"),
+}
+
+
+def _claude_md_tool_block(text: str, start: str, end: str) -> str:
+    i = text.index(start)
+    return text[i:text.index(end, i)]
+
+
 @pytest.mark.parametrize("tool_name", ["send_message", "send_inquiry"])
 def test_timeout_after_guidance_appears_in_both_send_inquiry_description_and_claude_md(tool_name):
     """T-79 (R8.7): the post-timeout instruction (check the back office or
@@ -914,15 +929,18 @@ def test_timeout_after_guidance_appears_in_both_send_inquiry_description_and_cla
         f"got: {desc!r}"
     )
 
-    markdown = _normalize_ws(_claude_md_text())
-    assert _has_timeout_guidance(markdown), (
-        "CLAUDE.md must ALSO carry the post-timeout guidance (R8.7) -- it must "
-        "not live only in the tool description"
+    start, end = _CLAUDE_MD_TOOL_BLOCK_BOUNDS[tool_name]
+    block = _normalize_ws(_claude_md_tool_block(_claude_md_text(), start, end))
+    assert "read_messages(job_nos=[job_id])" in block and "不要重送" in block, (
+        f"CLAUDE.md's own {tool_name}(...) spec block must ALSO carry the "
+        f"post-timeout guidance (R8.7) -- it must not live only in the tool "
+        f"description, and must be scoped to {tool_name}'s own block, not "
+        f"borrowed from elsewhere in the document -- block: {block!r}"
     )
 
 
 def test_mcp_json_104_mcp_entry_carries_120000ms_timeout():
-    """T-79 (§C9): the `104-mcp` server entry in .mcp.json must set
+    """T-79: the `104-mcp` server entry in .mcp.json must set
     `"timeout": 120000` (120s) -- headroom over send_inquiry's ~50s worst case
     (the one path that issues three requests in a single tool call)."""
     mcp_json_path = REPO_ROOT / ".mcp.json"

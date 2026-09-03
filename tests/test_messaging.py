@@ -23,6 +23,7 @@ output) — see `research/probes/redact_fixtures.py`'s `build_failure_send_valid
 from __future__ import annotations
 
 import json
+import logging
 import time
 from pathlib import Path
 from uuid import uuid4
@@ -37,6 +38,7 @@ from mcp104.browser.throttle import ThrottleAbort
 from mcp104.config import get_config
 from mcp104.db.database import Database
 from mcp104.tools.helpers import GuardAbort, get_session_id
+from tests.conftest import _SeqFetchSpy
 from mcp104.tools.messaging import (
     NOT_SENT,
     _convert_inbox_row,
@@ -1000,8 +1002,8 @@ async def test_send_message_log_sent_failure_does_not_change_ambiguous_verdict(t
     assert result["sent"] == "unconfirmed"
 
 
-# ── The hook_completed discriminator (§6c/§6d): a non-GuardAbort exception raised
-# AFTER the hook returns unconfirmed (and logs); raised BEFORE returns not-sent (and
+# ── The send_attempted discriminator: a non-GuardAbort exception raised AFTER the
+# flag is set (the line before fetch) returns unconfirmed (and logs); raised BEFORE returns not-sent (and
 # does not log) — even when account_label is empty, which an address-keyed
 # discriminator would get backwards ─────────────────────────────────────────────────
 
@@ -1046,9 +1048,9 @@ async def test_send_message_exception_before_hook_reports_not_sent_and_does_not_
 
 @pytest.mark.asyncio
 async def test_send_message_exception_after_hook_reports_unconfirmed_even_with_empty_account_label(tmp_path, monkeypatch):
-    # Pins the reason hook_completed is its OWN flag rather than inferred from
+    # Pins the reason send_attempted is its OWN flag rather than inferred from
     # info.account_label: an address-keyed discriminator would read an empty
-    # address as "the hook never ran" and wrongly report not-sent here.
+    # address as "the send was never attempted" and wrongly report not-sent here.
     pool = SessionPool()
     database = Database(str(tmp_path / f"db_{uuid4().hex}.sqlite"))
     await database.init("test@104.com")
@@ -1167,24 +1169,6 @@ def _outbound_success_envelope(event_id: str = "") -> dict:
         "failed": [],
         "metadata": {},
     }
-
-
-class _SeqFetchSpy:
-    """Like _FetchSpy above, but consumes a scripted list of RawResponses (or
-    raised exceptions) strictly in call order — needed for send_inquiry's
-    3-sub-request sequence, where each sub-request needs its own canned
-    answer. Mirrors tests/test_helpers.py's own _SeqFetchSpy."""
-
-    def __init__(self, scripted):
-        self._scripted = list(scripted)
-        self.calls: list[tuple[object, object, object]] = []
-
-    async def __call__(self, endpoint, *, cookie_header, params=None, body=None):
-        self.calls.append((endpoint, params, body))
-        item = self._scripted.pop(0)
-        if isinstance(item, BaseException):
-            raise item
-        return item
 
 
 def _install_seq_fetch(monkeypatch, scripted) -> _SeqFetchSpy:
@@ -1508,6 +1492,38 @@ async def test_T23_send_inquiry_resolve_missing_idno_is_malformed_before_last_in
     assert len(spy.calls) == 1
     assert "error" in result
     assert "sent" not in result
+
+
+@pytest.mark.asyncio
+async def test_send_inquiry_exception_after_send_attempted_never_logs_body_or_cookie(tmp_path, monkeypatch, caplog):
+    """T-81 (R7.3) — send tool catch-all: a non-GuardAbort exception escaping
+    AFTER send_attempted is set (the third sub-request -- the send itself --
+    raises once _before_third's last statement has already run) is caught by
+    send_inquiry's own except-Exception block and reaches _conclude_send's
+    log.error(..., exc_info=True). That log call must never leak the letter
+    body, the emailCC value, the resolved idNo, or a cookie value."""
+    ctx, info, db = await _new_session(tmp_path)
+    info.cookies = [{"name": "its", "value": "SYN-COOKIE-VALUE-4d2e", "domain": ".104.com.tw"}]
+    _install_seq_fetch(monkeypatch, [
+        _RESOLVE_IDNO_OK,
+        _raw_from_body({"data": {"emailCC": ["cc-a@example.invalid"]}, "metadata": {}}),
+        RuntimeError("boom"),
+    ])
+
+    with caplog.at_level(logging.DEBUG):
+        result = await send_inquiry(
+            ctx=ctx, job_id="12355016", candidate_id=_PID_SHAPED_ID,
+            message="SYN-LETTER-body-9f1c",
+        )
+
+    assert result["sent"] == "unconfirmed"
+
+    log_text = caplog.text
+    for forbidden in (
+        "SYN-LETTER-body-9f1c", "cc-a@example.invalid", "SYN-COOKIE-VALUE-4d2e",
+        _RESOLVE_IDNO_OK.parsed_json["data"]["idNo"],
+    ):
+        assert forbidden not in log_text, f"{forbidden!r} leaked into logs"
 
 
 @pytest.mark.asyncio

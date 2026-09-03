@@ -10,6 +10,7 @@ from mcp104.browser.session import SessionInfo, SessionPool
 from mcp104.browser.throttle import ThrottleAbort
 from mcp104.config import get_config
 from mcp104.browser.api_client import ENDPOINTS, RawResponse
+from tests.conftest import _SeqFetchSpy
 from mcp104.tools.helpers import (
     ERROR_API_REQUEST_FAILED,
     GuardAbort,
@@ -194,28 +195,6 @@ async def test_guarded_api_no_session_at_all_raises_not_logged_in_kind():
 def _resp(body: dict, status: int = 200, content_type: str = "application/json; charset=utf-8") -> RawResponse:
     return RawResponse(status=status, location=None, content_type=content_type,
                         body=json.dumps(body, ensure_ascii=False), parsed_json=body)
-
-
-class _SeqFetchSpy:
-    """Drives guarded_sequence's N sub-requests with pre-scripted outcomes,
-    consumed strictly in order. A scripted item that is a BaseException
-    instance is raised instead of returned -- the same shape a real
-    transport timeout takes when it escapes fetch() (guarded_api's
-    existing except-Exception around fetch() is what turns this into a
-    ToolAbort(kind="transport"), so raising here exercises that same path,
-    not a hand-built exception at the guard boundary).
-    """
-
-    def __init__(self, scripted):
-        self._scripted = list(scripted)
-        self.calls: list[tuple[object, object, object]] = []
-
-    async def __call__(self, endpoint, *, cookie_header, params=None, body=None):
-        self.calls.append((endpoint, params, body))
-        item = self._scripted.pop(0)
-        if isinstance(item, BaseException):
-            raise item
-        return item
 
 
 def _patch_fetch(monkeypatch, spy) -> None:
