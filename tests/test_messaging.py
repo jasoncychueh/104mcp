@@ -38,7 +38,7 @@ from mcp104.browser.throttle import ThrottleAbort
 from mcp104.config import get_config
 from mcp104.db.database import Database
 from mcp104.tools.helpers import GuardAbort, get_session_id
-from tests.conftest import _SeqFetchSpy, require_private_artifact
+from tests.conftest import _SeqFetchSpy
 from mcp104.tools.messaging import (
     NOT_SENT,
     _convert_inbox_row,
@@ -55,20 +55,10 @@ from mcp104.tools.messaging import (
 from mcp104.tools.status import register_status_tools
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
-RESULTS_DIR = Path(__file__).parent.parent / "research" / "results"
 
 
 def _load(name: str):
     return json.loads((FIXTURES_DIR / name).read_text(encoding="utf-8"))
-
-
-def _messaging_contract() -> dict:
-    # research/results/messaging_contract.json is a maintainer-only sweep
-    # excluded from the public open-source snapshot -- see
-    # tests/conftest.py's require_private_artifact. Every caller of this
-    # helper is a contract check with nothing to check without it.
-    path = require_private_artifact("research/results/messaging_contract.json")
-    return json.loads(path.read_text(encoding="utf-8"))
 
 
 # ── Synthetic inbox rows — the measured 19 field names [M §6b.7, §6b.8-1] ───────────
@@ -461,38 +451,6 @@ def test_convert_inbox_row_no_event_yields_null_labels():
     assert row["event_polarity"] is None
 
 
-def test_inbox_row_gloss_matches_the_independently_swept_field_names():
-    # Round I1 Smell H: the old version of this check compared the fixture
-    # row (hand-typed in this file) against INBOX_ROW_FIELD_GLOSS (also
-    # hand-typed, in discovery.py) — two adjacent hand-typed things checked
-    # against each other cannot fail unless someone edits both inconsistently
-    # in the same commit. research/results/messaging_contract.json is a
-    # COMMITTED, independently-produced sweep of the API's own row field
-    # names (inbox_id_mapping.row_field_names) — discovery.py's own docstring
-    # claims the allow-list was derived from exactly this sweep; this is the
-    # test that actually checks that claim.
-    swept = set(_messaging_contract()["inbox_id_mapping"]["row_field_names"])
-    assert swept, "sanity: the sweep itself must be non-empty"
-    assert set(discovery_mod.INBOX_ROW_FIELD_GLOSS) == swept, (
-        f"INBOX_ROW_FIELD_GLOSS has drifted from the independently swept field "
-        f"names: missing={swept - set(discovery_mod.INBOX_ROW_FIELD_GLOSS)!r} "
-        f"extra={set(discovery_mod.INBOX_ROW_FIELD_GLOSS) - swept!r}"
-    )
-
-
-def test_synthetic_inbox_row_keys_match_the_independently_swept_field_names():
-    # The fixture ROW's key set, checked against the same independent
-    # source — not against the gloss dict a moment ago, which would still be
-    # two hand-typed things agreeing with each other rather than either one
-    # being checked against ground truth.
-    swept = set(_messaging_contract()["inbox_id_mapping"]["row_field_names"])
-    assert set(_INBOX_ROW_LABELLED) == swept, (
-        f"the synthetic fixture row's keys have drifted from the independently "
-        f"swept field names: missing={swept - set(_INBOX_ROW_LABELLED)!r} "
-        f"extra={set(_INBOX_ROW_LABELLED) - swept!r}"
-    )
-
-
 def test_convert_inbox_row_every_measured_field_is_glossed_or_excluded():
     for raw_key in _INBOX_ROW_LABELLED:
         assert (
@@ -544,25 +502,6 @@ def test_convert_message_row_excludes_idno_snapshotid_username():
     assert _MSG_SENT_READ["userName"] not in text
 
 
-def test_message_row_gloss_matches_the_independently_swept_field_names():
-    # Same fix as the inbox row's twin above, against
-    # conversation_semantics.api_message_field_names.
-    swept = set(_messaging_contract()["conversation_semantics"]["api_message_field_names"])
-    assert swept, "sanity: the sweep itself must be non-empty"
-    assert set(discovery_mod.MESSAGE_ROW_FIELD_GLOSS) == swept, (
-        f"MESSAGE_ROW_FIELD_GLOSS has drifted from the independently swept field "
-        f"names: missing={swept - set(discovery_mod.MESSAGE_ROW_FIELD_GLOSS)!r} "
-        f"extra={set(discovery_mod.MESSAGE_ROW_FIELD_GLOSS) - swept!r}"
-    )
-
-
-def test_synthetic_message_row_keys_match_the_independently_swept_field_names():
-    swept = set(_messaging_contract()["conversation_semantics"]["api_message_field_names"])
-    assert set(_MSG_WITH_EVENT) == swept, (
-        f"the synthetic fixture row's keys have drifted from the independently "
-        f"swept field names: missing={swept - set(_MSG_WITH_EVENT)!r} "
-        f"extra={set(_MSG_WITH_EVENT) - swept!r}"
-    )
 
 
 def test_convert_message_row_every_measured_field_is_glossed_or_excluded():

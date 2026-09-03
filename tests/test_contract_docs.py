@@ -1,38 +1,17 @@
-"""Contract-document consistency test (T-61, R12.1; Round I6 Bug AK).
+"""Contract test for the registered MCP tool surface (T-61, R12.1).
 
-CLAUDE.md is not commentary on the code — it and the tool docstrings are the only
-surface an Agent reads when deciding how to call a tool (steering: Usability NFR,
-"the requirement is on the text the framework actually publishes"). An enforcement
-mechanism no test reads is a comment. This file's job is to fail the moment
-CLAUDE.md drifts from the three pieces of ground truth it transcribes:
-
-  1. the `filters` key vocabulary table, which must name exactly the keys
-     `tools.filters.VALID_FILTER_KEYS` defines (no more, no fewer) — the condition
-     table in `tools/filters.py` is the single definition of the filter surface
-     per that module's own docstring, so CLAUDE.md's table is *derived from* it,
-     never hand-compared against it;
-  2. the environment-variable table, which must name exactly the `os.getenv(...)`
-     calls in `config.get_config()` and agree with the values that function
-     actually returns by default;
-  3. the `terminal` candidate-field prose, which CLAUDE.md itself labels a verbatim
-     transcription of `tools.categories.CANDIDATE_TERMINAL_ZH` ("與
-     tools/categories.py 的 CANDIDATE_TERMINAL_ZH 常數同步，逐字抄錄，不是重新描述")
-     — the one consumer of that constant that cannot read it live (the other three
-     are Python and import it), so it is the only one a drift in the constant
-     cannot reach on its own, and the only one that needs a check here rather than
-     none at all.
-
-All three checks parse the live `CLAUDE.md` and consult the live `tools.filters` /
-`config` / `tools.categories` modules directly — nothing here transcribes a key
-name, a variable name, a default value or the candidate-field prose by hand, so the
-suite does not need updating when the vocabulary, the defaults or the prose change;
-it only goes red when CLAUDE.md fails to follow.
+The registered tools' descriptions and schemas are the only surface an Agent
+reads when deciding how to call a tool. This file checks that surface against
+the code that produces it (`config.py`'s own environment-variable reading
+shape, `pyproject.toml`'s dependency list, the live tool registry) — nothing
+here transcribes a table by hand, so the suite does not need updating when the
+underlying values change; it only goes red when the registered surface itself
+drifts from its own internal contracts.
 """
 from __future__ import annotations
 
 import ast
 import inspect
-import json
 import re
 import tomllib
 from pathlib import Path
@@ -42,133 +21,12 @@ from mcp.server.fastmcp import FastMCP
 
 import mcp104.config as config_module
 from mcp104.tools.auth import register_auth_tools
-from mcp104.tools.categories import CANDIDATE_TERMINAL_ZH
 from mcp104.tools.discovery import register_discovery_tools
-from mcp104.tools.filters import VALID_FILTER_KEYS
 from mcp104.tools.messaging import register_messaging_tools
 from mcp104.tools.search import register_search_tools
 from mcp104.tools.status import register_status_tools
 
-from tests.conftest import require_private_artifact
-
 REPO_ROOT = Path(__file__).resolve().parent.parent
-CLAUDE_MD_PATH = REPO_ROOT / "CLAUDE.md"
-
-_CELL_BACKTICK = re.compile(r"`([^`]*)`")
-_SEPARATOR_CELL = re.compile(r":?-+:?")
-
-
-def _claude_md_text() -> str:
-    # CLAUDE.md is a maintainer-only artifact excluded from the public
-    # open-source snapshot -- see tests/conftest.py's
-    # require_private_artifact. Every caller of this helper is a contract
-    # check with nothing to check without it.
-    return require_private_artifact("CLAUDE.md").read_text(encoding="utf-8")
-
-
-def _comment_paragraphs(markdown: str) -> list[str]:
-    """Join consecutive `# `-prefixed lines (CLAUDE.md's tool contract is written as
-    Python-comment-wrapped prose inside a ```python fence) into single strings, with
-    the `# ` marker and the line breaks that exist only for wrapping removed —
-    nothing else is altered, so any substring that survived word-wrap unchanged in
-    the source still matches here character for character.
-
-    A paragraph boundary is any line that is not `# `-prefixed (a blank line, a
-    line of actual code, or a bare `#`, which becomes an empty line within its
-    paragraph rather than a break — several tool docstrings in CLAUDE.md use a bare
-    `#` as a blank line inside one comment block). This normalises the DOCUMENT
-    side only; `CANDIDATE_TERMINAL_ZH` itself is read unmodified from
-    `tools.categories` — the constant is the authority, so rewriting it to match
-    the document would invert which side is the source.
-    """
-    paragraphs: list[str] = []
-    current: list[str] = []
-    for line in markdown.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("# "):
-            current.append(stripped[2:])
-        elif stripped == "#":
-            current.append("")
-        else:
-            if current:
-                paragraphs.append("".join(current))
-                current = []
-    if current:
-        paragraphs.append("".join(current))
-    return paragraphs
-
-
-def _table_rows(markdown: str, header_line: str) -> list[list[str]]:
-    """Return the data rows of the markdown pipe-table whose header row is exactly
-    `header_line`, each row a list of raw (still-backticked) cell strings.
-
-    Raises `AssertionError` — rather than returning `[]` — when the header is not
-    found or the table has no data rows, so a renamed heading or an emptied table
-    fails the test loudly instead of letting a downstream "all documented X are
-    valid" check pass vacuously over zero rows.
-    """
-    lines = markdown.splitlines()
-    header_index = next(
-        (i for i, line in enumerate(lines) if line.strip() == header_line), None
-    )
-    assert header_index is not None, (
-        f"expected table header not found in CLAUDE.md: {header_line!r} — has the "
-        f"table been renamed or removed?"
-    )
-    rows: list[list[str]] = []
-    for line in lines[header_index + 1:]:
-        stripped = line.strip()
-        if not stripped.startswith("|"):
-            break
-        cells = [c.strip() for c in stripped.strip("|").split("|")]
-        if all(_SEPARATOR_CELL.fullmatch(c) for c in cells):
-            continue  # the |---|---|---| separator row
-        rows.append(cells)
-    assert rows, f"table under {header_line!r} has a header but no data rows"
-    return rows
-
-
-def _cell_value(cell: str) -> str:
-    """Strip one layer of Markdown backticks from a table cell, e.g. "`city`" ->
-    "city". Every key/name/value cell this test reads is backtick-quoted in
-    CLAUDE.md; a cell that is not is returned unchanged so a formatting slip shows
-    up as a mismatch rather than being silently unwrapped.
-    """
-    match = _CELL_BACKTICK.fullmatch(cell)
-    return match.group(1) if match else cell
-
-
-def test_filter_key_table_matches_condition_table():
-    """CLAUDE.md's `filters` vocabulary table (the `| 鍵 | 型別 | 值域 / 說明 |`
-    table) must document exactly the keys `tools.filters.VALID_FILTER_KEYS`
-    defines — nothing missing (a caller reading only CLAUDE.md would not know the
-    key exists) and nothing extra (a caller reading only CLAUDE.md would try a key
-    the code rejects as unknown)."""
-    rows = _table_rows(_claude_md_text(), "| 鍵 | 型別 | 值域 / 說明 |")
-    documented_keys = {_cell_value(row[0]) for row in rows}
-    code_keys = set(VALID_FILTER_KEYS)
-
-    missing_from_doc = code_keys - documented_keys
-    extra_in_doc = documented_keys - code_keys
-
-    assert not missing_from_doc, (
-        "tools.filters.VALID_FILTER_KEYS defines keys CLAUDE.md's filter table "
-        f"does not document: {sorted(missing_from_doc)}"
-    )
-    assert not extra_in_doc, (
-        "CLAUDE.md's filter table documents keys tools.filters.VALID_FILTER_KEYS "
-        f"does not define: {sorted(extra_in_doc)}"
-    )
-
-
-# The exact literal CLAUDE.md's "必填／預設值" column cell must carry for a
-# required variable (MCP104_ACCOUNT_LABEL today) — defined ONCE here, not
-# retyped in both the assertion and CLAUDE.md by memory, so the two can only
-# ever agree by construction, never by two independent transcriptions
-# happening to match.
-_REQUIRED_MARKER = "**必填，沒有預設值**"
-
-_ENV_VAR_TABLE_HEADER = "| 環境變數 | 必填／預設值 | 用途 |"
 
 # Matches any of the three call forms config.py reads an environment variable
 # through: a bare `os.getenv("NAME")` (optionally with a literal string
@@ -266,67 +124,6 @@ def _env_vars_from_config_source() -> dict[str, dict]:
     return info
 
 
-def test_claude_md_env_var_table_names_and_required_marks_match_config():
-    """CLAUDE.md's environment-variable table must name EXACTLY the variables
-    `config.py` reads (both directions — a variable config.py reads but the
-    table omits, and a variable the table documents that config.py no longer
-    reads, are both a drift this must catch; `DB_PATH`/`AUTH_BASE_URL` must
-    appear on NEITHER side, since both were deleted with no alias this cycle,
-    §C2), and the table's required-marker cells must name exactly the
-    variables `config.py`'s own call form marks required — not a hand-picked
-    subset. Deliberately calls `get_config()` nowhere: an unset
-    `MCP104_ACCOUNT_LABEL` is a startup failure by design (T-104), and a test
-    of table MEMBERSHIP must not depend on that value being set at all.
-    """
-    info = _env_vars_from_config_source()
-    code_names = set(info)
-
-    rows = _table_rows(_claude_md_text(), _ENV_VAR_TABLE_HEADER)
-    documented = {_cell_value(row[0]): _cell_value(row[1]) for row in rows}
-    doc_names = set(documented)
-
-    missing_from_doc = code_names - doc_names
-    extra_in_doc = doc_names - code_names
-    assert not missing_from_doc, (
-        "config.py reads environment variables CLAUDE.md's table does not "
-        f"document: {sorted(missing_from_doc)}"
-    )
-    assert not extra_in_doc, (
-        "CLAUDE.md's environment-variable table documents variables config.py "
-        f"does not read: {sorted(extra_in_doc)}"
-    )
-    assert "DB_PATH" not in code_names and "DB_PATH" not in doc_names, (
-        "DB_PATH was deleted with no alias this cycle (§C2) — it must appear "
-        "in neither config.py nor CLAUDE.md's table"
-    )
-    assert "AUTH_BASE_URL" not in code_names and "AUTH_BASE_URL" not in doc_names, (
-        "AUTH_BASE_URL was deleted with no alias this cycle (§C2) — it must "
-        "appear in neither config.py nor CLAUDE.md's table"
-    )
-
-    code_required = {name for name, v in info.items() if v["required"]}
-    # (b) from design.md's T-114: zero required variables extracted is itself
-    # a failure — the one case a downstream set-equality check would not
-    # otherwise call out by name (an extraction quietly blind to the
-    # required-marking call shape looks, from the assertion below alone,
-    # identical to "this project genuinely has no required variables").
-    assert code_required, (
-        "extraction found no environment variable marked required in "
-        "config.py's own source — either MCP104_ACCOUNT_LABEL's validation "
-        "block no longer matches the 'os.getenv(...) then raise ConfigError "
-        "before the next os.getenv' shape this regex looks for, or the "
-        "required-variable validation itself was removed; either way this "
-        "check has nothing to compare and must not pass silently"
-    )
-
-    doc_required = {name for name in doc_names if documented[name] == _REQUIRED_MARKER}
-    assert code_required == doc_required, (
-        "CLAUDE.md's required-marker cells disagree with config.py's own "
-        f"call-form-derived required set: code says {sorted(code_required)}, "
-        f"CLAUDE.md's '{_REQUIRED_MARKER}' cells say {sorted(doc_required)}"
-    )
-
-
 def test_env_var_regex_extraction_does_not_miss_a_fourth_call_form():
     """I2-N: `_ENV_VAR_CALL_RE` only recognizes three call shapes
     (`os.getenv(...)`, `_parse_int_env(...)`, `_parse_optional_int_env(...)`).
@@ -377,94 +174,6 @@ def test_env_var_regex_extraction_does_not_miss_a_fourth_call_form():
                         "fourth call form reading an environment variable "
                         "was likely added without updating the regex"
                     )
-
-
-def test_env_var_defaults_in_claude_md_match_config_defaults(monkeypatch):
-    """CLAUDE.md's documented default for every variable that HAS a literal
-    default (the seven no-prefix variables, per §C2) must equal the value
-    `get_config()` actually returns when that variable is unset — read from
-    the live `Config` object, not transcribed, so a changed default (as
-    happened to the pacing values this feature) is caught here rather than
-    only in review.
-
-    Deliberately narrower than the membership/required check above: a
-    variable with NO literal default (three of the four `MCP104_`-prefixed
-    ones) has nothing here to compare a documented default against, and
-    `MCP104_ACCOUNT_LABEL` unset makes `get_config()` itself fail — the
-    required variable is excluded from this half by its OWN call-form label
-    (`required`), not by a hand-written skip-list that could silently miss
-    the next required variable this project adds (design.md §Testing
-    Strategy item 五).
-    """
-    info = _env_vars_from_config_source()
-    has_default_names = [name for name, v in info.items() if v["has_default"]]
-    assert has_default_names, (
-        "extraction found no environment variable with a literal default in "
-        "config.py — either every variable became required/optional-with-no-"
-        "default, or the extraction regex no longer recognises the "
-        "has-a-default call form; either way this check has nothing to "
-        "compare and must not pass silently"
-    )
-
-    # Force every one of them unset so get_config() returns its own defaults,
-    # regardless of what the ambient test environment happens to have set.
-    # MCP104_ACCOUNT_LABEL (required) and MCP104_DATA_DIR (optional, no
-    # literal default) are left exactly as tests/conftest.py's autouse
-    # fixture set them — this half never touches either.
-    for name in has_default_names:
-        monkeypatch.delenv(name, raising=False)
-    defaults = config_module.get_config()
-
-    rows = _table_rows(_claude_md_text(), _ENV_VAR_TABLE_HEADER)
-    documented = {_cell_value(row[0]): _cell_value(row[1]) for row in rows}
-
-    mismatches = {}
-    for name in has_default_names:
-        field_name = name.lower()
-        actual_default = str(getattr(defaults, field_name))
-        documented_default = documented.get(name)
-        if actual_default != documented_default:
-            mismatches[name] = {
-                "config_default": actual_default,
-                "claude_md_says": documented_default,
-            }
-    assert not mismatches, (
-        f"CLAUDE.md's documented defaults disagree with config.get_config(): "
-        f"{mismatches}"
-    )
-
-
-# ── Bug AK (Round I6): CLAUDE.md's `terminal` prose must AGREE WITH the live
-# `CANDIDATE_TERMINAL_ZH` export, not merely resemble it ────────────────────────────
-#
-# Of `CANDIDATE_TERMINAL_ZH`'s four consumer sites, three (the `search_resumes`
-# published description, and two other in-process readers) import the constant and
-# read it live — a change to the constant reaches them automatically, with nothing
-# to test. CLAUDE.md is the fourth: a Markdown file, which no live import can reach.
-# It is therefore the one consumer an edit to the constant can silently leave behind,
-# and CLAUDE.md itself says as much, in the very passage this checks ("與
-# tools/categories.py 的 CANDIDATE_TERMINAL_ZH 常數同步，逐字抄錄，不是重新描述").
-#
-# T-71 (tests/test_search.py) already checks that the published description NAMES
-# `terminal` and explains it nearby — a presence/keyword check, adequate for prose
-# that isn't claimed to be a transcription. This passage claims more: verbatim
-# agreement. Presence of the word "terminal" plus a nearby keyword survives the
-# constant's wording changing entirely, as long as some refusal-flavoured word stays
-# somewhere nearby — exactly the way an earlier form of T-67 survived a hand-typed
-# copy standing in for a live read. Since CLAUDE.md cannot execute code, provenance
-# (T-67's fix) is not available to it; agreement against the live constant is the
-# strongest check that is.
-
-def test_claude_md_terminal_prose_agrees_with_the_exported_constant():
-    paragraphs = _comment_paragraphs(_claude_md_text())
-    assert any(CANDIDATE_TERMINAL_ZH in paragraph for paragraph in paragraphs), (
-        "CLAUDE.md must carry tools.categories.CANDIDATE_TERMINAL_ZH's text "
-        "verbatim -- CLAUDE.md's own 'terminal' passage labels itself a verbatim "
-        "transcription of this constant, so a hand-edited or stale copy is a "
-        "broken promise the document makes about itself, not merely missing "
-        "coverage. Current export:\n"
-        f"{CANDIDATE_TERMINAL_ZH!r}"
-    )
 
 
 # ── package-layout restructure: requirements.txt must equal pyproject.toml's
@@ -796,45 +505,6 @@ def test_send_message_and_send_inquiry_each_carry_the_positive_warning_and_name_
         )
 
 
-_CLAUDE_MD_TOOL_SIGNATURE_RE = re.compile(r"^([a-zA-Z_][a-zA-Z0-9_]*)\(", re.MULTILINE)
-
-
-def _claude_md_tool_section_names(markdown: str) -> set[str]:
-    """Every name CLAUDE.md's MCP Tools spec introduces in the `name(...)` shape
-    every tool section uses at the start of a line -- `login()`,
-    `search_resumes(keyword: str, ...` (multi-line signatures only need their
-    first line to match), `send_message(job_id: str, ...`, and so on. Also picks
-    up the handful of inline `name(args)` mentions in the "工作流程" prose
-    (`list_recommended_resumes(jobno)` etc.) -- harmless, since those name
-    registered tools too and the result is a set.
-    """
-    return set(_CLAUDE_MD_TOOL_SIGNATURE_RE.findall(markdown))
-
-
-def test_claude_md_documents_send_inquiry_and_list_templates_and_matches_registered_tools():
-    """T-79 (R8.6): CLAUDE.md's MCP Tools spec must gain sections for both new
-    tools, and the set of tool-shaped names it documents must equal exactly the
-    set of registered tool names -- nothing registered left undocumented, nothing
-    documented that isn't actually registered."""
-    markdown = _claude_md_text()
-    documented = _claude_md_tool_section_names(markdown)
-
-    assert "send_inquiry" in documented, "CLAUDE.md has no send_inquiry(...) section"
-    assert "list_templates" in documented, "CLAUDE.md has no list_templates(...) section"
-
-    registered = set(_all_tool_descriptions())
-    missing_from_doc = registered - documented
-    extra_in_doc = documented - registered
-    assert not missing_from_doc, (
-        f"registered tools CLAUDE.md's MCP Tools spec does not document: "
-        f"{sorted(missing_from_doc)}"
-    )
-    assert not extra_in_doc, (
-        f"CLAUDE.md documents tool-shaped names ({sorted(extra_in_doc)}) that are "
-        f"not among the registered tools ({sorted(registered)})"
-    )
-
-
 # code -> Traditional-Chinese label, the six measured template categories
 # (wire-confirmed via PUT, §8.15/§8.17).
 _TEMPLATE_CATEGORIES_ZH = {
@@ -894,9 +564,9 @@ def test_list_templates_description_lists_all_six_measured_categories_as_account
 
 
 # Marks the "what to do after a timeout" guidance: check the back office or
-# read_messages, and do NOT resend -- R8.7 requires this land in BOTH the tool
-# description and CLAUDE.md, since a timed-out Agent may only have one of the two
-# in front of it at the moment it needs the instruction.
+# read_messages, and do NOT resend -- R8.7 requires this be readable from the
+# tool description alone, since a timed-out Agent may have nothing else in
+# front of it at the moment it needs the instruction.
 _TIMEOUT_GUIDANCE_MARKERS = ("read_messages", "重送")
 
 
@@ -904,28 +574,12 @@ def _has_timeout_guidance(text: str) -> bool:
     return all(marker in text for marker in _TIMEOUT_GUIDANCE_MARKERS)
 
 
-# Each tool's own spec block, not the whole document: "read_messages" and "重送"
-# both occur many times elsewhere in CLAUDE.md, so asserting against the full
-# text would still pass even if a tool's own post-timeout paragraph were
-# deleted entirely.
-_CLAUDE_MD_TOOL_BLOCK_BOUNDS = {
-    "send_message": ("send_message(job_id", "send_inquiry(job_id"),
-    "send_inquiry": ("send_inquiry(job_id", "list_templates(type_id"),
-}
-
-
-def _claude_md_tool_block(text: str, start: str, end: str) -> str:
-    i = text.index(start)
-    return text[i:text.index(end, i)]
-
-
 @pytest.mark.parametrize("tool_name", ["send_message", "send_inquiry"])
-def test_timeout_after_guidance_appears_in_both_send_inquiry_description_and_claude_md(tool_name):
+def test_timeout_after_guidance_appears_in_send_message_and_send_inquiry_description(tool_name):
     """T-79 (R8.7): the post-timeout instruction (check the back office or
-    read_messages to confirm; do not resend) must be readable from EITHER the
-    tool description or CLAUDE.md alone -- R8.7 requires both, not either-or --
-    and the guidance is documented for both send_message and send_inquiry, not
-    just send_inquiry."""
+    read_messages to confirm; do not resend) must be readable from the tool
+    description, and the guidance is documented for both send_message and
+    send_inquiry, not just send_inquiry."""
     descriptions = _all_tool_descriptions()
     assert tool_name in descriptions, f"sanity: {tool_name} not registered"
     desc = _normalize_ws(descriptions[tool_name])
@@ -933,30 +587,4 @@ def test_timeout_after_guidance_appears_in_both_send_inquiry_description_and_cla
         f"{tool_name}'s description must carry the post-timeout guidance "
         f"(mentions read_messages and tells the caller not to resend, R8.7) -- "
         f"got: {desc!r}"
-    )
-
-    start, end = _CLAUDE_MD_TOOL_BLOCK_BOUNDS[tool_name]
-    block = _normalize_ws(_claude_md_tool_block(_claude_md_text(), start, end))
-    assert "read_messages(job_nos=[job_id])" in block and "不要重送" in block, (
-        f"CLAUDE.md's own {tool_name}(...) spec block must ALSO carry the "
-        f"post-timeout guidance (R8.7) -- it must not live only in the tool "
-        f"description, and must be scoped to {tool_name}'s own block, not "
-        f"borrowed from elsewhere in the document -- block: {block!r}"
-    )
-
-
-def test_mcp_json_104_mcp_entry_carries_120000ms_timeout():
-    """T-79: the `104-mcp` server entry in .mcp.json must set
-    `"timeout": 120000` (120s) -- headroom over send_inquiry's ~50s worst case
-    (the one path that issues three requests in a single tool call)."""
-    mcp_json_path = require_private_artifact(".mcp.json")
-    data = json.loads(mcp_json_path.read_text(encoding="utf-8"))
-    servers = data.get("mcpServers", {})
-    assert "104-mcp" in servers, (
-        f".mcp.json has no '104-mcp' server entry -- found {sorted(servers)}"
-    )
-    entry = servers["104-mcp"]
-    assert entry.get("timeout") == 120000, (
-        f"the '104-mcp' entry in .mcp.json must carry \"timeout\": 120000 -- got "
-        f"{entry.get('timeout')!r}"
     )

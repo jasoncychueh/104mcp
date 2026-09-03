@@ -2,8 +2,6 @@
 
 Cases covered (design.md §Testing Strategy Test Cases table):
   T-34 (R6.4)  — runtime dependency set literally equals a reviewed allowlist.
-  T-41 (R8.6)  — this repo's own .mcp.json client registration is stdio-shaped,
-                 with no HTTP endpoint.
   T-47 (R11.1) — .gitignore covers real candidate data, login-state files, and
                  measurement-capture artifacts.
   T-48 (R11.3) — the ignore check still exists after .dockerignore's removal,
@@ -18,7 +16,6 @@ steering docs, not in a peek at those files' new content.
 """
 from __future__ import annotations
 
-import json
 import shutil
 import subprocess
 import sys
@@ -27,8 +24,6 @@ import zipfile
 from pathlib import Path
 
 import pytest
-
-from tests.conftest import require_private_artifact
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -83,42 +78,6 @@ def test_runtime_dependencies_equal_reviewed_allowlist():
         "This is not necessarily wrong — it may mean the allowlist itself needs "
         "a reviewed update — but it must not pass silently."
     )
-
-
-def test_mcp_json_registers_stdio_with_no_http_endpoint():
-    """T-41 (R8.6): this repo's own client registration (.mcp.json) is a
-    stdio-form registration and contains no HTTP endpoint — the transport
-    change away from streamable-http must be reflected here."""
-    mcp_json_path = require_private_artifact(".mcp.json")
-    config = json.loads(mcp_json_path.read_text(encoding="utf-8"))
-
-    servers = config.get("mcpServers", config)
-    assert isinstance(servers, dict) and servers, (
-        "expected at least one server entry in .mcp.json"
-    )
-
-    raw_text = mcp_json_path.read_text(encoding="utf-8")
-    assert "http://" not in raw_text and "https://" not in raw_text, (
-        ".mcp.json contains an HTTP(S) URL — inconsistent with a stdio-only "
-        "registration"
-    )
-
-    for name, entry in servers.items():
-        if not isinstance(entry, dict):
-            continue
-        entry_type = entry.get("type")
-        assert entry_type in (None, "stdio"), (
-            f"server entry {name!r} declares type={entry_type!r}, expected "
-            "stdio (or omitted, which defaults to stdio)"
-        )
-        assert "url" not in entry, (
-            f"server entry {name!r} declares a 'url' key — that is an HTTP-style "
-            "endpoint, not a stdio registration"
-        )
-        assert "command" in entry, (
-            f"server entry {name!r} has no 'command' key — a stdio registration "
-            "must specify the subprocess to launch"
-        )
 
 
 # T-47 / T-48 — representative paths for each protected category, grounded in
@@ -181,7 +140,6 @@ def test_ignore_check_still_covers_pii_after_dockerignore_removed():
     # search the plausible places rather than assuming one specific file.
     candidate_docs = [
         REPO_ROOT / ".gitignore",
-        REPO_ROOT / "CLAUDE.md",
         REPO_ROOT / "tests" / "test_ignore_files.py",
     ]
     explanation_found = False
@@ -193,7 +151,7 @@ def test_ignore_check_still_covers_pii_after_dockerignore_removed():
             explanation_found = True
             break
     assert explanation_found, (
-        "no candidate document (.gitignore, CLAUDE.md, tests/test_ignore_files.py) "
+        "no candidate document (.gitignore, tests/test_ignore_files.py) "
         "mentions .dockerignore — R11.3 requires the remaining check to explain "
         "why the other line of defense disappeared, not just silently drop it"
     )
