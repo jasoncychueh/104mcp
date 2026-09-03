@@ -1,17 +1,21 @@
-"""The three messaging tools, backed by 104's JSON API (no browser navigation) —
-`read_messages` / `get_conversation` / `send_message`. This module was the last one
-still reading 104 through the browser; it now follows tools/search.py's shape exactly:
-`guarded_api` issues exactly one HTTP request per tool call, and every non-trivial
-decision (body/param construction, row conversion, the send taxonomy) is a
-module-level pure function, testable with no browser, no HTTP and no MCP `Context`.
+"""Five messaging tools backed by 104's JSON API (no browser navigation) —
+`read_messages` / `get_conversation` / `send_message` / `send_inquiry` /
+`list_templates`. Every non-trivial decision (body/param construction, row
+conversion, the send taxonomy) is a module-level pure function, testable with no
+browser, no HTTP and no MCP `Context`.
+
+Four of the five issue exactly one HTTP request per tool call via
+`tools/helpers.py`'s `guarded_api`. `send_inquiry` is this project's one exception
+(§C2/§C5 of the outbound-contact design): it issues three, in a fixed order, via
+`guarded_api`'s sibling `guarded_sequence` — one lock, one throttle-gate check, one
+`_issue_one` per sub-request, no code duplicated between the two entry points.
 
 Deliberately does NOT: issue the HTTP request, decide session/auth failures, or run
-the request throttle — tools/helpers.py's `guarded_api` owns all three, exactly as it
-does for tools/search.py's five read tools.
+the request throttle — `guarded_api`/`guarded_sequence` own all three.
 
-Nothing in this module imports `patchright` at all (not even under `TYPE_CHECKING`) —
-the last browser-navigation call site (`send_message`'s DOM click sequence) is gone,
-and with it the one thing that made this module's tests require a browser to collect.
+Nothing in this module imports `patchright` at all (not even under `TYPE_CHECKING`)
+and it must never gain `from __future__ import annotations` (see CLAUDE.md's known
+pitfall #2 — that import makes `ctx` leak into the published inputSchema).
 """
 
 import logging
@@ -23,7 +27,14 @@ from mcp104.browser.api_client import ENDPOINTS
 from mcp104.browser.session import SessionInfo
 from mcp104.db.database import ID_SOURCE_MESSAGE
 from mcp104.tools.discovery import _event_labels, _snake_case
-from mcp104.tools.helpers import GuardAbort, MalformedResponseError, ToolAbort, guarded_api, require_login
+from mcp104.tools.helpers import (
+    GuardAbort,
+    MalformedResponseError,
+    ToolAbort,
+    guarded_api,
+    guarded_sequence,
+    require_login,
+)
 
 log = logging.getLogger("104-mcp.messaging")
 
@@ -74,6 +85,29 @@ def _send_body(message: str) -> dict:
     for no measured reason is a claim about the protocol nothing supports), and
     `link`/`file` (104's attachment channel) are omitted rather than sent empty."""
     return {"content": message}
+
+
+# ── candidate_id digit guard (§C4) ───────────────────────────────────────
+#
+# A résumé-row's candidate_id (idNo, 13-14 digits measured) and its p_id
+# (the messaging system's own id, 6-8 digits measured) are two different
+# key spaces. All three messaging tools take a pId, not an idNo — feeding
+# one the wrong id does not fail loudly, it silently fails to reach anyone
+# or, worst case, reaches the wrong person. This threshold is a guardrail
+# this project chose (12 digits, comfortably between the two measured
+# ranges), not a rule 104 has ever stated — see CLAUDE.md.
+
+_RESUME_ID_GUARD_MESSAGE = (
+    "這個 candidate_id 看起來是履歷的 candidate_id（idNo，量到 13–14 位數字），"
+    "這裡要的是履歷列上的 p_id（訊息系統自己的 id，量到 6–8 位數字）。"
+)
+
+
+def _looks_like_resume_id(candidate_id: str) -> bool:
+    """Pure. All-digit AND at least 12 digits long — a résumé idNo shape, not a
+    messaging pId shape. Non-digit strings never trigger this; the guard exists to
+    catch the specific idNo/pId mix-up, not to reject unrelated input (§C4)."""
+    return candidate_id.isdigit() and len(candidate_id) >= 12
 
 
 # ── Read-state: a message-id watermark, not a timestamp (§6b.8-3) ───────
@@ -287,6 +321,95 @@ def _build_conversation_response(envelope: object) -> dict:
     }
 
 
+# ── list_templates: allow-listed row conversion (§C3) ───────────────────
+
+# Allow-list, not deny-list — matching INBOX_ROW_EXCLUDED_FIELDS'/
+# MESSAGE_ROW_EXCLUDED_FIELDS' policy of "the mechanism publishes only what
+# it names", applied the other way round because a template row's full key
+# set (which includes `files`, only meaningful on the single-template
+# route this project never calls) is not itself documented anywhere this
+# module owns. `_convert` (already defined above) does the camelCase ->
+# snake_case rename for the two keys that need it (typeId -> type_id,
+# typeDesc -> type_desc).
+_TEMPLATE_ROW_ALLOWED_FIELDS = frozenset({"id", "title", "description", "typeId", "typeDesc"})
+
+
+def _convert_template_row(raw: dict) -> dict:
+    """One row from list_templates -> the tool-facing dict, allow-listed to the
+    five measured keys (§Data Models). `description` is already the complete
+    letter body (51-307 characters measured) — there is no separate detail
+    fetch this project performs."""
+    picked = {k: v for k, v in raw.items() if k in _TEMPLATE_ROW_ALLOWED_FIELDS}
+    return _convert(picked)
+
+
+def _build_template_list_response(envelope: object) -> dict:
+    """`envelope` is list_templates' already-classified family-B payload. Same
+    "missing metadata is an error" rule as `_build_inbox_response` — §C3 measured
+    `metadata` present even on the no-typeId call, so its absence here is a
+    genuine departure, handled via the existing MalformedResponseError precedent
+    rather than a new failure mode."""
+    if not isinstance(envelope, dict) or not isinstance(envelope.get("data"), list):
+        raise MalformedResponseError("data 缺失或非陣列")
+    metadata = envelope.get("metadata")
+    if not isinstance(metadata, dict):
+        raise MalformedResponseError("metadata 缺失或非物件")
+
+    pagination = {
+        "page": metadata.get("page"),
+        "total_pages": metadata.get("totalPage"),
+        "total": metadata.get("total"),
+    }
+    warnings = []
+    warning = _more_pages_warning(pagination)
+    if warning:
+        warnings.append(warning)
+
+    return {
+        "results": [_convert_template_row(row) for row in envelope["data"]],
+        "pagination": pagination,
+        "browse_limit": None,
+        "warnings": warnings,
+    }
+
+
+# ── send_inquiry: the event/willingness send body (§Data Models) ────────
+
+# The wire key set is measured verbatim [M §8.13/§8.14-1/§8.19] — every key
+# except candidate[0].idNo (the reverse bridge's value), contactJobNo (the
+# caller's own job_id), content (the caller's message) and templateId is a
+# fixed literal, not a parameter. See design's weight-bearing assumption 3
+# for why isWithDetail is hardcoded True rather than opened up.
+_WILLINGNESS_RC = "13011211"
+
+
+def _willingness_body(id_no: str, job_id: str, message: str, template_id: str | None, email_cc: list) -> dict:
+    """Pure. Assembles the POST /bc-comm/event/willingness body. `id_no` comes
+    from the reverse bridge (sub-request 1), never from the caller's own
+    candidate_id (which is a pId, a different key space). `templateId` is the
+    caller's value verbatim, or the measured empty-string shape when omitted —
+    the key is ALWAYS present, there is no third shape. `email_cc` is
+    last-info's `data.emailCC`, sent back verbatim including `[]`."""
+    return {
+        "candidate": [{"idNo": id_no}],
+        "contactJobNo": job_id,
+        "content": message,
+        "templateId": template_id if template_id is not None else "",
+        "isRequiredReplyDay": False,
+        "replyDay": 1,
+        "contact": "",
+        "contactTel": "",
+        "isWithDetail": True,
+        "file": [],
+        "ec": "",
+        "rc": _WILLINGNESS_RC,
+        "emailCC": email_cc,
+    }
+
+
+MAX_INQUIRY_MESSAGE_LENGTH = 1000
+
+
 # ── send_message: the daily cap, the send log, and the three-way verdict (§6) ──
 #
 # How to read this section: NOT_SENT (below) is the rule; `_send_verdict` is the one
@@ -340,23 +463,134 @@ _SEND_AMBIGUOUS_MESSAGE = (
 )
 
 
-async def _log_send_attempt(app, account_label: str | None, candidate_id: str) -> None:
+async def _log_send_attempt(app, account_label: str | None, candidate_id: str, id_source: str) -> None:
     """NOT pure — writes to SQLite, and wraps its own failure so that the verdict
     the caller already decided (`unconfirmed`/`ambiguous`) is never replaced by an
     unhandled database error. The rule: writing the log must never suppress the
-    verdict, in either direction (§6c). One writer, called from all three sites
-    that log — the tool body's own success path, the `except GuardAbort` handler
-    when `_send_verdict` says ambiguous, and the `except Exception` handler below
-    when the hook had already completed — so "which verdict logs" stays a single
-    decision rather than a property distributed over however many handlers exist.
+    verdict, in either direction (§C4). One writer, shared by both send_message and
+    send_inquiry, called from each tool's own success path, its `except GuardAbort`
+    handler when `_send_verdict` says ambiguous, and its `except Exception` handler
+    when `send_attempted` was already `True` — so "which verdict logs" stays a
+    single decision rather than a property distributed over however many handlers
+    exist. `id_source` is always `ID_SOURCE_MESSAGE` from both of today's callers
+    (§C4: a row keyed by idNo, the OTHER id space, would be a row no tool can ever
+    look up again), but the value is the caller's choice, not baked in here.
     """
     try:
-        await app.db.log_sent(account_label, candidate_id, ID_SOURCE_MESSAGE)
+        await app.db.log_sent(account_label, candidate_id, id_source)
     except Exception:
         log.error(
-            "send_message: log_sent failed for candidate_id=%s (verdict itself is unaffected)",
+            "messaging: log_sent failed for candidate_id=%s (verdict itself is unaffected)",
             candidate_id, exc_info=True,
         )
+
+
+async def _maybe_mark_contacted(app, candidate_id: str, id_source: str, account_label: str | None) -> None:
+    """NOT pure — writes to SQLite, wrapped the same failure-tolerant way as
+    `_log_send_attempt` so a DB error here can never flip an already-decided send
+    verdict. Only writes `status="contacted"` when the row currently has NO status
+    (checked via `get_candidate` first) — `upsert_candidate` overwrites
+    unconditionally, and writing "contacted" over an existing "interested" would be
+    data loss dressed up as a record (§C4). Called on both the confirmed AND the
+    unconfirmed/ambiguous paths — `check_already_contacted`'s repeat-contact guard
+    is useless if an ambiguous send (the case most likely to have actually reached
+    someone) never marks the row at all.
+    """
+    try:
+        existing = await app.db.get_candidate(candidate_id, id_source, account_label)
+        if existing is not None and existing.get("status") is not None:
+            return
+        await app.db.upsert_candidate(candidate_id, id_source, account_label, status="contacted")
+    except Exception:
+        log.error(
+            "messaging: failed to mark candidate_id=%s contacted (verdict itself is unaffected)",
+            candidate_id, exc_info=True,
+        )
+
+
+async def _enforce_daily_cap(app, info: SessionInfo) -> None:
+    """NOT pure precondition check, shared by send_message's single before_request
+    hook and send_inquiry's two call sites (before_first and the third
+    sub-request's before_request — §C4). Raises the row-1 payload
+    (`{"success": False, "error": ...}`) via ToolAbort(kind="daily_cap") when the
+    account has reached MAX_DAILY_MESSAGES; returns normally otherwise. Does NOT
+    set any send_attempted flag itself — that is each caller's own hook, so the
+    LAST statement of THAT hook is unambiguously the caller's, not buried inside a
+    shared helper (§C4).
+    """
+    count = await app.db.get_daily_sent_count(info.account_label)
+    if count >= app.config.max_daily_messages:
+        raise ToolAbort(
+            {"success": False, "error": f"已達每日發送上限 {app.config.max_daily_messages} 則"},
+            kind="daily_cap",
+        )
+
+
+def _extract_data0(payload: object) -> dict | None:
+    """Pure. `payload["data"][0]` when it exists and is itself a mapping,
+    otherwise `None` — used by `_build_success_send_result` below. Both
+    send-bearing endpoints declare `is_list=True`, so `classify()` has already
+    refused anything where `data` is not a list; this only has to handle an empty
+    list or a non-mapping first element."""
+    if not isinstance(payload, dict):
+        return None
+    data = payload.get("data")
+    if not isinstance(data, list) or not data:
+        return None
+    first = data[0]
+    return first if isinstance(first, dict) else None
+
+
+def _build_success_send_result(payload: object) -> dict:
+    """Pure. `payload` is the ok-verdict payload from the one send-bearing request
+    (send_message's single POST, or send_inquiry's third sub-request) — already
+    carrying `failed` as a sibling key when 104 sent one (FamilyBShape.sibling_keys,
+    §C7). Implements the row-3/4/5 dimension of §C4's closed five-row decision
+    table; the row-1/2 dimension (send_attempted / `_send_verdict`) is decided by
+    the caller BEFORE this is ever reached — by the time this runs, the request
+    definitely reached 104 and 104 definitely answered with something classify()
+    accepted as a well-formed envelope.
+
+    Row 3 (`confirmed`) requires ALL of: `failed` present as an empty list, `data[0]`
+    resolves to a mapping, and both `pId`/`streamId` are present in it — any one
+    missing falls through. Row 4 (`failed` present in the result) fires when
+    `failed` is present but NOT an empty list, OR `data` is empty (`failed` present,
+    empty, no row to read `pId`/`streamId` from at all). Everything else — `failed`
+    absent, or `data[0]` present but missing `pId`/`streamId` — is row 5. `warnings`
+    is NOT added here; every caller adds it unconditionally afterwards (§C4).
+    """
+    has_failed = isinstance(payload, dict) and "failed" in payload
+    failed_value = payload.get("failed") if isinstance(payload, dict) else None
+    failed_is_empty_list = isinstance(failed_value, list) and len(failed_value) == 0
+    data0 = _extract_data0(payload)
+
+    if has_failed and failed_is_empty_list:
+        if data0 is not None:
+            p_id = data0.get("pId")
+            stream_id = data0.get("streamId")
+            if p_id is not None and stream_id is not None:
+                message_id = None
+                msg_ids = data0.get("messageId")
+                if isinstance(msg_ids, list) and msg_ids:
+                    message_id = msg_ids[0]
+                return {
+                    "sent": "confirmed",
+                    "message_id": message_id,
+                    "stream_id": stream_id,
+                    "p_id": p_id,
+                    "event_id": data0.get("eventId"),
+                }
+            # failed present & empty, data[0] present but missing pId/streamId -> row 5
+            return {"sent": "unconfirmed", "message": _SEND_AMBIGUOUS_MESSAGE}
+        # failed present & empty, data empty -> row 4
+        return {"sent": "unconfirmed", "message": _SEND_UNCONFIRMED_MESSAGE, "failed": failed_value}
+
+    if has_failed:
+        # failed present & non-empty (or not a list at all) -> row 4
+        return {"sent": "unconfirmed", "message": _SEND_UNCONFIRMED_MESSAGE, "failed": failed_value}
+
+    # failed absent entirely -> row 5
+    return {"sent": "unconfirmed", "message": _SEND_AMBIGUOUS_MESSAGE}
 
 
 def register_messaging_tools(mcp: FastMCP):
@@ -431,7 +665,12 @@ def register_messaging_tools(mcp: FastMCP):
 
         欄位意義（含 direction、read 的三態語意與其已知限制）見
         describe_result_fields(row_type="message")。
+
+        ⚠ candidate_id 若像履歷的 candidate_id（idNo，13–14 位數字）會在送出前被
+        拒絕——這裡要的是訊息系統的 p_id（6–8 位數字），見 send_message 的說明。
         """
+        if _looks_like_resume_id(candidate_id):
+            return {"error": _RESUME_ID_GUARD_MESSAGE}
         params = [("job_no", job_id), ("p_id", candidate_id), ("page", str(page)), ("perPage", "100"), ("sort", "ASC")]
         try:
             async with guarded_api(ctx, ENDPOINTS["get_conversation"], params=params) as (envelope, _info):
@@ -445,38 +684,48 @@ def register_messaging_tools(mcp: FastMCP):
     @mcp.tool()
     @require_login
     async def send_message(ctx: Context, job_id: str, candidate_id: str, message: str) -> dict:
-        """發送訊息給候選人（走 JSON API；一次呼叫一個請求）。job_id 可來自
-        list_jobs 或 read_messages；candidate_id 目前唯一可用的來源仍是
-        read_messages 已存在的對話列——本工具僅能回覆既有對話。
+        """發送一則純文字訊息給候選人，會立刻送到一位真實求職者手上、無法撤回，
+        必須先讓真人看過內容再呼叫，沒有 dry-run（走 JSON API；一次呼叫一個
+        請求）。要送 104 的「詢問意願」事件（UI 上邀約對話框送出的那種），請改用
+        send_inquiry；本工具只送純文字。
+
+        ⚠ 對一段尚不存在的對話也照樣成立——不需要先有過對話紀錄；job_id + 一個
+        從未聯繫過的候選人也能直接送出第一則訊息。
 
         Args:
-            job_id: 職缺 id。
-            candidate_id: 候選人 id（訊息系統的 id 空間，與 search_resumes 等工具
-                回傳的 p_id 是否同一個 key space 雙向皆未量測，不可互相推導，見
-                CLAUDE.md）。
-            message: 訊息內容，純文字。空白（含只有空白字元）會在送出前就被拒絕，
-                不會浪費一次請求。
+            job_id: 職缺 id（可來自 list_jobs 或 read_messages）。
+            candidate_id: 候選人 id，訊息系統的 p_id（6–8 位數字）——可來自
+                read_messages 既有的對話列，或履歷列上的 p_id 欄位（兩者已測得
+                是同一個 id 空間，見 CLAUDE.md）。⚠ 不是履歷的 candidate_id
+                （idNo，13–14 位數字）——傳錯會在送出前就被拒絕，見下方錯誤形狀。
+            message: 訊息內容，純文字，沒有長度上限（此路由未量測到任何限制）。
+                空白（含只有空白字元）會在送出前就被拒絕，不會浪費一次請求。
 
-        每日上限由 MAX_DAILY_MESSAGES 控制（per 帳號）。
+        每日上限由 MAX_DAILY_MESSAGES 控制（per 帳號，與 send_inquiry 共用）。
 
-        回傳三種形狀之一，且只有這三種——但第三種的「沒有送出」有多個成因，不是
-        只有「104 拒絕」一種：
-          - {"sent": "unconfirmed", "message": str} —— 104 受理了這次請求
-            （包含 104 的回應無法辨識、但請求確實送出去了的情況）。104 送出後
-            的成功畫面尚未實測，所以無法確認訊息真的送達，只能確認 104 收下了
-            這次請求。不要因為「無法辨識」就重送——那正是最可能已經送達、只是
-            我方看不懂回應的情況。
-          - {"success": False, "error": str} —— 確定沒有送出（每日上限、或訊息
-            內容為空白，兩者都在送出前就被擋下）。
+        ⚠ 若 MCP 客戶端在請求已送出後才逾時，這裡看不到任何回傳，但對方可能已經
+        收到那則訊息——請改用 read_messages(job_nos=[job_id]) 或 104 後台確認，
+        不要重送。
+
+        回傳形狀是封閉集合：
+          - {"success": False, "error": str} —— 確定沒有送出（candidate_id 位數
+            守衛、訊息空白、或每日上限，三者都在送出前就被擋下）。
           - {"error": str}（節流拒絕時另外多帶 "retry_after_seconds": int）——
-            這次請求沒有送出，原因可能是 104 自己明確拒絕（session 過期、遭
-            封鎖、Cloudflare 挑戰、找不到這個對話串、或內容驗證失敗——後者會
-            附上 104 自己的逐欄位說明文字），也可能是請求根本沒有送到 104：
-            本工具自己的節流保護擋下（這種情況額外帶 retry_after_seconds，
-            告訴 Agent 等幾秒後再試）、或內部設定錯誤。三者對呼叫端的意義相同
-            ——都是確定沒有送出——差別只在「誰拒絕的」與「要不要等待重試」。
+            這次請求沒有送出，可能是 104 自己明確拒絕（session 過期、遭封鎖、
+            Cloudflare 挑戰、內容驗證失敗——後者會附上 104 逐欄位說明），也可能
+            是節流擋下或內部設定錯誤——都是確定沒有送出。
+          - {"sent": "confirmed", "message_id", "stream_id", "p_id", "event_id",
+            "warnings": [...]} —— 104 的成功回應形狀已解析成功，訊息確定送達。
+          - {"sent": "unconfirmed", "message": str, "warnings": [...]}（可能多帶
+            "failed"）—— 104 受理了這次請求，但送達與否無法確認，**不要重送**，
+            那正是最可能已經送達、只是本工具看不懂回應的情況。`sent` 只有
+            "confirmed"／"unconfirmed" 兩個值，判斷請照值比對，不要用「不是
+            unconfirmed 就是失敗」這種寫法。
         """
         app = ctx.request_context.lifespan_context
+
+        if _looks_like_resume_id(candidate_id):
+            return {"success": False, "error": _RESUME_ID_GUARD_MESSAGE}
 
         if not message.strip():
             return {"success": False, "error": "訊息內容不可為空白"}
@@ -485,55 +734,221 @@ def register_messaging_tools(mcp: FastMCP):
         # raises before the hook below ever runs, so a handler reading
         # either of these unconditionally must not raise UnboundLocalError
         # on the most ordinary path there is (an expired session). See
-        # §6c: a control signal (hook_completed) gets its own variable
+        # §C4: a control signal (send_attempted) gets its own variable
         # rather than being inferred from whether account_label happens to
         # be set — an empty account_label would otherwise mean "the hook
         # ran, the request may have gone out", the opposite of what an
         # unset local should mean here.
         account_label: str | None = None
-        hook_completed = False
+        send_attempted = False
 
         async def _check_daily_cap(info: SessionInfo) -> None:
-            nonlocal account_label, hook_completed
+            nonlocal account_label, send_attempted
             # The SAME SessionInfo guarded_api just validated by identity —
             # not one resolved before queuing on the lock.
             account_label = info.account_label
-            count = await app.db.get_daily_sent_count(info.account_label)
-            if count >= app.config.max_daily_messages:
-                raise ToolAbort(
-                    {"success": False, "error": f"已達每日發送上限 {app.config.max_daily_messages} 則"},
-                    kind="daily_cap",
-                )
-            hook_completed = True  # LAST statement — proof the hook ran to completion
+            await _enforce_daily_cap(app, info)
+            send_attempted = True  # LAST statement — proof the hook ran to completion
 
         body = _send_body(message)
         params = [("job_no", job_id), ("p_id", candidate_id)]
         try:
             async with guarded_api(
                 ctx, ENDPOINTS["send_message"], params=params, body=body, before_request=_check_daily_cap,
-            ) as (_payload, info):
-                await _log_send_attempt(app, info.account_label, candidate_id)
-                return {"sent": "unconfirmed", "message": _SEND_UNCONFIRMED_MESSAGE}
+            ) as (payload, info):
+                await _log_send_attempt(app, info.account_label, candidate_id, ID_SOURCE_MESSAGE)
+                await _maybe_mark_contacted(app, candidate_id, ID_SOURCE_MESSAGE, info.account_label)
+                result = _build_success_send_result(payload)
+                result["warnings"] = []
+                return result
         except GuardAbort as e:
+            if not send_attempted:
+                # Nothing was ever issued (daily cap, not-logged-in, throttled,
+                # a pre-existing session problem) — the abort's own payload,
+                # unchanged, `error`/`success` keys intact (§C4): ERROR_CHALLENGE's
+                # text is the one place that tells an Agent to stop for an hour,
+                # and re-wrapping it would strip that instruction.
+                return e.payload
             if _send_verdict(e.kind) == "ambiguous":
-                await _log_send_attempt(app, account_label, candidate_id)
-                return {"sent": "unconfirmed", "message": _SEND_AMBIGUOUS_MESSAGE}
-            # NOT SENT — the guard's own payload, unchanged, `error` key
-            # intact (§6d): ERROR_CHALLENGE's text is the one place that
-            # tells an Agent to stop for an hour, and re-wrapping it would
-            # strip that instruction.
+                await _log_send_attempt(app, account_label, candidate_id, ID_SOURCE_MESSAGE)
+                await _maybe_mark_contacted(app, candidate_id, ID_SOURCE_MESSAGE, account_label)
+                return {"sent": "unconfirmed", "message": _SEND_AMBIGUOUS_MESSAGE, "warnings": []}
+            # NOT SENT — 104 explicitly refused after the request was issued
+            # (e.g. validation) — the guard's own payload, unchanged.
             return e.payload
         except Exception as exc:
             # A non-GuardAbort exception escaping guarded_api's locked
-            # region (§6d) — a defensive catch-all, not a specific known
+            # region (§C4) — a defensive catch-all, not a specific known
             # failure mode: credentials come from SessionInfo.cookies,
             # a plain attribute with nothing left to fail against
-            # a dead browser. hook_completed is the ordering proof: the
-            # hook runs strictly before the request, so hook_completed is
+            # a dead browser. send_attempted is the ordering proof: the
+            # hook runs strictly before the request, so send_attempted is
             # False only when execution never reached that point, i.e.
             # nothing was issued.
-            log.error("send_message: 非預期例外 (hook_completed=%s): %s", hook_completed, exc, exc_info=True)
-            if hook_completed:
-                await _log_send_attempt(app, account_label, candidate_id)
-                return {"sent": "unconfirmed", "message": _SEND_AMBIGUOUS_MESSAGE}
+            log.error("send_message: 非預期例外 (send_attempted=%s): %s", send_attempted, exc, exc_info=True)
+            if send_attempted:
+                await _log_send_attempt(app, account_label, candidate_id, ID_SOURCE_MESSAGE)
+                await _maybe_mark_contacted(app, candidate_id, ID_SOURCE_MESSAGE, account_label)
+                return {"sent": "unconfirmed", "message": _SEND_AMBIGUOUS_MESSAGE, "warnings": []}
             return {"error": "內部錯誤，這是程式問題，請回報 —— 沒有送出任何請求"}
+
+    @mcp.tool()
+    @require_login
+    async def send_inquiry(
+        ctx: Context, job_id: str, candidate_id: str, message: str, template_id: str | None = None,
+    ) -> dict:
+        """送出 104 的「詢問意願」事件——UI 上那個邀約對話框送出的東西，會立刻送到
+        一位真實求職者手上、無法撤回，必須先讓真人看過內容再呼叫，沒有
+        dry-run。純文字訊息請改用 send_message；未來量到其他招募事件（邀約面試、
+        感謝函等）會各自另開一個新工具，不會加到本工具的參數上。
+
+        一次呼叫送出**三個**請求（反向橋 → last-info → 事件本體），是本專案
+        目前唯一一個多請求工具；正常情況下幾秒內完成，最壞情況（三個子請求都
+        逾時）約 50 秒。⚠ 若 MCP 客戶端在最後一個 POST 已送出後才逾時，這裡看
+        不到任何回傳，但對方可能已經收到那封信——請改用
+        read_messages(job_nos=[job_id]) 或 104 後台確認，不要重送。
+
+        Args:
+            job_id: 職缺 id（可來自 list_jobs 或 read_messages）——這封信會掛在
+                這個職缺底下。
+            candidate_id: 候選人 id，與 send_message 完全一樣，是訊息系統的
+                p_id（6–8 位數字），可來自 read_messages 的對話列或履歷列上的
+                p_id 欄位。⚠ 不是履歷的 candidate_id（idNo，13–14 位數字）——
+                傳錯會在送出前就被拒絕。事件本文實際要的履歷 idNo 由本工具自己
+                用反向橋換算，呼叫端從頭到尾只需要認得這一個 id。
+            message: 信件本文，純文字，**最多 1000 字元**（超過在送出前拒絕，
+                一個請求都不送——這個上限來自 104 對話框介面，API 側真正的上限
+                未量測，故往嚴的方向擋下）。與所選範本的內容完全脫鉤：送出的是
+                這裡給的文字，不是範本的 description。
+            template_id: 選填。省略時送出「不帶範本」的形狀（`templateId` 這個
+                鍵仍然會送，值是空字串）；給了就原樣送出，104 自己判斷合不合法
+                ——本工具不做範本類型查核。可用 list_templates 找一則範本的 id，
+                但建議挑「詢問意願」類（type_id="1"）的範本、或乾脆不帶：帶其他
+                類別的範本，104 會把這次送出記成哪一種事件尚未量測。
+
+        每日上限由 MAX_DAILY_MESSAGES 控制（per 帳號，與 send_message 共用）。
+        回傳形狀與 send_message 完全相同（"success": False、{"error": ...}、
+        "sent": "confirmed"/"unconfirmed" 三大類，見 send_message 的說明）——
+        兩者共用同一套判定與同一份程式碼。
+        """
+        app = ctx.request_context.lifespan_context
+
+        if _looks_like_resume_id(candidate_id):
+            return {"success": False, "error": _RESUME_ID_GUARD_MESSAGE}
+        if not message.strip():
+            return {"success": False, "error": "訊息內容不可為空白"}
+        if len(message) > MAX_INQUIRY_MESSAGE_LENGTH:
+            return {
+                "success": False,
+                "error": (
+                    f"訊息內容過長（{len(message)} 字元），上限 {MAX_INQUIRY_MESSAGE_LENGTH} 字元"
+                    "（來源：104 對話框介面上限，API 側真正的上限未量測，故往嚴的方向擋下）"
+                ),
+            }
+
+        # Same shape as send_message's account_label/send_attempted pair
+        # (§C4) — initialised before entering the guard, and send_attempted
+        # is set only as the LAST statement of the SEND request's own
+        # before_request hook (_before_third), never by _before_first: the
+        # first two sub-requests are GETs that may fail for reasons that
+        # have nothing to do with whether the letter went out.
+        account_label: str | None = None
+        send_attempted = False
+
+        async def _before_first(info: SessionInfo) -> None:
+            nonlocal account_label
+            account_label = info.account_label
+            await _enforce_daily_cap(app, info)
+
+        async def _before_third(info: SessionInfo) -> None:
+            nonlocal send_attempted
+            await _enforce_daily_cap(app, info)
+            send_attempted = True  # LAST statement — proof the send request is about to be issued
+
+        try:
+            async with guarded_sequence(ctx, slots_needed=3, before_first=_before_first) as (request, info):
+                idno_payload = await request(
+                    ENDPOINTS["resolve_candidate_idno"],
+                    params=[("job_no", job_id), ("p_id", candidate_id)],
+                    pick_data=("idNo",), pick_metadata=(),
+                )
+                id_no = idno_payload["data"]["idNo"]
+
+                last_info_payload = await request(
+                    ENDPOINTS["event_last_info"], pick_data=("emailCC",), pick_metadata=(),
+                )
+                email_cc = last_info_payload["data"]["emailCC"]
+                if not isinstance(email_cc, list):
+                    # Present but not a list — the projection only checks
+                    # presence (§C5), the type check is this tool's own job
+                    # (§Error Handling 9). Aborts BEFORE the third request is
+                    # ever issued; send_attempted is still False here.
+                    raise ToolAbort(
+                        {"error": "104 回應結構異常（emailCC 非陣列），可能是介面已變更，請回報"},
+                        kind="malformed",
+                    )
+
+                willingness_body = _willingness_body(id_no, job_id, message, template_id, email_cc)
+                payload = await request(
+                    ENDPOINTS["send_willingness_event"], body=willingness_body, before_request=_before_third,
+                )
+                await _log_send_attempt(app, info.account_label, candidate_id, ID_SOURCE_MESSAGE)
+                await _maybe_mark_contacted(app, candidate_id, ID_SOURCE_MESSAGE, info.account_label)
+                result = _build_success_send_result(payload)
+                result["warnings"] = []
+                return result
+        except GuardAbort as e:
+            if not send_attempted:
+                # Sub-request 1 or 2 aborted (or the sequence never even
+                # entered, e.g. not-logged-in/throttled/daily-cap), or the
+                # emailCC type-check above fired — none of these means the
+                # letter may have gone out. That failure's own payload,
+                # unchanged; never a "not sent" -> "unconfirmed" upgrade.
+                return e.payload
+            if _send_verdict(e.kind) == "ambiguous":
+                await _log_send_attempt(app, account_label, candidate_id, ID_SOURCE_MESSAGE)
+                await _maybe_mark_contacted(app, candidate_id, ID_SOURCE_MESSAGE, account_label)
+                return {"sent": "unconfirmed", "message": _SEND_AMBIGUOUS_MESSAGE, "warnings": []}
+            # NOT SENT — 104 explicitly refused the third (send-bearing)
+            # request (e.g. validation) — the guard's own payload, unchanged.
+            return e.payload
+        except Exception as exc:
+            log.error("send_inquiry: 非預期例外 (send_attempted=%s): %s", send_attempted, exc, exc_info=True)
+            if send_attempted:
+                await _log_send_attempt(app, account_label, candidate_id, ID_SOURCE_MESSAGE)
+                await _maybe_mark_contacted(app, candidate_id, ID_SOURCE_MESSAGE, account_label)
+                return {"sent": "unconfirmed", "message": _SEND_AMBIGUOUS_MESSAGE, "warnings": []}
+            return {"error": "內部錯誤，這是程式問題，請回報 —— 沒有送出任何請求"}
+
+    @mcp.tool()
+    @require_login
+    async def list_templates(ctx: Context, type_id: str | None = None, page: int = 1) -> dict:
+        """列出這個帳號已存好的罐頭信件範本（走 JSON API；一次呼叫一個請求，
+        不佔履歷瀏覽配額，但仍需要登入、仍過節流閘）。用來決定 send_inquiry 要帶
+        哪一則範本，但不是它的必要前置步驟——send_inquiry 的 template_id 是選填
+        的，完全不呼叫本工具也能送出詢問意願。
+
+        Args:
+            type_id: 選填，依範本的歸檔分類篩選——這是帳號自己整理範本用的分類，
+                不是本專案選路由的依據（本輪只有一條事件路由）。已知六種：
+                "1" 詢問意願、"2" 邀約面試、"3" 感謝函、"4" 到職日期提醒、
+                "5" 邀性格測驗、"0" 不分類。省略時回全部範本。
+            page: 頁碼，預設 1。
+
+        成功時固定回傳 {"results": [{"id","title","description","type_id",
+        "type_desc"}, ...], "pagination": {"page","total_pages","total"},
+        "browse_limit": null, "warnings": [...]}——description 就是完整信件
+        本文，不需要另外查單則範本。total_pages 大於 page 時 warnings 會提醒還有
+        其餘頁面。失敗時回傳 {"error": str}，沒有 results 欄位。
+        """
+        params: list[tuple[str, str]] = [("page", str(page))]
+        if type_id is not None:
+            params.append(("typeId", type_id))
+        try:
+            async with guarded_api(ctx, ENDPOINTS["list_templates"], params=params) as (envelope, _info):
+                return _build_template_list_response(envelope)
+        except GuardAbort as e:
+            return e.payload
+        except MalformedResponseError as exc:
+            log.error("list_templates: 回應結構異常: %s", exc.detail)
+            return _malformed_response_payload(exc)

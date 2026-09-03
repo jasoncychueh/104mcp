@@ -23,6 +23,7 @@ output) — see `research/probes/redact_fixtures.py`'s `build_failure_send_valid
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from uuid import uuid4
 
@@ -49,6 +50,7 @@ from mcp104.tools.messaging import (
     _watermark,
     register_messaging_tools,
 )
+from mcp104.tools.status import register_status_tools
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 RESULTS_DIR = Path(__file__).parent.parent / "research" / "results"
@@ -241,6 +243,7 @@ class FakeMCP:
 def _register_tools() -> tuple[dict[str, object], dict[str, str]]:
     mcp = FakeMCP()
     register_messaging_tools(mcp)
+    register_status_tools(mcp)
     return mcp.tools, mcp.descriptions
 
 
@@ -248,6 +251,15 @@ TOOLS, TOOL_DESCRIPTIONS = _register_tools()
 read_messages = TOOLS["read_messages"]
 get_conversation = TOOLS["get_conversation"]
 send_message = TOOLS["send_message"]
+# send_inquiry / list_templates are new this phase (design.md §C2/§C3) and may
+# not exist yet while spec-implementer is still writing tools/messaging.py —
+# indexing with TOOLS[...] would KeyError at IMPORT TIME and crash collection
+# of this whole file. .get(...) instead: a case that calls one of these
+# before it exists gets an ordinary (expected, Mode 1) TypeError at the
+# `await None(...)` call site, not a collection-time crash.
+send_inquiry = TOOLS.get("send_inquiry")
+list_templates = TOOLS.get("list_templates")
+check_already_contacted = TOOLS.get("check_already_contacted")
 
 
 _OPENED_DATABASES: list[Database] = []
@@ -1123,6 +1135,932 @@ def test_no_dialog_detail_or_message_item_or_msgmaster_selectors_remain():
 def test_no_endpoint_declares_a_method_outside_get_or_post():
     for key, ep in ENDPOINTS.items():
         assert ep.method in {"GET", "POST"}, f"{key}: unexpected method {ep.method!r}"
+
+
+# ═════════════════════════════════════════════════════════════════════════════════
+# outbound-contact (design.md §C1-§C4) — T-1..T-16, T-18..T-54
+#
+# Success envelope, synthetic values only (Test Approach): a candidate never
+# named search_resumes/get_resume_detail/read_messages, a letter body that is
+# obviously not real, an emailCC that is obviously not a real recruiter
+# address. §C4's five-shape table and the send_inquiry request sequence
+# (§C2) are exercised end to end through the real classify()/guarded_api/
+# guarded_sequence — never by hand-building a verdict or a GuardAbort.
+# ═════════════════════════════════════════════════════════════════════════════════
+
+_SYNTHETIC_LETTER = "測試信件本文-合成"
+_SYNTHETIC_CC = "cc-a@example.invalid"
+# Measured 13-14 digit idNo shape (docs/104-site-facts.md §6b.12/§8.12) — must
+# be rejected by the >=12-digit guard on all three messaging tools.
+_IDNO_SHAPED_ID = "1728037773409"
+# Measured 6-8 digit pId shape (§8.17) — must PASS the same guard.
+_PID_SHAPED_ID = "399022"
+
+
+def _outbound_success_envelope(event_id: str = "") -> dict:
+    """§Testing Strategy's "成功信封" — identical on both send_message and
+    send_willingness_event; only eventId differs by route (send_message
+    measures "" [T-4], send_inquiry measures non-empty [T-36])."""
+    return {
+        "data": [{
+            "pId": "399022",
+            "idNo": "30000006675849",
+            "streamId": "399022_12355016",
+            "messageId": ["2095355457"],
+            "eventId": event_id,
+            "isSynchronized": True,
+        }],
+        "failed": [],
+        "metadata": {},
+    }
+
+
+class _SeqFetchSpy:
+    """Like _FetchSpy above, but consumes a scripted list of RawResponses (or
+    raised exceptions) strictly in call order — needed for send_inquiry's
+    3-sub-request sequence, where each sub-request needs its own canned
+    answer. Mirrors tests/test_helpers.py's own _SeqFetchSpy."""
+
+    def __init__(self, scripted):
+        self._scripted = list(scripted)
+        self.calls: list[tuple[object, object, object]] = []
+
+    async def __call__(self, endpoint, *, cookie_header, params=None, body=None):
+        self.calls.append((endpoint, params, body))
+        item = self._scripted.pop(0)
+        if isinstance(item, BaseException):
+            raise item
+        return item
+
+
+def _install_seq_fetch(monkeypatch, scripted) -> _SeqFetchSpy:
+    spy = _SeqFetchSpy(scripted)
+    monkeypatch.setattr("mcp104.browser.api_client.fetch", spy)
+    monkeypatch.setattr("mcp104.tools.helpers.fetch", spy, raising=False)
+    return spy
+
+
+_RESOLVE_IDNO_OK = _raw_from_body({"data": {"idNo": "30000006675849"}, "metadata": {}})
+_LAST_INFO_EMPTY_CC = _raw_from_body({"data": {"emailCC": []}, "metadata": {}})
+
+
+def _inquiry_script(event_id: str = "evt-syn-0001", emailcc=None) -> list:
+    """A full, successful 3-response send_inquiry script: resolve -> last-info
+    -> success envelope. `emailcc` defaults to [] (the measured "no CC"
+    shape, still a present key — §C2)."""
+    return [
+        _RESOLVE_IDNO_OK,
+        _raw_from_body({"data": {"emailCC": emailcc if emailcc is not None else []}, "metadata": {}}),
+        _raw_from_body(_outbound_success_envelope(event_id=event_id)),
+    ]
+
+
+# ── send_message (§C1) — T-1..T-11 ───────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_T1_send_message_succeeds_against_a_never_before_seen_candidate(tmp_path, monkeypatch):
+    ctx, _info, _db = await _new_session(tmp_path)
+    spy = _install_fake_fetch(monkeypatch, _raw_from_body(_outbound_success_envelope()))
+
+    result = await send_message(ctx=ctx, job_id="12355016", candidate_id="7174599", message=_SYNTHETIC_LETTER)
+
+    assert len(spy.calls) == 1
+    assert result["sent"] == "confirmed"
+
+
+@pytest.mark.asyncio
+async def test_T2_send_message_body_is_exactly_content_no_template_id(tmp_path, monkeypatch):
+    ctx, _info, _db = await _new_session(tmp_path)
+    spy = _install_fake_fetch(monkeypatch, _raw_from_body(_outbound_success_envelope()))
+
+    await send_message(ctx=ctx, job_id="12355016", candidate_id="7174599", message=_SYNTHETIC_LETTER)
+
+    assert len(spy.calls) == 1
+    _endpoint, _params, body = spy.calls[0]
+    assert body == {"content": _SYNTHETIC_LETTER}
+    assert "templateId" not in body
+
+
+@pytest.mark.asyncio
+async def test_T3_send_message_confirmed_returns_ids_from_the_envelope(tmp_path, monkeypatch):
+    ctx, _info, _db = await _new_session(tmp_path)
+    envelope = _outbound_success_envelope()
+    _install_fake_fetch(monkeypatch, _raw_from_body(envelope))
+
+    result = await send_message(ctx=ctx, job_id="12355016", candidate_id="7174599", message=_SYNTHETIC_LETTER)
+
+    assert result["sent"] == "confirmed"
+    assert result["message_id"] == envelope["data"][0]["messageId"][0]
+    assert result["stream_id"] == envelope["data"][0]["streamId"]
+    assert result["p_id"] == envelope["data"][0]["pId"]
+
+
+@pytest.mark.asyncio
+async def test_T4_send_message_event_id_present_and_empty_string(tmp_path, monkeypatch):
+    ctx, _info, _db = await _new_session(tmp_path)
+    _install_fake_fetch(monkeypatch, _raw_from_body(_outbound_success_envelope(event_id="")))
+
+    result = await send_message(ctx=ctx, job_id="12355016", candidate_id="7174599", message=_SYNTHETIC_LETTER)
+
+    assert "event_id" in result
+    assert result["event_id"] == ""
+
+
+@pytest.mark.asyncio
+async def test_T5_send_message_failed_nonempty_is_unconfirmed_and_logs(tmp_path, monkeypatch):
+    ctx, info, db = await _new_session(tmp_path)
+    body = {"data": [], "failed": [{"x": 1}], "metadata": {}}
+    _install_fake_fetch(monkeypatch, _raw_from_body(body))
+
+    result = await send_message(ctx=ctx, job_id="12355016", candidate_id="7174599", message=_SYNTHETIC_LETTER)
+
+    assert result["sent"] == "unconfirmed"
+    assert result["failed"] == [{"x": 1}]
+    assert await db.get_daily_sent_count(info.account_label) == 1
+
+
+@pytest.mark.asyncio
+async def test_T6_send_message_failed_key_absent_is_unconfirmed_without_failed_key(tmp_path, monkeypatch):
+    ctx, _info, _db = await _new_session(tmp_path)
+    envelope = _outbound_success_envelope()
+    del envelope["failed"]
+    _install_fake_fetch(monkeypatch, _raw_from_body(envelope))
+
+    result = await send_message(ctx=ctx, job_id="12355016", candidate_id="7174599", message=_SYNTHETIC_LETTER)
+
+    assert result["sent"] == "unconfirmed"
+    assert "failed" not in result
+
+
+@pytest.mark.asyncio
+async def test_T7_send_message_missing_pid_or_stream_id_is_unconfirmed_not_confirmed(tmp_path, monkeypatch):
+    for missing_key in ("pId", "streamId"):
+        envelope = _outbound_success_envelope()
+        del envelope["data"][0][missing_key]
+        ctx, _info, _db = await _new_session(tmp_path)
+        _install_fake_fetch(monkeypatch, _raw_from_body(envelope))
+
+        result = await send_message(ctx=ctx, job_id="12355016", candidate_id="7174599", message=_SYNTHETIC_LETTER)
+
+        assert result["sent"] == "unconfirmed", missing_key
+
+
+@pytest.mark.asyncio
+async def test_T8_send_message_unrecognisable_200_body_is_unconfirmed_and_logs(tmp_path, monkeypatch):
+    ctx, info, db = await _new_session(tmp_path)
+    _install_fake_fetch(monkeypatch, _raw_from_body({"foo": 1}))
+
+    result = await send_message(ctx=ctx, job_id="12355016", candidate_id="7174599", message=_SYNTHETIC_LETTER)
+
+    assert result["sent"] == "unconfirmed"
+    assert await db.get_daily_sent_count(info.account_label) == 1
+
+
+@pytest.mark.asyncio
+async def test_T9_send_message_has_no_1000_char_cap_unlike_send_inquiry(tmp_path, monkeypatch):
+    ctx, _info, _db = await _new_session(tmp_path)
+    spy = _install_fake_fetch(monkeypatch, _raw_from_body(_outbound_success_envelope()))
+    long_message = "字" * 1001
+
+    await send_message(ctx=ctx, job_id="12355016", candidate_id="7174599", message=long_message)
+
+    assert len(spy.calls) == 1
+    _endpoint, _params, body = spy.calls[0]
+    assert len(body["content"]) == 1001
+
+
+@pytest.mark.asyncio
+async def test_T10_send_message_success_marks_candidate_contacted(tmp_path, monkeypatch):
+    ctx, info, db = await _new_session(tmp_path)
+    _install_fake_fetch(monkeypatch, _raw_from_body(_outbound_success_envelope()))
+
+    before = await check_already_contacted(candidate_id=_PID_SHAPED_ID, id_source="message", ctx=ctx)
+    assert before is False
+
+    await send_message(ctx=ctx, job_id="12355016", candidate_id=_PID_SHAPED_ID, message=_SYNTHETIC_LETTER)
+
+    after = await check_already_contacted(candidate_id=_PID_SHAPED_ID, id_source="message", ctx=ctx)
+    assert after is True
+    row = await db.get_candidate(_PID_SHAPED_ID, "message", info.account_label)
+    assert row["status"] == "contacted"
+
+
+@pytest.mark.asyncio
+async def test_T11_send_message_not_sent_group_unchanged_from_before_this_round(tmp_path, monkeypatch):
+    scenarios = [
+        ("expired", _raw_from_wrapper("failure_family_a_expired.json")),
+        ("blocked", _raw(403, "text/html; charset=utf-8", "blocked", None)),
+        ("challenge", _raw(200, "text/html; charset=utf-8",
+                            "vip.104.com.tw 正在執行安全驗證\n此網站使用安全服務抵禦惡意機器人。", None)),
+        ("not_found", _raw_from_body({"code": "00004", "message": "找不到對應資源", "detail": []}, status=404)),
+        ("validation", _raw_from_wrapper("failure_send_validation.json")),
+    ]
+    for label, raw in scenarios:
+        ctx, info, db = await _new_session(tmp_path)
+        _install_fake_fetch(monkeypatch, raw)
+
+        result = await send_message(ctx=ctx, job_id="12355016", candidate_id="7174599", message=_SYNTHETIC_LETTER)
+
+        assert "error" in result, label
+        assert "sent" not in result, label
+        assert await db.get_daily_sent_count(info.account_label) == 0, label
+
+
+# ── send_inquiry (§C2) — T-12..T-41 ──────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_T12_send_inquiry_issues_the_three_subrequests_in_fixed_order(tmp_path, monkeypatch):
+    ctx, _info, _db = await _new_session(tmp_path)
+    spy = _install_seq_fetch(monkeypatch, _inquiry_script())
+
+    await send_inquiry(ctx=ctx, job_id="12355016", candidate_id=_PID_SHAPED_ID, message=_SYNTHETIC_LETTER)
+
+    keys = [ep.key for ep, _params, _body in spy.calls]
+    assert keys == ["resolve_candidate_idno", "event_last_info", "send_willingness_event"]
+
+
+@pytest.mark.asyncio
+async def test_T13_send_inquiry_never_calls_any_template_endpoint(tmp_path, monkeypatch):
+    ctx, _info, _db = await _new_session(tmp_path)
+    spy = _install_seq_fetch(monkeypatch, _inquiry_script())
+
+    await send_inquiry(ctx=ctx, job_id="12355016", candidate_id=_PID_SHAPED_ID, message=_SYNTHETIC_LETTER)
+
+    keys = [ep.key for ep, _params, _body in spy.calls]
+    assert not any("template" in k for k in keys)
+
+
+@pytest.mark.asyncio
+async def test_T14_send_inquiry_counts_all_three_subrequests_in_the_rolling_window(tmp_path, monkeypatch):
+    ctx, info, _db = await _new_session(tmp_path)
+    before = len(info.throttle.request_timestamps)
+    _install_seq_fetch(monkeypatch, _inquiry_script())
+
+    await send_inquiry(ctx=ctx, job_id="12355016", candidate_id=_PID_SHAPED_ID, message=_SYNTHETIC_LETTER)
+
+    after = len(info.throttle.request_timestamps)
+    assert after - before == 3
+
+
+@pytest.mark.asyncio
+async def test_T15_send_inquiry_sleeps_at_most_once_for_the_whole_sequence(tmp_path, monkeypatch):
+    ctx, _info, _db = await _new_session(tmp_path)
+    sleep_calls: list[float] = []
+
+    async def counting_sleep(seconds):
+        sleep_calls.append(seconds)
+
+    monkeypatch.setattr("mcp104.browser.throttle._sleep", counting_sleep)
+    _install_seq_fetch(monkeypatch, _inquiry_script())
+
+    await send_inquiry(ctx=ctx, job_id="12355016", candidate_id=_PID_SHAPED_ID, message=_SYNTHETIC_LETTER)
+
+    assert len(sleep_calls) <= 1
+
+
+@pytest.mark.asyncio
+async def test_T16_send_inquiry_blocked_by_the_gate_before_any_subrequest_with_two_slots_left(tmp_path, monkeypatch):
+    ctx, info, _db = await _new_session(tmp_path)
+    app = ctx.request_context.lifespan_context
+    now = time.time()
+    cap = app.config.max_requests_per_hour
+    for _ in range(cap - 2):
+        info.throttle.unpersisted_timestamps.append(now)
+    spy = _install_seq_fetch(monkeypatch, _inquiry_script())
+
+    result = await send_inquiry(ctx=ctx, job_id="12355016", candidate_id=_PID_SHAPED_ID, message=_SYNTHETIC_LETTER)
+
+    assert len(spy.calls) == 0
+    assert "error" in result
+
+
+@pytest.mark.asyncio
+async def test_T18_send_inquiry_403_after_prior_success_uses_after_success_wording(tmp_path, monkeypatch):
+    ctx, _info, _db = await _new_session(tmp_path)
+    blocked = _raw(403, "text/html; charset=utf-8", "blocked", None)
+    spy = _install_seq_fetch(monkeypatch, [_RESOLVE_IDNO_OK, blocked])
+
+    result = await send_inquiry(ctx=ctx, job_id="12355016", candidate_id=_PID_SHAPED_ID, message=_SYNTHETIC_LETTER)
+
+    assert len(spy.calls) == 2
+    assert "先前已成功過" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_T19_send_inquiry_message_over_1000_chars_rejected_before_any_request(tmp_path, monkeypatch):
+    ctx, info, db = await _new_session(tmp_path)
+    spy = _install_seq_fetch(monkeypatch, _inquiry_script())
+    long_message = "字" * 1001
+
+    result = await send_inquiry(ctx=ctx, job_id="12355016", candidate_id=_PID_SHAPED_ID, message=long_message)
+
+    assert result["success"] is False
+    assert "error" in result
+    assert len(spy.calls) == 0
+    assert await db.get_daily_sent_count(info.account_label) == 0
+    row = await db.get_candidate(_PID_SHAPED_ID, "message", info.account_label)
+    assert row is None
+
+
+@pytest.mark.asyncio
+async def test_T20_send_inquiry_message_exactly_1000_chars_is_accepted(tmp_path, monkeypatch):
+    ctx, _info, _db = await _new_session(tmp_path)
+    spy = _install_seq_fetch(monkeypatch, _inquiry_script())
+    message = "字" * 1000
+
+    result = await send_inquiry(ctx=ctx, job_id="12355016", candidate_id=_PID_SHAPED_ID, message=message)
+
+    assert len(spy.calls) == 3
+    assert result["sent"] == "confirmed"
+
+
+@pytest.mark.asyncio
+async def test_T21_send_inquiry_resolve_404_aborts_with_its_own_payload(tmp_path, monkeypatch):
+    ctx, info, db = await _new_session(tmp_path)
+    not_found = _raw_from_body({"code": "00004", "message": "找不到對應資源", "detail": []}, status=404)
+    spy = _install_seq_fetch(monkeypatch, [not_found])
+
+    result = await send_inquiry(ctx=ctx, job_id="12355016", candidate_id=_PID_SHAPED_ID, message=_SYNTHETIC_LETTER)
+
+    assert len(spy.calls) == 1
+    assert "error" in result
+    assert "找不到對應資源" in result["error"]
+    assert "sent" not in result
+    assert await db.get_daily_sent_count(info.account_label) == 0
+
+
+@pytest.mark.asyncio
+async def test_T22_send_inquiry_last_info_failure_aborts_before_third_request(tmp_path, monkeypatch):
+    ctx, info, db = await _new_session(tmp_path)
+    server_error = _raw_from_body({"error": "internal"}, status=500)
+    spy = _install_seq_fetch(monkeypatch, [_RESOLVE_IDNO_OK, server_error])
+
+    result = await send_inquiry(ctx=ctx, job_id="12355016", candidate_id=_PID_SHAPED_ID, message=_SYNTHETIC_LETTER)
+
+    assert len(spy.calls) == 2
+    assert "error" in result
+    assert "sent" not in result
+    assert await db.get_daily_sent_count(info.account_label) == 0
+
+
+@pytest.mark.asyncio
+async def test_T23_send_inquiry_resolve_missing_idno_is_malformed_before_last_info(tmp_path, monkeypatch):
+    ctx, _info, _db = await _new_session(tmp_path)
+    missing_idno = _raw_from_body({"data": {}, "metadata": {}})
+    spy = _install_seq_fetch(monkeypatch, [missing_idno])
+
+    result = await send_inquiry(ctx=ctx, job_id="12355016", candidate_id=_PID_SHAPED_ID, message=_SYNTHETIC_LETTER)
+
+    assert len(spy.calls) == 1
+    assert "error" in result
+    assert "sent" not in result
+
+
+@pytest.mark.asyncio
+async def test_T24_send_inquiry_transport_exception_on_first_subrequest_is_not_unconfirmed(tmp_path, monkeypatch):
+    ctx, info, db = await _new_session(tmp_path)
+    _install_seq_fetch(monkeypatch, [RuntimeError("simulated transport failure")])
+
+    result = await send_inquiry(ctx=ctx, job_id="12355016", candidate_id=_PID_SHAPED_ID, message=_SYNTHETIC_LETTER)
+
+    assert result.get("sent") != "unconfirmed"
+    assert await db.get_daily_sent_count(info.account_label) == 0
+    row = await db.get_candidate(_PID_SHAPED_ID, "message", info.account_label)
+    assert row is None
+
+
+@pytest.mark.asyncio
+async def test_T25_send_inquiry_transport_exception_on_second_subrequest_is_not_unconfirmed(tmp_path, monkeypatch):
+    ctx, info, db = await _new_session(tmp_path)
+    spy = _install_seq_fetch(monkeypatch, [_RESOLVE_IDNO_OK, RuntimeError("simulated transport failure")])
+
+    result = await send_inquiry(ctx=ctx, job_id="12355016", candidate_id=_PID_SHAPED_ID, message=_SYNTHETIC_LETTER)
+
+    assert len(spy.calls) == 2
+    assert result.get("sent") != "unconfirmed"
+    assert await db.get_daily_sent_count(info.account_label) == 0
+
+
+@pytest.mark.asyncio
+async def test_T26_send_inquiry_third_request_body_matches_the_measured_key_set(tmp_path, monkeypatch):
+    ctx, _info, _db = await _new_session(tmp_path)
+    script = [
+        _raw_from_body({"data": {"idNo": "30000006675849"}, "metadata": {}}),
+        _raw_from_body({"data": {"emailCC": [_SYNTHETIC_CC]}, "metadata": {}}),
+        _raw_from_body(_outbound_success_envelope()),
+    ]
+    spy = _install_seq_fetch(monkeypatch, script)
+
+    await send_inquiry(ctx=ctx, job_id="12355016", candidate_id=_PID_SHAPED_ID, message=_SYNTHETIC_LETTER)
+
+    assert len(spy.calls) == 3
+    _endpoint, _params, body = spy.calls[2]
+    expected_keys = {
+        "candidate", "contactJobNo", "content", "templateId",
+        "isRequiredReplyDay", "replyDay", "contact", "contactTel",
+        "isWithDetail", "file", "ec", "rc", "emailCC",
+    }
+    assert set(body.keys()) == expected_keys
+    assert body["candidate"] == [{"idNo": "30000006675849"}]
+    assert body["contactJobNo"] == "12355016"
+    assert body["content"] == _SYNTHETIC_LETTER
+    assert body["isWithDetail"] is True
+    assert body["emailCC"] == [_SYNTHETIC_CC]
+
+
+@pytest.mark.asyncio
+async def test_T27_send_inquiry_empty_emailcc_list_is_sent_as_is(tmp_path, monkeypatch):
+    ctx, _info, _db = await _new_session(tmp_path)
+    spy = _install_seq_fetch(monkeypatch, _inquiry_script(emailcc=[]))
+
+    await send_inquiry(ctx=ctx, job_id="12355016", candidate_id=_PID_SHAPED_ID, message=_SYNTHETIC_LETTER)
+
+    _endpoint, _params, body = spy.calls[2]
+    assert body["emailCC"] == []
+
+
+@pytest.mark.asyncio
+async def test_T28_send_inquiry_emailcc_missing_or_wrong_type_aborts_before_third_request(tmp_path, monkeypatch):
+    ctx, info, db = await _new_session(tmp_path)
+    missing_cc = _raw_from_body({"data": {}, "metadata": {}})
+    spy = _install_seq_fetch(monkeypatch, [_RESOLVE_IDNO_OK, missing_cc])
+
+    result = await send_inquiry(ctx=ctx, job_id="12355016", candidate_id=_PID_SHAPED_ID, message=_SYNTHETIC_LETTER)
+
+    assert len(spy.calls) == 2
+    assert "error" in result
+    assert await db.get_daily_sent_count(info.account_label) == 0
+
+    ctx2, info2, db2 = await _new_session(tmp_path)
+    wrong_type_cc = _raw_from_body({"data": {"emailCC": "not-a-list"}, "metadata": {}})
+    spy2 = _install_seq_fetch(monkeypatch, [_RESOLVE_IDNO_OK, wrong_type_cc])
+
+    result2 = await send_inquiry(ctx=ctx2, job_id="12355016", candidate_id=_PID_SHAPED_ID, message=_SYNTHETIC_LETTER)
+
+    assert len(spy2.calls) == 2
+    assert "error" in result2
+    assert await db2.get_daily_sent_count(info2.account_label) == 0
+
+
+@pytest.mark.asyncio
+async def test_T29_send_inquiry_template_id_passed_through_verbatim(tmp_path, monkeypatch):
+    ctx, _info, _db = await _new_session(tmp_path)
+    spy = _install_seq_fetch(monkeypatch, _inquiry_script())
+
+    await send_inquiry(ctx=ctx, job_id="12355016", candidate_id=_PID_SHAPED_ID, message=_SYNTHETIC_LETTER,
+                        template_id="966243507479143185")
+
+    _endpoint, _params, body = spy.calls[2]
+    assert body["templateId"] == "966243507479143185"
+
+
+@pytest.mark.asyncio
+async def test_T30_send_inquiry_omitted_template_id_sends_present_empty_string(tmp_path, monkeypatch):
+    ctx, _info, _db = await _new_session(tmp_path)
+    spy = _install_seq_fetch(monkeypatch, _inquiry_script())
+
+    await send_inquiry(ctx=ctx, job_id="12355016", candidate_id=_PID_SHAPED_ID, message=_SYNTHETIC_LETTER)
+
+    _endpoint, _params, body = spy.calls[2]
+    assert "templateId" in body
+    assert body["templateId"] == ""
+
+
+@pytest.mark.asyncio
+async def test_T31_warnings_key_is_unconditional_across_all_three_sent_shapes(tmp_path, monkeypatch):
+    variants = {
+        "confirmed": _outbound_success_envelope(),
+        "failed_nonempty": {"data": [], "failed": [{"x": 1}], "metadata": {}},
+        "failed_absent": {"data": [], "metadata": {}},
+    }
+    for label, third_body in variants.items():
+        ctx, _info, _db = await _new_session(tmp_path)
+        _install_seq_fetch(monkeypatch, [_RESOLVE_IDNO_OK, _LAST_INFO_EMPTY_CC, _raw_from_body(third_body)])
+
+        result = await send_inquiry(ctx=ctx, job_id="12355016", candidate_id=_PID_SHAPED_ID, message=_SYNTHETIC_LETTER)
+
+        assert "warnings" in result, label
+        assert result["warnings"] == [], label
+
+
+@pytest.mark.asyncio
+async def test_T32_no_sent_shape_ever_exposes_quota_or_operator_email(tmp_path, monkeypatch):
+    variants = {
+        "confirmed": _outbound_success_envelope(),
+        "failed_nonempty": {"data": [], "failed": [{"x": 1}], "metadata": {}},
+        "failed_absent": {"data": [], "metadata": {}},
+    }
+    for label, third_body in variants.items():
+        ctx, _info, _db = await _new_session(tmp_path)
+        script = [
+            _RESOLVE_IDNO_OK,
+            _raw_from_body({"data": {"emailCC": []}, "metadata": {"quota": 299, "userEmail": "op@example.invalid"}}),
+            _raw_from_body(third_body),
+        ]
+        _install_seq_fetch(monkeypatch, script)
+
+        result = await send_inquiry(ctx=ctx, job_id="12355016", candidate_id=_PID_SHAPED_ID, message=_SYNTHETIC_LETTER)
+
+        text = json.dumps(result, ensure_ascii=False)
+        assert "quota" not in text, label
+        assert "299" not in text, label
+        assert "op@example.invalid" not in text, label
+
+
+@pytest.mark.asyncio
+async def test_T33_send_inquiry_daily_cap_reached_returns_plain_error_shape_without_warnings(tmp_path, monkeypatch):
+    ctx, info, db = await _new_session(tmp_path)
+    app = ctx.request_context.lifespan_context
+    for _ in range(app.config.max_daily_messages):
+        await db.log_sent(info.account_label, "prior-candidate", "message")
+    _install_seq_fetch(monkeypatch, _inquiry_script())
+
+    result = await send_inquiry(ctx=ctx, job_id="12355016", candidate_id=_PID_SHAPED_ID, message=_SYNTHETIC_LETTER)
+
+    assert set(result.keys()) == {"success", "error"}
+    assert result["success"] is False
+
+
+@pytest.mark.asyncio
+async def test_T34_send_inquiry_rechecks_daily_cap_before_third_subrequest(tmp_path, monkeypatch):
+    ctx, info, db = await _new_session(tmp_path)
+    app = ctx.request_context.lifespan_context
+    cap = app.config.max_daily_messages
+    real_count_fn = db.get_daily_sent_count
+    call_count = {"n": 0}
+
+    async def flaky_count(account_label):
+        call_count["n"] += 1
+        return cap - 1 if call_count["n"] == 1 else cap
+
+    monkeypatch.setattr(db, "get_daily_sent_count", flaky_count)
+    spy = _install_seq_fetch(monkeypatch, _inquiry_script())
+
+    result = await send_inquiry(ctx=ctx, job_id="12355016", candidate_id=_PID_SHAPED_ID, message=_SYNTHETIC_LETTER)
+
+    assert len(spy.calls) == 2
+    assert result.get("success") is False
+    assert await real_count_fn(info.account_label) == 0
+
+
+@pytest.mark.asyncio
+async def test_T35_send_inquiry_never_leaks_bridge_or_last_info_extra_fields(tmp_path, monkeypatch, caplog):
+    ctx, _info, _db = await _new_session(tmp_path)
+    resolve_body = {"data": {"idNo": "30000006675849", "userName": "SYNTHETIC-NAME"},
+                     "metadata": {"hid": "HID-XYZ"}}
+    last_info_body = {"data": {"emailCC": [], "recruiters": [{"id": 1, "email": "rec@example.invalid"}]},
+                       "metadata": {"userEmail": "op@example.invalid", "quota": 299}}
+    script = [
+        _raw_from_body(resolve_body),
+        _raw_from_body(last_info_body),
+        _raw_from_body(_outbound_success_envelope()),
+    ]
+    _install_seq_fetch(monkeypatch, script)
+
+    with caplog.at_level("INFO"):
+        result = await send_inquiry(ctx=ctx, job_id="12355016", candidate_id=_PID_SHAPED_ID, message=_SYNTHETIC_LETTER)
+
+    text = json.dumps(result, ensure_ascii=False)
+    for banned in ("SYNTHETIC-NAME", "HID-XYZ", "rec@example.invalid", "op@example.invalid", "299"):
+        assert banned not in text
+    log_text = caplog.text
+    for banned in ("SYNTHETIC-NAME", "HID-XYZ", "rec@example.invalid", "op@example.invalid"):
+        assert banned not in log_text
+
+
+@pytest.mark.asyncio
+async def test_T36_send_inquiry_confirmed_with_nonempty_event_id(tmp_path, monkeypatch):
+    ctx, _info, _db = await _new_session(tmp_path)
+    _install_seq_fetch(monkeypatch, _inquiry_script(event_id="evt-syn-0007"))
+
+    result = await send_inquiry(ctx=ctx, job_id="12355016", candidate_id=_PID_SHAPED_ID, message=_SYNTHETIC_LETTER)
+
+    assert result["sent"] == "confirmed"
+    assert result["message_id"] == "2095355457"
+    assert result["event_id"] == "evt-syn-0007"
+
+
+@pytest.mark.asyncio
+async def test_T37_send_inquiry_failed_nonempty_is_unconfirmed_not_error_and_logs(tmp_path, monkeypatch):
+    ctx, info, db = await _new_session(tmp_path)
+    third = {"data": [], "failed": [{"x": 1}], "metadata": {}}
+    _install_seq_fetch(monkeypatch, [_RESOLVE_IDNO_OK, _LAST_INFO_EMPTY_CC, _raw_from_body(third)])
+
+    result = await send_inquiry(ctx=ctx, job_id="12355016", candidate_id=_PID_SHAPED_ID, message=_SYNTHETIC_LETTER)
+
+    assert result["sent"] == "unconfirmed"
+    assert await db.get_daily_sent_count(info.account_label) == 1
+    row = await db.get_candidate(_PID_SHAPED_ID, "message", info.account_label)
+    assert row["status"] == "contacted"
+
+
+@pytest.mark.asyncio
+async def test_T38_send_inquiry_daily_cap_reached_sends_zero_requests(tmp_path, monkeypatch):
+    ctx, info, db = await _new_session(tmp_path)
+    app = ctx.request_context.lifespan_context
+    for _ in range(app.config.max_daily_messages):
+        await db.log_sent(info.account_label, "prior-candidate", "message")
+    spy = _install_seq_fetch(monkeypatch, _inquiry_script())
+
+    await send_inquiry(ctx=ctx, job_id="12355016", candidate_id=_PID_SHAPED_ID, message=_SYNTHETIC_LETTER)
+
+    assert len(spy.calls) == 0
+
+
+@pytest.mark.asyncio
+async def test_T39_emailcc_value_itself_never_leaks_into_response(tmp_path, monkeypatch):
+    ctx, _info, _db = await _new_session(tmp_path)
+    _install_seq_fetch(monkeypatch, _inquiry_script(emailcc=[_SYNTHETIC_CC]))
+
+    result = await send_inquiry(ctx=ctx, job_id="12355016", candidate_id=_PID_SHAPED_ID, message=_SYNTHETIC_LETTER)
+
+    text = json.dumps(result, ensure_ascii=False)
+    assert _SYNTHETIC_CC not in text
+
+
+@pytest.mark.asyncio
+async def test_T40_send_inquiry_validation_on_third_subrequest_is_error_not_unconfirmed(tmp_path, monkeypatch):
+    ctx, info, db = await _new_session(tmp_path)
+    script = [_RESOLVE_IDNO_OK, _LAST_INFO_EMPTY_CC, _raw_from_wrapper("failure_send_validation.json")]
+    _install_seq_fetch(monkeypatch, script)
+
+    result = await send_inquiry(ctx=ctx, job_id="12355016", candidate_id=_PID_SHAPED_ID, message=_SYNTHETIC_LETTER)
+
+    assert "error" in result
+    assert "sent" not in result
+    assert await db.get_daily_sent_count(info.account_label) == 0
+
+
+@pytest.mark.asyncio
+async def test_T41_five_shapes_are_mutually_exclusive_across_both_send_tools(tmp_path, monkeypatch):
+    variants = [
+        ("data_empty_no_failed", {"data": [], "metadata": {}}, False),
+        ("data_nonempty_no_failed", {"data": [{
+            "pId": "399022", "idNo": "X", "streamId": "S",
+            "messageId": ["1"], "eventId": "", "isSynchronized": True,
+        }], "metadata": {}}, False),
+        ("failed_nonempty", {"data": [], "failed": [{"x": 1}], "metadata": {}}, True),
+    ]
+    for label, body, failed_present in variants:
+        ctx, _info, _db = await _new_session(tmp_path)
+        _install_fake_fetch(monkeypatch, _raw_from_body(body))
+        result = await send_message(ctx=ctx, job_id="12355016", candidate_id="7174599", message=_SYNTHETIC_LETTER)
+        assert result["sent"] == "unconfirmed", (label, "send_message")
+        assert ("failed" in result) is failed_present, (label, "send_message")
+
+        ctx2, _info2, _db2 = await _new_session(tmp_path)
+        _install_seq_fetch(monkeypatch, [_RESOLVE_IDNO_OK, _LAST_INFO_EMPTY_CC, _raw_from_body(body)])
+        result2 = await send_inquiry(ctx=ctx2, job_id="12355016", candidate_id=_PID_SHAPED_ID, message=_SYNTHETIC_LETTER)
+        assert result2["sent"] == "unconfirmed", (label, "send_inquiry")
+        assert ("failed" in result2) is failed_present, (label, "send_inquiry")
+
+
+# ── Cross-tool: digit guard, shared daily cap, candidate status, sent_log id_source
+# — T-42..T-49 ────────────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_T42_send_message_rejects_13_digit_candidate_id(tmp_path, monkeypatch):
+    ctx, info, db = await _new_session(tmp_path)
+    _install_never_called_fetch(monkeypatch)
+
+    result = await send_message(ctx=ctx, job_id="12355016", candidate_id=_IDNO_SHAPED_ID, message=_SYNTHETIC_LETTER)
+
+    assert result["success"] is False
+    assert "error" in result
+    assert await db.get_daily_sent_count(info.account_label) == 0
+    row = await db.get_candidate(_IDNO_SHAPED_ID, "message", info.account_label)
+    assert row is None
+
+
+@pytest.mark.asyncio
+async def test_T43_send_inquiry_rejects_13_digit_candidate_id(tmp_path, monkeypatch):
+    ctx, info, db = await _new_session(tmp_path)
+    spy = _install_seq_fetch(monkeypatch, _inquiry_script())
+
+    result = await send_inquiry(ctx=ctx, job_id="12355016", candidate_id=_IDNO_SHAPED_ID, message=_SYNTHETIC_LETTER)
+
+    assert result["success"] is False
+    assert "error" in result
+    assert len(spy.calls) == 0
+    assert await db.get_daily_sent_count(info.account_label) == 0
+
+
+@pytest.mark.asyncio
+async def test_T44_get_conversation_rejects_13_digit_candidate_id(tmp_path, monkeypatch):
+    ctx, _info, _db = await _new_session(tmp_path)
+    _install_never_called_fetch(monkeypatch)
+
+    result = await get_conversation(ctx=ctx, job_id="12355016", candidate_id=_IDNO_SHAPED_ID)
+
+    assert "error" in result
+    assert "success" not in result
+
+
+@pytest.mark.asyncio
+async def test_T45_all_three_message_tools_accept_a_6_digit_candidate_id(tmp_path, monkeypatch):
+    ctx, _info, _db = await _new_session(tmp_path)
+    spy1 = _install_fake_fetch(monkeypatch, _raw_from_body(_outbound_success_envelope()))
+    result1 = await send_message(ctx=ctx, job_id="12355016", candidate_id=_PID_SHAPED_ID, message=_SYNTHETIC_LETTER)
+    assert len(spy1.calls) == 1
+    assert result1.get("success") is not False
+
+    ctx2, _info2, _db2 = await _new_session(tmp_path)
+    spy2 = _install_seq_fetch(monkeypatch, _inquiry_script())
+    result2 = await send_inquiry(ctx=ctx2, job_id="12355016", candidate_id=_PID_SHAPED_ID, message=_SYNTHETIC_LETTER)
+    assert len(spy2.calls) == 3
+    assert result2.get("success") is not False
+
+    ctx3, _info3, _db3 = await _new_session(tmp_path)
+    spy3 = _install_fake_fetch(monkeypatch, _raw_from_body(_CONVERSATION_ENVELOPE_SINGLE_PAGE))
+    result3 = await get_conversation(ctx=ctx3, job_id="12355016", candidate_id=_PID_SHAPED_ID)
+    assert len(spy3.calls) == 1
+    assert "error" not in result3
+
+
+@pytest.mark.asyncio
+async def test_T46_empty_or_whitespace_message_rejected_before_any_request_both_send_tools(tmp_path, monkeypatch):
+    ctx, _info, _db = await _new_session(tmp_path)
+    for message in ("", "   "):
+        _install_never_called_fetch(monkeypatch)
+        result = await send_message(ctx=ctx, job_id="12355016", candidate_id=_PID_SHAPED_ID, message=message)
+        assert result["success"] is False
+
+        result2 = await send_inquiry(ctx=ctx, job_id="12355016", candidate_id=_PID_SHAPED_ID, message=message)
+        assert result2["success"] is False
+
+
+@pytest.mark.asyncio
+async def test_T47_daily_cap_is_shared_across_both_send_tools(tmp_path, monkeypatch):
+    ctx, info, db = await _new_session(tmp_path)
+    app = ctx.request_context.lifespan_context
+    cap = app.config.max_daily_messages
+    for _ in range(cap - 1):
+        await db.log_sent(info.account_label, "prior-candidate", "message")
+
+    _install_seq_fetch(monkeypatch, _inquiry_script())
+    result1 = await send_inquiry(ctx=ctx, job_id="12355016", candidate_id=_PID_SHAPED_ID, message=_SYNTHETIC_LETTER)
+    assert result1.get("sent") == "confirmed"
+    assert await db.get_daily_sent_count(info.account_label) == cap
+
+    _install_never_called_fetch(monkeypatch)
+    result2 = await send_message(ctx=ctx, job_id="12355016", candidate_id="7174599", message=_SYNTHETIC_LETTER)
+    assert result2.get("success") is False
+    assert "上限" in result2["error"]
+
+
+@pytest.mark.asyncio
+async def test_T48_candidate_status_write_rules(tmp_path, monkeypatch):
+    # (a) no prior status -> writes "contacted"
+    ctx, info, db = await _new_session(tmp_path)
+    _install_fake_fetch(monkeypatch, _raw_from_body(_outbound_success_envelope()))
+    await send_message(ctx=ctx, job_id="12355016", candidate_id="399011", message=_SYNTHETIC_LETTER)
+    row = await db.get_candidate("399011", "message", info.account_label)
+    assert row["status"] == "contacted"
+
+    # (b) already "interested" -> not overwritten
+    ctx2, info2, db2 = await _new_session(tmp_path)
+    await db2.upsert_candidate("399033", "message", info2.account_label, status="interested")
+    _install_fake_fetch(monkeypatch, _raw_from_body(_outbound_success_envelope()))
+    await send_message(ctx=ctx2, job_id="12355016", candidate_id="399033", message=_SYNTHETIC_LETTER)
+    row2 = await db2.get_candidate("399033", "message", info2.account_label)
+    assert row2["status"] == "interested"
+
+    # (c) ambiguous ("unconfirmed") path still writes "contacted"
+    ctx3, info3, db3 = await _new_session(tmp_path)
+    _install_fake_fetch(monkeypatch, _raw(200, "text/plain", "not json", None))
+    await send_message(ctx=ctx3, job_id="12355016", candidate_id="399044", message=_SYNTHETIC_LETTER)
+    row3 = await db3.get_candidate("399044", "message", info3.account_label)
+    assert row3["status"] == "contacted"
+
+
+@pytest.mark.asyncio
+async def test_T49_sent_log_rows_read_back_with_message_id_source_for_both_tools(tmp_path, monkeypatch):
+    ctx, info, db = await _new_session(tmp_path)
+    _install_fake_fetch(monkeypatch, _raw_from_body(_outbound_success_envelope()))
+    await send_message(ctx=ctx, job_id="12355016", candidate_id="399055", message=_SYNTHETIC_LETTER)
+    assert await check_already_contacted(candidate_id="399055", id_source="message", ctx=ctx) is True
+
+    ctx2, info2, db2 = await _new_session(tmp_path)
+    _install_seq_fetch(monkeypatch, _inquiry_script())
+    await send_inquiry(ctx=ctx2, job_id="12355016", candidate_id="399066", message=_SYNTHETIC_LETTER)
+    assert await check_already_contacted(candidate_id="399066", id_source="message", ctx=ctx2) is True
+
+    async with db._conn.execute("SELECT id_source FROM sent_log WHERE candidate_id = ?", ("399055",)) as cursor:
+        rows = await cursor.fetchall()
+    assert [r[0] for r in rows] == ["message"]
+
+    async with db2._conn.execute("SELECT id_source FROM sent_log WHERE candidate_id = ?", ("399066",)) as cursor:
+        rows2 = await cursor.fetchall()
+    assert [r[0] for r in rows2] == ["message"]
+
+
+# ── list_templates (§C3) — T-50..T-54 ────────────────────────────────────────────
+
+_TEMPLATE_ROW_A = {
+    "id": "tpl-syn-1", "title": "詢問意願-合成範本A", "description": "測試範本內容-合成A",
+    "typeId": "1", "typeDesc": "詢問意願",
+}
+
+
+@pytest.mark.asyncio
+async def test_T50_list_templates_params_carry_page_and_optional_type_id(tmp_path, monkeypatch):
+    ctx, _info, _db = await _new_session(tmp_path)
+    body = {"data": [_TEMPLATE_ROW_A], "metadata": {"page": 1, "totalPage": 1, "total": 1}}
+
+    spy = _install_fake_fetch(monkeypatch, _raw_from_body(body))
+    await list_templates(ctx=ctx)
+    _endpoint, params, _body = spy.calls[0]
+    assert any(k == "page" for k, _ in params)
+    assert not any(k == "typeId" for k, _ in params)
+
+    spy2 = _install_fake_fetch(monkeypatch, _raw_from_body(body))
+    await list_templates(ctx=ctx, type_id="1")
+    _endpoint2, params2, _body2 = spy2.calls[0]
+    assert any(k == "page" for k, _ in params2)
+    assert any((k, v) == ("typeId", "1") for k, v in params2)
+
+
+@pytest.mark.asyncio
+async def test_T51_list_templates_rows_are_allow_listed_and_envelope_is_fixed_shape(tmp_path, monkeypatch):
+    ctx, _info, _db = await _new_session(tmp_path)
+    row = dict(_TEMPLATE_ROW_A)
+    row["files"] = ["synthetic-file-marker"]
+    row["createDate"] = "2026-01-01"
+    body = {"data": [row], "metadata": {"page": 1, "totalPage": 1, "total": 1}}
+    _install_fake_fetch(monkeypatch, _raw_from_body(body))
+
+    result = await list_templates(ctx=ctx)
+
+    assert set(result.keys()) == {"results", "pagination", "browse_limit", "warnings"}
+    assert result["browse_limit"] is None
+    assert len(result["results"]) == 1
+    assert set(result["results"][0].keys()) == {"id", "title", "description", "type_id", "type_desc"}
+    text = json.dumps(result, ensure_ascii=False)
+    assert "synthetic-file-marker" not in text
+    assert "createDate" not in text
+
+
+@pytest.mark.asyncio
+async def test_T52_list_templates_pagination_and_more_pages_warning(tmp_path, monkeypatch):
+    ctx, _info, _db = await _new_session(tmp_path)
+    body = {"data": [_TEMPLATE_ROW_A], "metadata": {"page": 1, "totalPage": 3, "total": 65}}
+    _install_fake_fetch(monkeypatch, _raw_from_body(body))
+
+    result = await list_templates(ctx=ctx)
+
+    assert result["pagination"] == {"page": 1, "total_pages": 3, "total": 65}
+    assert len(result["warnings"]) == 1
+    assert "3" in result["warnings"][0]
+
+
+@pytest.mark.asyncio
+async def test_T53_list_templates_missing_metadata_and_upstream_error_both_fail_without_results(tmp_path, monkeypatch):
+    ctx, _info, _db = await _new_session(tmp_path)
+    _install_fake_fetch(monkeypatch, _raw_from_body({"data": []}))
+    result = await list_templates(ctx=ctx)
+    assert "error" in result
+    assert "results" not in result
+
+    ctx2, _info2, _db2 = await _new_session(tmp_path)
+    _install_fake_fetch(monkeypatch, _raw(403, "text/html; charset=utf-8", "blocked", None))
+    result2 = await list_templates(ctx=ctx2)
+    assert "error" in result2
+    assert "results" not in result2
+
+
+@pytest.mark.asyncio
+async def test_T54_list_templates_requires_login_and_goes_through_the_real_throttle_gate(tmp_path, monkeypatch):
+    pool = SessionPool()
+    database = Database(str(tmp_path / f"db_{uuid4().hex}.sqlite"))
+    await database.init("test@104.com")
+    _OPENED_DATABASES.append(database)
+    ctx = FakeCtx(pool, database)  # no session activated -> not logged in
+    _install_never_called_fetch(monkeypatch)
+
+    result = await list_templates(ctx=ctx)
+    assert result == {"error": "請先呼叫 login()"}
+
+    ctx2, info2, _db2 = await _new_session(tmp_path)
+    _install_never_called_fetch(monkeypatch)
+    import mcp104.tools.helpers as helpers_mod
+    real_enforce_throttle = helpers_mod.enforce_throttle
+
+    async def rejecting_throttle(*args, **kwargs):
+        return ThrottleAbort(kind="throttled", payload={"error": "節流測試", "retry_after_seconds": 7}, detail="")
+
+    monkeypatch.setattr("mcp104.tools.helpers.enforce_throttle", rejecting_throttle)
+    result2 = await list_templates(ctx=ctx2)
+    assert "error" in result2
+    assert result2.get("retry_after_seconds") == 7
+    monkeypatch.setattr("mcp104.tools.helpers.enforce_throttle", real_enforce_throttle)
+
+    ctx3, info3, _db3 = await _new_session(tmp_path)
+    body = {"data": [_TEMPLATE_ROW_A], "metadata": {"page": 1, "totalPage": 1, "total": 1}}
+    _install_fake_fetch(monkeypatch, _raw_from_body(body))
+    before = len(info3.throttle.request_timestamps)
+    await list_templates(ctx=ctx3)
+    after = len(info3.throttle.request_timestamps)
+    assert after == before + 1
 
 
 # Round I1 Smell B: this file used to carry its own
