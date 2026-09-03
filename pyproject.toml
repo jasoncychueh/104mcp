@@ -5,6 +5,28 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "mcp104"
 version = "0.1.0"
+description = "MCP server that lets an AI agent operate a 104人力銀行 enterprise recruiting account — résumé search, job listings, messaging and 詢問意願 events, with a device-flow login that keeps credentials out of the LLM"
+readme = "README.md"
+license = {file = "LICENSE"}           # PEP 639 string form (`license = "MIT"`) needs
+                                        # setuptools>=69.3 for SPDX-expression support;
+                                        # build-system below pins setuptools>=68 with no
+                                        # upper bound, so an older resolved setuptools could
+                                        # fail on the string form. The file form is valid
+                                        # under both old (PEP 621 table) and current
+                                        # setuptools, so it's the safe choice here.
+authors = [{name = "Jason Chueh", email = "jasoncychueh@gmail.com"}]
+keywords = ["104", "mcp", "model-context-protocol", "recruiting", "playwright", "claude"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Operating System :: OS Independent",
+  "Topic :: Software Development :: Libraries",
+]
 requires-python = ">=3.10"             # Floor is undecided, not measured against any
                                         # runtime this project still targets: the container
                                         # that used to explain this value (Python 3.10.12 on
@@ -26,6 +48,11 @@ dependencies = [
 # measured on the dev machine (ruff 0.14.7, pyflakes 3.2.0) — not tested minima. Say so
 # here rather than implying either was measured as a working lower bound.
 dev = ["pytest>=8.0.0", "pytest-asyncio>=0.24.0", "ruff>=0.14", "pyflakes>=3.2"]
+
+[project.urls]
+Homepage = "https://github.com/jasoncychueh/104mcp"
+Repository = "https://github.com/jasoncychueh/104mcp.git"
+Issues = "https://github.com/jasoncychueh/104mcp/issues"
 
 [project.scripts]
 mcp104 = "mcp104.main:run"
