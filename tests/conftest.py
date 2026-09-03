@@ -1,10 +1,14 @@
-"""Repo-wide test fixtures.
+"""Repo-wide test fixtures and shared test doubles.
 
-This file exists for exactly one reason (design.md §Testing Strategy
-"既有測試套件的處置" item 四) — do not add anything else to it. A conftest
-full of autouse fixtures makes "why does this test behave differently in
-another file" a real investigation; this one is kept to a single fixture on
-purpose.
+The autouse fixture below exists for exactly one reason (design.md
+§Testing Strategy "既有測試套件的處置" item 四) — a conftest full of
+autouse fixtures makes "why does this test behave differently in another
+file" a real investigation, so this file is kept to a single autouse
+fixture on purpose. `_SeqFetchSpy` is a plain (non-fixture, non-autouse)
+test double shared by tests/test_helpers.py and tests/test_messaging.py,
+which both drove guarded_api/guarded_sequence's scripted sub-request
+sequences through byte-for-byte identical copies of this class before it
+was consolidated here.
 
 `get_config()` now raises ConfigError when MCP104_ACCOUNT_LABEL is unset
 (config.py) — the identity value has no machine-derivable default (see that
@@ -38,3 +42,25 @@ import pytest
 def _default_identity_env(monkeypatch, tmp_path):
     monkeypatch.setenv("MCP104_ACCOUNT_LABEL", "test-account@104.example")
     monkeypatch.setenv("MCP104_DATA_DIR", str(tmp_path))
+
+
+class _SeqFetchSpy:
+    """Drives guarded_api/guarded_sequence's sub-requests with pre-scripted
+    outcomes, consumed strictly in call order. A scripted item that is a
+    BaseException instance is raised instead of returned -- the same shape a
+    real transport timeout takes when it escapes fetch() (guarded_api's
+    existing except-Exception around fetch() is what turns this into a
+    ToolAbort(kind="transport"), so raising here exercises that same path,
+    not a hand-built exception at the guard boundary).
+    """
+
+    def __init__(self, scripted):
+        self._scripted = list(scripted)
+        self.calls: list[tuple[object, object, object]] = []
+
+    async def __call__(self, endpoint, *, cookie_header, params=None, body=None):
+        self.calls.append((endpoint, params, body))
+        item = self._scripted.pop(0)
+        if isinstance(item, BaseException):
+            raise item
+        return item

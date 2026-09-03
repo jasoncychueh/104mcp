@@ -88,11 +88,15 @@ def _convert_resume_row(raw: dict) -> dict:
     idNo -> candidate_id is the single justified rename in this whole feature,
     preserving the existing candidate id space so nothing in the database changes.
     Every other field keeps its 104 name, mechanically snake_cased, never renamed.
-    pId is a SECOND, distinct identifier the row also
-    carries — returned and documented, never bridged to candidate_id: the resume/message
-    candidate_id key spaces are not known to be the same space (CLAUDE.md), and pId is a
-    third space again, of unknown relationship to either. Do not use p_id as an argument
-    to any tool that expects candidate_id.
+    pId is a SECOND, distinct identifier the row also carries — returned and
+    documented, never bridged to candidate_id: this row's candidate_id (idNo) is
+    for get_resume_detail only. p_id IS the messaging system's own pId, measured
+    (6 bit-identical samples, docs/104-site-facts.md §8.12/§8.14/§8.17), and is
+    usable directly as the candidate_id argument to send_message/send_inquiry/
+    get_conversation. The other direction (idNo -> pId) is still underived —
+    when the event route needs an idNo, send_inquiry resolves it itself via a
+    separate, measured p_id -> idNo bridge (a dedicated lookup, not a derivation
+    from idNo).
     """
     picked = {k: v for k, v in raw.items() if k in _RESUME_ROW_FIELDS}
     converted = _convert(picked)

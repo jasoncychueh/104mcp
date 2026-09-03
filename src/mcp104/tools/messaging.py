@@ -336,9 +336,9 @@ _TEMPLATE_ROW_ALLOWED_FIELDS = frozenset({"id", "title", "description", "typeId"
 
 def _convert_template_row(raw: dict) -> dict:
     """One row from list_templates -> the tool-facing dict, allow-listed to the
-    five measured keys (§Data Models). `description` is already the complete
-    letter body (51-307 characters measured) — there is no separate detail
-    fetch this project performs."""
+    five measured keys (`id`, `title`, `description`, `typeId`, `typeDesc`).
+    `description` is already the complete letter body (51-307 characters
+    measured) — there is no separate detail fetch this project performs."""
     picked = {k: v for k, v in raw.items() if k in _TEMPLATE_ROW_ALLOWED_FIELDS}
     return _convert(picked)
 
@@ -373,7 +373,7 @@ def _build_template_list_response(envelope: object) -> dict:
     }
 
 
-# ── send_inquiry: the event/willingness send body (§Data Models) ────────
+# ── send_inquiry: the event/willingness send body ───────────────────────
 
 # The wire key set is measured verbatim [M §8.13/§8.14-1/§8.19] — every key
 # except candidate[0].idNo (the reverse bridge's value), contactJobNo (the
@@ -912,9 +912,9 @@ def register_messaging_tools(mcp: FastMCP):
                 email_cc = last_info_payload["data"]["emailCC"]
                 if not isinstance(email_cc, list):
                     # Present but not a list — the projection only checks
-                    # presence, the type check is this tool's own job
-                    # (§Error Handling 9). Aborts BEFORE the third request is
-                    # ever issued; send_attempted is still False here.
+                    # presence, the type check is this tool's own job.
+                    # Aborts BEFORE the third request is ever issued;
+                    # send_attempted is still False here.
                     raise ToolAbort(
                         {"error": "104 回應結構異常（emailCC 非陣列），可能是介面已變更，請回報"},
                         kind="malformed",
