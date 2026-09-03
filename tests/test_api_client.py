@@ -274,7 +274,7 @@ def test_classify_family_selected_by_endpoint_declaration_not_body_shape():
     # real get_resume_detail endpoint's own declared shape.
     ep_b = Endpoint(key="t46_probe_b", host="vip", path="/api/probe", method="GET", family="B",
                      extra_headers=(),
-                     family_b_shape=FamilyBShape(is_list=False, inner_key="resume"), throttle_gated=True)
+                     family_b_shape=FamilyBShape(is_list=False, inner_key="resume", sibling_keys=()), throttle_gated=True)
 
     # Correct family declared for each body: both succeed.
     assert classify(ep_a, raw_a).ok is True
@@ -318,7 +318,7 @@ def test_endpoint_construction_enforces_family_b_shape_invariant():
     with pytest.raises(ValueError):
         Endpoint(key="probe_a_with_shape", host="vip", path="/api/probe", method="GET", family="A",
                  extra_headers=(),
-                 family_b_shape=FamilyBShape(is_list=False, inner_key="resume"), throttle_gated=True)
+                 family_b_shape=FamilyBShape(is_list=False, inner_key="resume", sibling_keys=()), throttle_gated=True)
 
 
 def test_opaque_family_endpoint_classifies_a_bare_redirect_as_ok():
@@ -708,7 +708,7 @@ def test_endpoint_construction_rejects_a_method_outside_get_or_post():
     with pytest.raises(ValueError):
         Endpoint(key="probe_bad_method", host="auth", path="/bc-comm/message/{job_no}-{p_id}",
                  method="DELETE", family="B", extra_headers=(),
-                 family_b_shape=FamilyBShape(is_list=True, inner_key=None), throttle_gated=True)
+                 family_b_shape=FamilyBShape(is_list=True, inner_key=None, sibling_keys=()), throttle_gated=True)
 
 
 class _FakeAiohttpResponse:
@@ -853,6 +853,174 @@ def test_classify_family_b_404_with_only_error_key_still_behaves_as_before():
 def test_all_declared_endpoints_construct_without_error():
     # ENDPOINTS itself is built at module import time — reaching this line at all
     # already proves every entry constructs cleanly under the required fields.
-    # Ten today: five pre-existing + three messaging endpoints + the two
-    # §C8 additions (verify_session, logout_session).
-    assert len(ENDPOINTS) == 10
+    # Fourteen today: the ten pinned pre-this-round (five pre-existing + three
+    # messaging endpoints + the two §C8 additions: verify_session,
+    # logout_session) + this round's four new §C7 endpoints (list_templates,
+    # resolve_candidate_idno, event_last_info, send_willingness_event).
+    # get_template is deliberately NOT among them - see T-68.
+    assert len(ENDPOINTS) == 14
+
+
+# =========================================================================
+# T-67 (R2.1, R3.1, behavior) - the four new C7 endpoints are declared
+# exactly as the design's table states: host="auth", family="B", method,
+# path, and throttle_gated=True, item by item.
+# =========================================================================
+
+def _endpoint_by_exact_path(path: str):
+    matches = [ep for ep in ENDPOINTS.values() if ep.path == path]
+    assert len(matches) == 1, (
+        f"expected exactly one declared endpoint with path == {path!r}, "
+        f"found {matches!r}"
+    )
+    return matches[0]
+
+
+# (path, method, is_list, inner_key, sibling_keys) - C7's table verbatim.
+_NEW_C7_ENDPOINTS = [
+    ("/bc-comm/template", "GET", True, None, ()),
+    ("/bc-comm/message/resume/{job_no}-{p_id}", "GET", False, "idNo", ()),
+    ("/bc-comm/event/last-info", "GET", False, None, ()),
+    ("/bc-comm/event/willingness", "POST", True, None, ("failed",)),
+]
+
+
+def test_the_four_new_c7_endpoints_are_declared_exactly_per_the_table():
+    for path, method, is_list, inner_key, sibling_keys in _NEW_C7_ENDPOINTS:
+        ep = _endpoint_by_exact_path(path)
+        assert ep.host == "auth", f"{path}: expected host=auth, got {ep.host!r}"
+        assert ep.family == "B", f"{path}: expected family=B, got {ep.family!r}"
+        assert ep.method == method, f"{path}: expected method={method!r}, got {ep.method!r}"
+        assert ep.throttle_gated is True, f"{path}: expected throttle_gated=True"
+        assert ep.family_b_shape is not None, f"{path}: expected a family_b_shape"
+        assert ep.family_b_shape.is_list == is_list, (
+            f"{path}: expected is_list={is_list!r}, got {ep.family_b_shape.is_list!r}"
+        )
+        assert ep.family_b_shape.inner_key == inner_key, (
+            f"{path}: expected inner_key={inner_key!r}, got {ep.family_b_shape.inner_key!r}"
+        )
+        assert tuple(ep.family_b_shape.sibling_keys) == sibling_keys, (
+            f"{path}: expected sibling_keys={sibling_keys!r}, "
+            f"got {ep.family_b_shape.sibling_keys!r}"
+        )
+
+
+# =========================================================================
+# T-68 (R2.5, behavior) - get_template is deliberately NOT declared: C7
+# says no caller ever needs a single-template fetch. Distinct from the
+# housekeeping len(ENDPOINTS) == 14 update above.
+# =========================================================================
+
+def test_get_template_endpoint_is_not_declared():
+    assert not any(
+        ep.path == "/bc-comm/template/{id}" for ep in ENDPOINTS.values()
+    ), "get_template (GET /bc-comm/template/{id}) must not be registered - C7"
+
+
+# =========================================================================
+# T-69 (api_client.classify, interface) - sibling_keys copy semantics:
+# declared+present -> copied into payload; declared+absent -> absent from
+# payload (never None); never-declared top-level key -> never copied.
+# =========================================================================
+
+def test_classify_copies_declared_sibling_keys_only_when_present_and_never_undeclared_ones():
+    ep = Endpoint(
+        key="t69_probe", host="auth", path="/api/probe", method="POST", family="B",
+        extra_headers=(),
+        family_b_shape=FamilyBShape(is_list=True, inner_key=None, sibling_keys=("failed",)),
+        throttle_gated=True,
+    )
+
+    # Case 1: the declared sibling key ("failed") is present -> copied verbatim.
+    body_present = {"data": [{"eventId": "SYNTHETIC-EVENT-1"}], "metadata": {}, "failed": ["x"]}
+    raw_present = _raw(200, "application/json; charset=utf-8",
+                        json.dumps(body_present, ensure_ascii=False), body_present)
+    verdict_present = classify(ep, raw_present)
+    assert verdict_present.ok is True
+    assert verdict_present.payload is not None
+    assert verdict_present.payload.get("failed") == ["x"]
+
+    # Case 2: the declared sibling key is absent -> must not appear at all,
+    # and in particular must never be synthesized as None.
+    body_absent = {"data": [{"eventId": "SYNTHETIC-EVENT-2"}], "metadata": {}}
+    raw_absent = _raw(200, "application/json; charset=utf-8",
+                       json.dumps(body_absent, ensure_ascii=False), body_absent)
+    verdict_absent = classify(ep, raw_absent)
+    assert verdict_absent.ok is True
+    assert verdict_absent.payload is not None
+    assert "failed" not in verdict_absent.payload, (
+        "an absent declared sibling key must be OMITTED from payload, not filled with None"
+    )
+
+    # Case 3: an undeclared top-level key ("extra") must never be copied,
+    # even though it sits right alongside data/metadata in the envelope.
+    body_undeclared = {
+        "data": [{"eventId": "SYNTHETIC-EVENT-3"}], "metadata": {},
+        "extra": "SYNTHETIC-SHOULD-NOT-LEAK",
+    }
+    raw_undeclared = _raw(200, "application/json; charset=utf-8",
+                           json.dumps(body_undeclared, ensure_ascii=False), body_undeclared)
+    verdict_undeclared = classify(ep, raw_undeclared)
+    assert verdict_undeclared.ok is True
+    assert verdict_undeclared.payload is not None
+    assert "extra" not in verdict_undeclared.payload
+
+
+# =========================================================================
+# T-70 (api_client.FamilyBShape, interface) - declaring "data" or "metadata"
+# as a sibling key is a __post_init__ construction error: those two keys
+# already have their own extraction path (is_list/inner_key), so letting
+# them in as siblings too would give each a second route into payload.
+# =========================================================================
+
+def test_family_b_shape_rejects_data_or_metadata_as_a_sibling_key():
+    with pytest.raises(Exception):
+        FamilyBShape(is_list=True, inner_key=None, sibling_keys=("data",))
+
+    with pytest.raises(Exception):
+        FamilyBShape(is_list=True, inner_key=None, sibling_keys=("metadata",))
+
+
+# =========================================================================
+# T-71 (R2.6, behavior) - resolve_candidate_idno's response body missing
+# idNo is judged malformed by classify()'s inner_key floor, at the
+# transport layer, before any tool-level code ever sees it.
+# =========================================================================
+
+def test_resolve_candidate_idno_response_missing_idno_classifies_as_malformed():
+    ep = Endpoint(
+        key="t71_probe_resolve_candidate_idno", host="auth",
+        path="/bc-comm/message/resume/{job_no}-{p_id}", method="GET", family="B",
+        extra_headers=(),
+        family_b_shape=FamilyBShape(is_list=False, inner_key="idNo", sibling_keys=()),
+        throttle_gated=True,
+    )
+    body = {"data": {}, "metadata": {}}  # data present, but idNo missing entirely
+    raw = _raw(200, "application/json; charset=utf-8", json.dumps(body, ensure_ascii=False), body)
+
+    verdict = classify(ep, raw)
+
+    assert verdict.ok is False
+    assert verdict.kind == "malformed"
+
+
+# =========================================================================
+# T-72 (api_client.classify, interface) - a failed verdict (ok=False) never
+# gets a payload assembled, even when the response body carries a declared
+# sibling key.
+# =========================================================================
+
+def test_classify_does_not_assemble_payload_for_a_failed_verdict_even_with_a_sibling_key_present():
+    ep = Endpoint(
+        key="t72_probe", host="auth", path="/api/probe", method="POST", family="B",
+        extra_headers=(),
+        family_b_shape=FamilyBShape(is_list=True, inner_key=None, sibling_keys=("failed",)),
+        throttle_gated=True,
+    )
+    body = {"error": "SYNTHETIC-NOT-FOUND", "failed": ["SYNTHETIC-SHOULD-NOT-LEAK"]}
+    raw = _raw(404, "application/json; charset=utf-8", json.dumps(body, ensure_ascii=False), body)
+
+    verdict = classify(ep, raw)
+
+    assert verdict.ok is False
+    assert verdict.payload is None

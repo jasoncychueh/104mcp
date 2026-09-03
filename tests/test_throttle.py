@@ -692,3 +692,209 @@ async def test_resting_until_does_not_carry_over_a_partial_remainder_across_runs
     # previous process may have already been serving - there is nothing to
     # resume from, because resting_until never crossed the process boundary.
     assert result.payload["retry_after_seconds"] == pytest.approx(rest_minutes * 60, rel=0.05)
+
+
+# =========================================================================
+# T-17 (R6.2, behavior) - sequence reservation: the retry-after value names
+# the N-th-oldest expiring entry, not the oldest and not the (N+1)-th.
+# =========================================================================
+
+@pytest.mark.asyncio
+async def test_slots_needed_reservation_names_the_nth_oldest_expiring_entry_not_the_oldest_or_third(
+    tmp_path,
+):
+    # Window holds 299 entries, cap is 300, slots_needed=3:
+    # 299 + 3 - 300 = 2, so the wait must be until the *2nd*-oldest entry
+    # expires - not the 1st-oldest (5s away) and not the 3rd-oldest (15s away).
+    t0 = 2_000_000.0
+    oldest = t0 - 3595   # expires at t0 + 5
+    second_oldest = t0 - 3590   # expires at t0 + 10
+    third_oldest = t0 - 3585   # expires at t0 + 15
+    # The remaining 296 entries are comfortably mid-window (not near expiry,
+    # and old enough that they don't engage the separate interval floor).
+    filler = t0 - 100
+
+    path = tmp_path / "throttle.log"
+    lines = [str(oldest), str(second_oldest), str(third_oldest)] + [str(filler)] * 296
+    path.write_text("\n".join(lines) + "\n")
+    assert len(lines) == 299
+
+    state = ThrottleState()
+    result = await enforce_throttle(
+        state,
+        path=path,
+        now_fn=lambda: t0,
+        min_call_interval_seconds=0.01,
+        max_requests_per_hour=300,
+        max_inline_wait_seconds=20,
+        activity_streak_limit_minutes=1000,
+        rest_duration_minutes=1,
+        slots_needed=3,
+    )
+
+    assert result is not None
+    assert isinstance(result, ThrottleAbort)
+    assert result.kind == "throttled"
+    assert result.payload is not None
+    retry_after = result.payload["retry_after_seconds"]
+    assert retry_after == pytest.approx(10, abs=1), (
+        f"expected the wait until the 2nd-oldest entry expires (~10s), got {retry_after}"
+    )
+    assert retry_after != pytest.approx(5, abs=1), "must not be the oldest entry's expiry"
+    assert retry_after != pytest.approx(15, abs=1), "must not be the 3rd-oldest entry's expiry"
+
+
+# =========================================================================
+# T-63 (R6.7, behavior) - omitting slots_needed reproduces the prior,
+# single-slot decisions across a normal / near-cap / over-cap / rest set of
+# scenarios, bit-for-bit with what this file already pinned pre-feature.
+# =========================================================================
+
+def test_omitting_slots_needed_reproduces_prior_evaluate_decisions_across_scenarios():
+    now = 1_500_000.0
+
+    # Normal: comfortably clear of both the interval floor and the cap.
+    normal_state = ThrottleState(last_call_finished_at=now - _MIN_CALL_INTERVAL_SECONDS - 1)
+    normal = _evaluate(normal_state, now=now)  # slots_needed not passed at all
+    assert normal.proceed is True
+
+    # Near cap: exactly one free slot - a single-slot call still proceeds.
+    near_cap_state = ThrottleState()
+    for _ in range(_MAX_REQUESTS_PER_HOUR - 1):
+        near_cap_state.request_timestamps.append(now)
+    near_cap = _evaluate(near_cap_state, now=now)
+    assert near_cap.proceed is True
+
+    # Over cap: window is exactly full - a single-slot call is refused.
+    over_cap_state = ThrottleState()
+    for _ in range(_MAX_REQUESTS_PER_HOUR):
+        over_cap_state.request_timestamps.append(now)
+    over_cap = _evaluate(over_cap_state, now=now)
+    assert over_cap.proceed is False
+    assert over_cap.reason == "budget"
+
+    # Forced rest period, still active.
+    rest_state = ThrottleState(
+        last_call_finished_at=now - 10,
+        last_action_at=now - 10,
+        activity_streak_start=now - _ACTIVITY_STREAK_LIMIT_SECONDS,
+    )
+    rest = _evaluate(rest_state, now=now)
+    assert rest.proceed is False
+    assert rest.reason == "rest"
+
+
+@pytest.mark.asyncio
+async def test_omitting_slots_needed_reproduces_prior_enforce_throttle_decisions(
+    monkeypatch, tmp_path,
+):
+    sleep_calls: list[float] = []
+
+    async def fake_sleep(seconds):
+        sleep_calls.append(seconds)
+
+    monkeypatch.setattr("mcp104.browser.throttle._sleep", fake_sleep)
+
+    # Over cap via the persisted state file (T-101 sourcing).
+    t0 = 1_000_000.0
+    over_cap_path = tmp_path / "throttle_over_cap.log"
+    over_cap_path.write_text("\n".join(str(t0) for _ in range(_MAX_REQUESTS_PER_HOUR)) + "\n")
+    over_cap_result = await _enforce(ThrottleState(), now_fn=lambda: t0 + 10, path=over_cap_path)
+
+    assert over_cap_result is not None
+    assert over_cap_result.kind == "throttled"
+    assert over_cap_result.payload["retry_after_seconds"] > 0
+
+    # Forced rest period, still active.
+    now = 1_000_000.0
+    rest_path = tmp_path / "throttle_rest.log"
+    rest_state = ThrottleState(
+        last_call_finished_at=now - 10,
+        last_action_at=now - 10,
+        activity_streak_start=now - _ACTIVITY_STREAK_LIMIT_SECONDS,
+    )
+    rest_result = await _enforce(rest_state, now_fn=lambda: now, path=rest_path)
+
+    assert rest_result is not None
+    assert rest_result.kind == "throttled"
+    assert rest_result.payload["retry_after_seconds"] == pytest.approx(_REST_DURATION_SECONDS)
+
+
+# =========================================================================
+# T-64 (throttle.evaluate, interface) - slots_needed checks "are there N
+# free slots", not merely "is there room for one more".
+# =========================================================================
+
+def test_evaluate_slots_needed_checks_for_n_free_slots_not_just_one():
+    now = 1_600_000.0
+    # Exactly one slot free: max - 1 entries already in the window.
+    state = ThrottleState()
+    for _ in range(_MAX_REQUESTS_PER_HOUR - 1):
+        state.request_timestamps.append(now)
+
+    one_slot = evaluate(
+        state, now=now, slots_needed=1,
+        min_call_interval_seconds=_MIN_CALL_INTERVAL_SECONDS,
+        max_requests_per_hour=_MAX_REQUESTS_PER_HOUR,
+        max_inline_wait_seconds=_MAX_INLINE_WAIT_SECONDS,
+        activity_streak_limit_seconds=_ACTIVITY_STREAK_LIMIT_SECONDS,
+        rest_duration_seconds=_REST_DURATION_SECONDS,
+    )
+    assert one_slot.proceed is True
+
+    two_slots = evaluate(
+        state, now=now, slots_needed=2,
+        min_call_interval_seconds=_MIN_CALL_INTERVAL_SECONDS,
+        max_requests_per_hour=_MAX_REQUESTS_PER_HOUR,
+        max_inline_wait_seconds=_MAX_INLINE_WAIT_SECONDS,
+        activity_streak_limit_seconds=_ACTIVITY_STREAK_LIMIT_SECONDS,
+        rest_duration_seconds=_REST_DURATION_SECONDS,
+    )
+    assert two_slots.proceed is False
+    assert two_slots.reason == "budget"
+
+
+# =========================================================================
+# T-65 (throttle.enforce_throttle, interface) - slots_needed larger than the
+# hourly cap is a caller configuration error: enforce_throttle must return
+# (never raise) ThrottleAbort(kind="internal_config") *before* calling
+# evaluate() at all, with no index-out-of-range exception anywhere.
+# =========================================================================
+
+@pytest.mark.asyncio
+async def test_enforce_throttle_rejects_slots_needed_over_cap_without_calling_evaluate(
+    monkeypatch, tmp_path,
+):
+    import mcp104.browser.throttle as throttle_mod
+
+    def evaluate_must_not_be_called(*args, **kwargs):
+        raise AssertionError(
+            "evaluate() must not be called when slots_needed exceeds max_requests_per_hour"
+        )
+
+    monkeypatch.setattr(throttle_mod, "evaluate", evaluate_must_not_be_called)
+
+    slots_needed = _MAX_REQUESTS_PER_HOUR + 1
+
+    # Must not raise (in particular, no IndexError from trying to locate an
+    # "Nth-oldest" entry that can't exist) - reaching the asserts below is
+    # itself part of what this case is pinning.
+    result = await _enforce(
+        ThrottleState(),
+        now_fn=lambda: time.time(),
+        path=tmp_path / "throttle.log",
+        slots_needed=slots_needed,
+    )
+
+    assert result is not None
+    assert isinstance(result, ThrottleAbort)
+    assert result.kind == "internal_config"
+    assert result.payload is None
+    assert result.detail != ""
+    assert str(slots_needed) in result.detail, (
+        f"detail should name slots_needed ({slots_needed}); got: {result.detail!r}"
+    )
+    assert str(_MAX_REQUESTS_PER_HOUR) in result.detail, (
+        f"detail should name max_requests_per_hour ({_MAX_REQUESTS_PER_HOUR}); "
+        f"got: {result.detail!r}"
+    )
