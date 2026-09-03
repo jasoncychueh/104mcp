@@ -28,6 +28,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.conftest import require_private_artifact
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -87,8 +89,7 @@ def test_mcp_json_registers_stdio_with_no_http_endpoint():
     """T-41 (R8.6): this repo's own client registration (.mcp.json) is a
     stdio-form registration and contains no HTTP endpoint — the transport
     change away from streamable-http must be reflected here."""
-    mcp_json_path = REPO_ROOT / ".mcp.json"
-    assert mcp_json_path.exists(), ".mcp.json must exist at repo root"
+    mcp_json_path = require_private_artifact(".mcp.json")
     config = json.loads(mcp_json_path.read_text(encoding="utf-8"))
 
     servers = config.get("mcpServers", config)

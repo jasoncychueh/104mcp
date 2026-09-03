@@ -38,7 +38,7 @@ from mcp104.browser.throttle import ThrottleAbort
 from mcp104.config import get_config
 from mcp104.db.database import Database
 from mcp104.tools.helpers import GuardAbort, get_session_id
-from tests.conftest import _SeqFetchSpy
+from tests.conftest import _SeqFetchSpy, require_private_artifact
 from mcp104.tools.messaging import (
     NOT_SENT,
     _convert_inbox_row,
@@ -63,7 +63,12 @@ def _load(name: str):
 
 
 def _messaging_contract() -> dict:
-    return json.loads((RESULTS_DIR / "messaging_contract.json").read_text(encoding="utf-8"))
+    # research/results/messaging_contract.json is a maintainer-only sweep
+    # excluded from the public open-source snapshot -- see
+    # tests/conftest.py's require_private_artifact. Every caller of this
+    # helper is a contract check with nothing to check without it.
+    path = require_private_artifact("research/results/messaging_contract.json")
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 # ── Synthetic inbox rows — the measured 19 field names [M §6b.7, §6b.8-1] ───────────

@@ -49,6 +49,8 @@ from mcp104.tools.messaging import register_messaging_tools
 from mcp104.tools.search import register_search_tools
 from mcp104.tools.status import register_status_tools
 
+from tests.conftest import require_private_artifact
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CLAUDE_MD_PATH = REPO_ROOT / "CLAUDE.md"
 
@@ -57,7 +59,11 @@ _SEPARATOR_CELL = re.compile(r":?-+:?")
 
 
 def _claude_md_text() -> str:
-    return CLAUDE_MD_PATH.read_text(encoding="utf-8")
+    # CLAUDE.md is a maintainer-only artifact excluded from the public
+    # open-source snapshot -- see tests/conftest.py's
+    # require_private_artifact. Every caller of this helper is a contract
+    # check with nothing to check without it.
+    return require_private_artifact("CLAUDE.md").read_text(encoding="utf-8")
 
 
 def _comment_paragraphs(markdown: str) -> list[str]:
@@ -943,7 +949,7 @@ def test_mcp_json_104_mcp_entry_carries_120000ms_timeout():
     """T-79: the `104-mcp` server entry in .mcp.json must set
     `"timeout": 120000` (120s) -- headroom over send_inquiry's ~50s worst case
     (the one path that issues three requests in a single tool call)."""
-    mcp_json_path = REPO_ROOT / ".mcp.json"
+    mcp_json_path = require_private_artifact(".mcp.json")
     data = json.loads(mcp_json_path.read_text(encoding="utf-8"))
     servers = data.get("mcpServers", {})
     assert "104-mcp" in servers, (

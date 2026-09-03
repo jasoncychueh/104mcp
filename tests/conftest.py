@@ -35,13 +35,37 @@ happens to construct a real Config (rather than mocking one) does not touch
 this machine's actual per-user data directory.
 """
 
+from pathlib import Path
+
 import pytest
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 @pytest.fixture(autouse=True)
 def _default_identity_env(monkeypatch, tmp_path):
     monkeypatch.setenv("MCP104_ACCOUNT_LABEL", "test-account@104.example")
     monkeypatch.setenv("MCP104_DATA_DIR", str(tmp_path))
+
+
+def require_private_artifact(rel_path: str) -> Path:
+    """Return REPO_ROOT/rel_path, or skip the calling test when it is absent.
+
+    Several contract tests check maintainer-only artifacts (CLAUDE.md,
+    .mcp.json, docs/, research/) against this repo's own source -- files the
+    public open-source snapshot deliberately excludes (see the maintainer's
+    export step). Those tests have nothing to check without the file; this
+    turns their absence into an explicit, named skip instead of a
+    FileNotFoundError, so a public-snapshot test run reports "not part of
+    this release" rather than looking like a broken test suite.
+    """
+    path = REPO_ROOT / rel_path
+    if not path.exists():
+        pytest.skip(
+            f"maintainer-only contract check: {rel_path} is not part of the "
+            "public release"
+        )
+    return path
 
 
 class _SeqFetchSpy:
