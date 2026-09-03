@@ -251,15 +251,9 @@ TOOLS, TOOL_DESCRIPTIONS = _register_tools()
 read_messages = TOOLS["read_messages"]
 get_conversation = TOOLS["get_conversation"]
 send_message = TOOLS["send_message"]
-# send_inquiry / list_templates are new this phase (design.md §C2/§C3) and may
-# not exist yet while spec-implementer is still writing tools/messaging.py —
-# indexing with TOOLS[...] would KeyError at IMPORT TIME and crash collection
-# of this whole file. .get(...) instead: a case that calls one of these
-# before it exists gets an ordinary (expected, Mode 1) TypeError at the
-# `await None(...)` call site, not a collection-time crash.
-send_inquiry = TOOLS.get("send_inquiry")
-list_templates = TOOLS.get("list_templates")
-check_already_contacted = TOOLS.get("check_already_contacted")
+send_inquiry = TOOLS["send_inquiry"]
+list_templates = TOOLS["list_templates"]
+check_already_contacted = TOOLS["check_already_contacted"]
 
 
 _OPENED_DATABASES: list[Database] = []
@@ -1138,13 +1132,13 @@ def test_no_endpoint_declares_a_method_outside_get_or_post():
 
 
 # ═════════════════════════════════════════════════════════════════════════════════
-# outbound-contact (design.md §C1-§C4) — T-1..T-16, T-18..T-54
+# outbound-contact — T-1..T-16, T-18..T-54
 #
 # Success envelope, synthetic values only (Test Approach): a candidate never
 # named search_resumes/get_resume_detail/read_messages, a letter body that is
 # obviously not real, an emailCC that is obviously not a real recruiter
-# address. §C4's five-shape table and the send_inquiry request sequence
-# (§C2) are exercised end to end through the real classify()/guarded_api/
+# address. The five-shape response table and the send_inquiry request
+# sequence are exercised end to end through the real classify()/guarded_api/
 # guarded_sequence — never by hand-building a verdict or a GuardAbort.
 # ═════════════════════════════════════════════════════════════════════════════════
 
@@ -1207,7 +1201,7 @@ _LAST_INFO_EMPTY_CC = _raw_from_body({"data": {"emailCC": []}, "metadata": {}})
 def _inquiry_script(event_id: str = "evt-syn-0001", emailcc=None) -> list:
     """A full, successful 3-response send_inquiry script: resolve -> last-info
     -> success envelope. `emailcc` defaults to [] (the measured "no CC"
-    shape, still a present key — §C2)."""
+    shape, still a present key)."""
     return [
         _RESOLVE_IDNO_OK,
         _raw_from_body({"data": {"emailCC": emailcc if emailcc is not None else []}, "metadata": {}}),
@@ -1215,7 +1209,7 @@ def _inquiry_script(event_id: str = "evt-syn-0001", emailcc=None) -> list:
     ]
 
 
-# ── send_message (§C1) — T-1..T-11 ───────────────────────────────────────────────
+# ── send_message — T-1..T-11 ────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
 async def test_T1_send_message_succeeds_against_a_never_before_seen_candidate(tmp_path, monkeypatch):
@@ -1366,7 +1360,7 @@ async def test_T11_send_message_not_sent_group_unchanged_from_before_this_round(
         assert await db.get_daily_sent_count(info.account_label) == 0, label
 
 
-# ── send_inquiry (§C2) — T-12..T-41 ──────────────────────────────────────────────
+# ── send_inquiry — T-12..T-41 ───────────────────────────────────────────────────
 
 @pytest.mark.asyncio
 async def test_T12_send_inquiry_issues_the_three_subrequests_in_fixed_order(tmp_path, monkeypatch):
@@ -1954,7 +1948,7 @@ async def test_T49_sent_log_rows_read_back_with_message_id_source_for_both_tools
     assert [r[0] for r in rows2] == ["message"]
 
 
-# ── list_templates (§C3) — T-50..T-54 ────────────────────────────────────────────
+# ── list_templates — T-50..T-54 ─────────────────────────────────────────────────
 
 _TEMPLATE_ROW_A = {
     "id": "tpl-syn-1", "title": "詢問意願-合成範本A", "description": "測試範本內容-合成A",

@@ -750,11 +750,10 @@ _POSITIVE_WARNING_ZH = "會立刻送到一位真實求職者手上"
 
 
 def test_search_resumes_description_keeps_at_least_100_chars_headroom():
-    """T-77 (R8.1): search_resumes is design.md's §C8 budget table's one
-    perpetually-tight description (121 chars headroom as of the outbound-contact
-    design) -- it must clear the >=100-char headroom bar on its own, not merely
-    survive as part of the whole-registry sweep the budget test above already
-    runs."""
+    """T-77 (R8.1): search_resumes is the budget table's one perpetually-tight
+    description (121 chars headroom as of the outbound-contact design) -- it
+    must clear the >=100-char headroom bar on its own, not merely survive as
+    part of the whole-registry sweep the budget test above already runs."""
     descriptions = _all_tool_descriptions()
     assert "search_resumes" in descriptions, "sanity: search_resumes not registered"
     length = len(descriptions["search_resumes"])
@@ -762,10 +761,9 @@ def test_search_resumes_description_keeps_at_least_100_chars_headroom():
     assert headroom >= _TOOL_DESCRIPTION_HEADROOM, (
         f"search_resumes must keep at least {_TOOL_DESCRIPTION_HEADROOM} chars of "
         f"headroom under the {_TOOL_DESCRIPTION_CHAR_BUDGET}-char budget -- got "
-        f"{length} chars, {headroom} headroom (design.md §C8: this is the one "
-        f"description with essentially no slack, so any future addition to a "
-        f"constant it references -- e.g. SECOND_IDENTIFIER_NOTE -- risks pushing "
-        f"it over)"
+        f"{length} chars, {headroom} headroom (this is the one description with "
+        f"essentially no slack, so any future addition to a constant it "
+        f"references -- e.g. SECOND_IDENTIFIER_NOTE -- risks pushing it over)"
     )
 
 
@@ -832,7 +830,7 @@ def test_claude_md_documents_send_inquiry_and_list_templates_and_matches_registe
 
 
 # code -> Traditional-Chinese label, the six measured template categories
-# (design.md §C8 / requirements.md R3.7, wire-confirmed via PUT, §8.15/§8.17).
+# (wire-confirmed via PUT, §8.15/§8.17).
 _TEMPLATE_CATEGORIES_ZH = {
     "1": "詢問意願",
     "2": "邀約面試",
@@ -900,16 +898,18 @@ def _has_timeout_guidance(text: str) -> bool:
     return all(marker in text for marker in _TIMEOUT_GUIDANCE_MARKERS)
 
 
-def test_timeout_after_guidance_appears_in_both_send_inquiry_description_and_claude_md():
+@pytest.mark.parametrize("tool_name", ["send_message", "send_inquiry"])
+def test_timeout_after_guidance_appears_in_both_send_inquiry_description_and_claude_md(tool_name):
     """T-79 (R8.7): the post-timeout instruction (check the back office or
     read_messages to confirm; do not resend) must be readable from EITHER the
-    send_inquiry tool description or CLAUDE.md alone -- R8.7 requires both, not
-    either-or."""
+    tool description or CLAUDE.md alone -- R8.7 requires both, not either-or --
+    and the guidance is documented for both send_message and send_inquiry, not
+    just send_inquiry."""
     descriptions = _all_tool_descriptions()
-    assert "send_inquiry" in descriptions, "sanity: send_inquiry not registered"
-    desc = _normalize_ws(descriptions["send_inquiry"])
+    assert tool_name in descriptions, f"sanity: {tool_name} not registered"
+    desc = _normalize_ws(descriptions[tool_name])
     assert _has_timeout_guidance(desc), (
-        f"send_inquiry's description must carry the post-timeout guidance "
+        f"{tool_name}'s description must carry the post-timeout guidance "
         f"(mentions read_messages and tells the caller not to resend, R8.7) -- "
         f"got: {desc!r}"
     )

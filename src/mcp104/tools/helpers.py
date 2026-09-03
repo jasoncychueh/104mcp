@@ -341,16 +341,16 @@ async def _issue_one(
     """Issue exactly ONE HTTP request against `endpoint` and return its
     payload, or raise a GuardAbort subclass. This is the one unit both
     guarded_api (one request per tool call) and guarded_sequence (N
-    requests, one call each) run — see the module's own §C5 design note:
-    "多一條守衛路徑" is a real risk, and having both entry points call the
-    SAME function, rather than two copies that happen to agree today, is
-    the only mitigation that stays true after the next edit.
+    requests, one call each) run — an extra guard path ("多一條守衛路徑")
+    is a real risk, and having both entry points call the SAME function,
+    rather than two copies that happen to agree today, is the only
+    mitigation that stays true after the next edit.
 
     method/body check -> select cookie -> fetch (note_request in
     `finally`) -> Cloudflare challenge screen -> auth-host redirect check
     -> classify() -> info.has_succeeded_api_call = True -> return
     verdict.payload. Every step here is verbatim what guarded_api used to
-    do inline; moving it here changes no observable behaviour (see T-61).
+    do inline; moving it here changes no observable behaviour.
 
     Every failure-path log statement below names only the endpoint key,
     the HTTP status code (once a response exists to have one), and 104's
@@ -361,7 +361,7 @@ async def _issue_one(
     That is this function's own property, not a discipline each call site
     has to remember: both guarded_api and guarded_sequence route every
     request through here, so a log line written once, here, is the whole
-    guarantee (requirements.md R7.3/R7.4; see T-81).
+    guarantee.
 
     `body` is forwarded to fetch() unchanged. The method/body mismatch
     check below (a body handed to a GET endpoint, or a POST endpoint
@@ -404,7 +404,7 @@ async def _issue_one(
     # is — a route exempt from the judgment gate is still a real request
     # against 104 and still belongs in the rolling-window volume count
     # and the inter-call pacing anchor. Called once per sub-request in a
-    # guarded_sequence burst, not once per tool call (T-60).
+    # guarded_sequence burst, not once per tool call.
     try:
         raw = await fetch(endpoint, cookie_header=cookie_header, params=params, body=body)
     except Exception as exc:
@@ -496,8 +496,8 @@ def _project_field(which: str, obj: object, keys: tuple[str, ...] | None) -> dic
 
     `()` means "keep nothing" and short-circuits before even asking
     whether `obj` is a dict — an empty pick is a valid, meaningful
-    request regardless of what shape sits underneath (§C5: "()  = 這一半
-    一個鍵都不留"). A non-empty pick against a non-dict `obj` (metadata
+    request regardless of what shape sits underneath ("()" means "keep
+    nothing for this half"). A non-empty pick against a non-dict `obj` (metadata
     absent from the envelope entirely, e.g.) is treated the same as
     "named key missing" — there is nothing under `which` for any key to
     live in.
@@ -505,7 +505,7 @@ def _project_field(which: str, obj: object, keys: tuple[str, ...] | None) -> dic
     if not keys:
         return {}
     if not isinstance(obj, dict):
-        raise ToolAbort(_error_malformed(f"{which}.{keys[0]} missing"), kind="malformed")
+        raise ToolAbort(_error_malformed(f"{which} missing or not an object (cannot project {keys[0]})"), kind="malformed")
     projected: dict = {}
     for key in keys:
         if key not in obj:
@@ -523,15 +523,21 @@ def _project_payload(
     all" — the caller never reaches this function in that case (see
     guarded_sequence's `request()`); this function only runs once at
     least one of them is not None, and each half is projected
-    independently. Top-level keys other than `data`/`metadata` (a
+    independently — a half whose own pick_* is `None` is left untouched
+    (still whatever `payload` already carried for it), not wiped to `{}`;
+    only a half whose pick_* is an explicit tuple (`()` included) is
+    projected. Top-level keys other than `data`/`metadata` (a
     FamilyBShape's sibling_keys, e.g. `failed`) are carried through
     unfiltered — request()'s two pick_* parameters name only these two
-    halves, deliberately (§C5: "信封本來就是兩個並列的鍵"), so there is no
-    third parameter asking this function to touch anything else.
+    halves, deliberately (信封本來就是兩個並列的鍵 — the envelope is
+    inherently two parallel keys), so there is no third parameter asking
+    this function to touch anything else.
     """
     projected = dict(payload)
-    projected["data"] = _project_field("data", payload.get("data"), pick_data)
-    projected["metadata"] = _project_field("metadata", payload.get("metadata"), pick_metadata)
+    if pick_data is not None:
+        projected["data"] = _project_field("data", payload.get("data"), pick_data)
+    if pick_metadata is not None:
+        projected["metadata"] = _project_field("metadata", payload.get("metadata"), pick_metadata)
     return projected
 
 
@@ -573,9 +579,9 @@ async def guarded_api(
     selection, fetch, challenge/redirect/classify) lives in `_issue_one`
     now, shared with guarded_sequence below — this function's own job is
     reduced to session resolution, the lock, the throttle gate, and the
-    before_request hook, in that order, exactly as before (§C5; T-61: this
-    refactor changes no observable behaviour of any of the eight existing
-    call sites — signature and yield shape are unchanged).
+    before_request hook, in that order, exactly as before (this refactor
+    changes no observable behaviour of any of the existing call sites —
+    signature and yield shape are unchanged).
     """
     app = ctx.request_context.lifespan_context
     info = await resolve_session(ctx)
@@ -640,7 +646,7 @@ async def guarded_sequence(
     """The multi-request counterpart to guarded_api — same lock, same
     throttle gate, same `_issue_one` per sub-request, but ONE lock hold
     and ONE throttle-gate check for the whole sequence rather than one
-    each per sub-request (§C5; T-55). Used today by exactly one caller
+    each per sub-request. Used today by exactly one caller
     (tools/messaging.py's send_inquiry, three sub-requests), but nothing
     here is send_inquiry-specific — the sequence length is entirely the
     caller's business (see `slots_needed` below).
@@ -652,8 +658,8 @@ async def guarded_sequence(
     `slots_needed` is forwarded to `enforce_throttle` VERBATIM — this
     function never inspects, rewrites, or defaults it beyond the type
     itself; how many requests a sequence needs is the calling tool's own
-    fact, not something the guard should know or guess (§C5: "helpers.py
-    裡不得出現 3 這個數字"; T-62).
+    fact, not something the guard should know or guess (helpers.py 裡不得
+    出現 3 這個數字 — no literal 3 may appear in this file).
 
     `before_first` runs once, after the throttle gate and before the
     first sub-request — the sequence-level analogue of guarded_api's
@@ -665,24 +671,23 @@ async def guarded_sequence(
     A sub-request that fails raises straight out of `request()` — no
     `except` here catches it, so it propagates out of this
     asynccontextmanager, the `async with info.lock:` block exits (lock
-    released), and no further sub-request is issued (T-56).
+    released), and no further sub-request is issued.
 
     `request()`'s pick_data/pick_metadata are the projection mechanism —
-    see `_project_payload`/`_project_field` above and this file's module
-    docstring reference to §C5 for the None-vs-() distinction: `None`
-    (the default for both) means no projection at all, the SAME full
-    envelope guarded_api has always yielded (T-57 case b/c); a
-    non-`None` value projects that half down to exactly the named keys,
-    raising ToolAbort(kind="malformed") — sharing `_error_malformed`,
-    classify()'s own inner_key floor's payload, so this needs no new
-    handler at any call site's `except GuardAbort` (T-59) — the instant a
-    named key turns out absent. Projection is refused up front, before
-    `_issue_one` (and therefore before fetch()'s own try/except) is ever
-    reached, for an endpoint whose family_b_shape is `is_list=True` (its
-    `data` is a list with no keys to pick from) or has no family_b_shape
-    at all — ToolAbort(kind="internal_config"), the same "this is a
-    program bug, please report it" family guarded_api already uses for a
-    caller's own method/body mismatch (T-58).
+    see `_project_payload`/`_project_field` above and this file's own
+    None-vs-() distinction described there: `None` (the default for both)
+    means no projection at all, the SAME full envelope guarded_api has
+    always yielded; a non-`None` value projects that half down to exactly
+    the named keys, raising ToolAbort(kind="malformed") — sharing
+    `_error_malformed`, classify()'s own inner_key floor's payload, so
+    this needs no new handler at any call site's `except GuardAbort` —
+    the instant a named key turns out absent. Projection is refused up
+    front, before `_issue_one` (and therefore before fetch()'s own
+    try/except) is ever reached, for an endpoint whose family_b_shape is
+    `is_list=True` (its `data` is a list with no keys to pick from) or has
+    no family_b_shape at all — ToolAbort(kind="internal_config"), the same
+    "this is a program bug, please report it" family guarded_api already
+    uses for a caller's own method/body mismatch.
     """
     app = ctx.request_context.lifespan_context
     info = await resolve_session(ctx)

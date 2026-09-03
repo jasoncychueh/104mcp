@@ -594,8 +594,8 @@ def _describe_message_fields() -> dict:
 # above which are keyed raw-camelCase because tools/search.py and tools/messaging.py
 # filter the RAW pre-conversion dict against those two. `tools/messaging.py`'s row
 # conversion for `list_templates` has no such raw-filtering step to share a key-space
-# with, so there is nothing gained by keying this one raw too — §C8 of design.md is
-# explicit that this table's keys must already be the published names.
+# with, so there is nothing gained by keying this one raw too — this table's keys
+# must already be the published names.
 #
 # `type_desc` is the ACCOUNT's own filing category (§8.18, confirmed by six PUT
 # .../template/{id} edits matched typeId->name from wire, cross-checked against §8.15's

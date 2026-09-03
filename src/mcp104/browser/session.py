@@ -31,8 +31,9 @@ class SessionInfo:
     # per session so budgets and pacing never leak across accounts/tabs.
     throttle: ThrottleState = field(default_factory=ThrottleState)
     # Has an API call on THIS session ever reached a successful Verdict?
-    # tools/helpers.py's guarded_api reads this to pick between two HTTP
-    # 403 wordings: the first call of a session takes the plain "blocked"
+    # tools/helpers.py's guarded_api/guarded_sequence read this to pick
+    # between two HTTP 403 wordings: the first call of a session takes the
+    # plain "blocked"
     # wording, but a 403 arriving after a prior success most likely means
     # the Cloudflare clearance cookie expired underneath a still-valid 104
     # session — an expired-clearance remedy (re-login) and a fresh bot

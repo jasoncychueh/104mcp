@@ -29,6 +29,8 @@ from mcp104.tools.discovery import (
 )
 from mcp104.tools.filters import CONDITIONS, VALID_FILTER_KEYS, Condition
 
+from tests.test_contract_docs import _all_tool_descriptions, _normalize_ws
+
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 
@@ -653,8 +655,8 @@ def test_second_identifier_note_states_the_measured_relationship_not_the_stale_d
     """T-75: SECOND_IDENTIFIER_NOTE is rewritten in place to the MEASURED state (p_id
     IS the messaging system's pId; the candidate_id on a résumé row is idNo, usable
     only by get_resume_detail) -- it must no longer carry the old "both directions
-    unmeasured" / "must not call ... with p_id" disclaimer that CLAUDE.md's §C8 says
-    is now factually backwards."""
+    unmeasured" / "must not call ... with p_id" disclaimer, which is now factually
+    backwards."""
     note = discovery_mod.SECOND_IDENTIFIER_NOTE
     for stale_phrase in ("雙向皆未量測", "不能用 p_id 呼叫", "不得用 p_id 呼叫"):
         assert stale_phrase not in note, (
@@ -664,7 +666,7 @@ def test_second_identifier_note_states_the_measured_relationship_not_the_stale_d
     assert "pId" in note, "must name pId as what p_id measurably is"
     assert "訊息工具" in note, (
         "must point the caller at the messaging tools (訊息工具) as where the "
-        "p_id -- not this row's candidate_id -- is actually usable, per design.md §C8"
+        "p_id -- not this row's candidate_id -- is actually usable"
     )
 
 
@@ -672,9 +674,8 @@ def test_messaging_candidate_id_note_is_a_distinct_constant_naming_the_digit_gua
     """T-75: MESSAGING_CANDIDATE_ID_NOTE is a NEW constant (not a rename/alias of
     SECOND_IDENTIFIER_NOTE, not identical text) -- it answers a different question
     ("what does this PARAMETER take") than SECOND_IDENTIFIER_NOTE ("what is on this
-    ROW"), and per design.md's digit guard (§C4) it names the >=12-digit rejection
-    that protects the messaging tools' candidate_id from an accidentally-passed
-    résumé idNo."""
+    ROW"), and per the digit guard it names the >=12-digit rejection that protects
+    the messaging tools' candidate_id from an accidentally-passed résumé idNo."""
     note = discovery_mod.MESSAGING_CANDIDATE_ID_NOTE
     assert isinstance(note, str) and note, "MESSAGING_CANDIDATE_ID_NOTE must be a non-empty string"
     assert note != discovery_mod.SECOND_IDENTIFIER_NOTE, (
@@ -686,7 +687,45 @@ def test_messaging_candidate_id_note_is_a_distinct_constant_naming_the_digit_gua
     )
 
 
-# ── T-67-style provenance, RE-HOMED here (Smell C, Round I1) ────────────────────────
+def test_messaging_candidate_id_note_reaches_the_three_messaging_tool_descriptions_verbatim():
+    """T-75: MESSAGING_CANDIDATE_ID_NOTE must appear, whitespace-stripped and
+    verbatim (CJK text wraps without spaces, so a mid-phrase newline is not a
+    content difference), in each of send_message's, send_inquiry's, and
+    get_conversation's REGISTERED description -- a live read via the real tool
+    registry, not a hand-typed copy of the note planted separately in each
+    docstring that could silently drift from the constant."""
+    note = _normalize_ws(discovery_mod.MESSAGING_CANDIDATE_ID_NOTE)
+    descriptions = _all_tool_descriptions()
+    for tool_name in ("send_message", "send_inquiry", "get_conversation"):
+        assert tool_name in descriptions, f"sanity: {tool_name} not registered"
+        desc = _normalize_ws(descriptions[tool_name])
+        assert note in desc, (
+            f"{tool_name}'s registered description does not carry "
+            f"MESSAGING_CANDIDATE_ID_NOTE verbatim -- a hand-typed copy would "
+            f"drift from the constant and this would not catch it: {desc!r}"
+        )
+
+
+def test_messaging_candidate_id_note_reaches_descriptions_by_live_reference_not_copy(monkeypatch):
+    """Provenance companion to the test above: patch MESSAGING_CANDIDATE_ID_NOTE
+    to a sentinel BEFORE registering the tools, so each of the three messaging
+    tool descriptions must carry the sentinel -- a description that hand-typed
+    the note's current text instead of referencing the constant would still
+    show the pre-patch wording here and fail."""
+    sentinel = "MSG-CANDIDATE-ID-NOTE-PROVENANCE-SENTINEL-7b2e91"
+    monkeypatch.setattr(discovery_mod, "MESSAGING_CANDIDATE_ID_NOTE", sentinel)
+
+    descriptions = _all_tool_descriptions()
+    for tool_name in ("send_message", "send_inquiry", "get_conversation"):
+        assert tool_name in descriptions, f"sanity: {tool_name} not registered"
+        assert sentinel in descriptions[tool_name], (
+            f"{tool_name}'s registered description does not reflect the "
+            f"monkeypatched MESSAGING_CANDIDATE_ID_NOTE -- it is not reading "
+            f"the constant live at registration time"
+        )
+
+
+# ── T-67-style provenance, re-homed here ─────────────────────────────────────────────
 #
 # The original T-67 pair (tests/test_search.py) asserted RESOLVE_ACCEPTS_ZH reaches
 # published text by a LIVE read, never a hand-typed copy that can drift. Part A moved

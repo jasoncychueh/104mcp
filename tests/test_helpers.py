@@ -18,21 +18,7 @@ from mcp104.tools.helpers import (
     _error_malformed,
     get_session_id,
     guarded_api,
-)
-
-# guarded_sequence is new in this phase (design.md §C5) and may not exist
-# yet while spec-implementer is still writing tools/helpers.py — importing
-# it unconditionally would crash collection of this WHOLE file (including
-# the guarded_api tests above, which already pass today) the moment this
-# name is missing. Guard it so only the tests that actually need it skip.
-try:
-    from mcp104.tools.helpers import guarded_sequence
-except ImportError:
-    guarded_sequence = None
-
-_needs_guarded_sequence = pytest.mark.skipif(
-    guarded_sequence is None,
-    reason="mcp104.tools.helpers.guarded_sequence not implemented yet",
+    guarded_sequence,
 )
 
 
@@ -196,14 +182,14 @@ async def test_guarded_api_no_session_at_all_raises_not_logged_in_kind():
     assert exc_info.value.kind == "not_logged_in"
 
 
-# ── guarded_sequence / _issue_one (design.md §C5) ────────────────────────────
+# ── guarded_sequence / _issue_one ─────────────────────────────────────────────
 #
 # All fixtures below build synthetic three-sub-request scripts against the
-# real endpoints declared for send_inquiry (§C7, already delivered in Phase
-# 1): resolve_candidate_idno -> event_last_info -> send_willingness_event.
+# real endpoints declared for send_inquiry, already delivered earlier:
+# resolve_candidate_idno -> event_last_info -> send_willingness_event.
 # Only the guard is exercised here -- no tools/messaging.py code runs, per
-# this file's scope (T-55...T-62, T-66, T-81 all anchor to helpers.py's own
-# public interfaces, not to send_inquiry's behavior).
+# this file's scope (these cases all anchor to helpers.py's own public
+# interfaces, not to send_inquiry's behavior).
 
 def _resp(body: dict, status: int = 200, content_type: str = "application/json; charset=utf-8") -> RawResponse:
     return RawResponse(status=status, location=None, content_type=content_type,
@@ -242,7 +228,6 @@ _LAST_INFO_OK = _resp({"data": {"emailCC": []}, "metadata": {}})
 _SEND_OK = _resp({"data": [{"pId": "399022"}], "metadata": {}, "failed": []})
 
 
-@_needs_guarded_sequence
 @pytest.mark.asyncio
 async def test_T55_guarded_sequence_locks_gates_and_resolves_session_exactly_once(monkeypatch):
     ctx, info = _new_api_ctx_and_session()
@@ -284,7 +269,6 @@ async def test_T55_guarded_sequence_locks_gates_and_resolves_session_exactly_onc
     assert len(before_first_calls) == 1
 
 
-@_needs_guarded_sequence
 @pytest.mark.asyncio
 async def test_T56_guarded_sequence_aborts_and_skips_remaining_requests_on_subrequest_failure(monkeypatch):
     ctx, info = _new_api_ctx_and_session()
@@ -302,7 +286,6 @@ async def test_T56_guarded_sequence_aborts_and_skips_remaining_requests_on_subre
     assert info.lock.locked() is False
 
 
-@_needs_guarded_sequence
 @pytest.mark.asyncio
 async def test_T57_request_projection_none_means_unprojected_and_empty_tuple_means_nothing_kept(monkeypatch):
     ctx, info = _new_api_ctx_and_session()
@@ -338,7 +321,6 @@ async def test_T57_request_projection_none_means_unprojected_and_empty_tuple_mea
     assert via_guarded_api["metadata"]["quota"] == 299
 
 
-@_needs_guarded_sequence
 @pytest.mark.asyncio
 async def test_T58_projection_on_is_list_endpoint_is_internal_config_error_before_fetch(monkeypatch):
     ctx, info = _new_api_ctx_and_session()
@@ -346,7 +328,7 @@ async def test_T58_projection_on_is_list_endpoint_is_internal_config_error_befor
     _patch_fetch(monkeypatch, spy)
 
     # list_templates is is_list=True -- projecting a keyed subset of `data`
-    # makes no sense against a list, per §C5's Error Handling row 10.
+    # makes no sense against a list, per the error-handling table's rejection row.
     with pytest.raises(ToolAbort) as exc_info:
         async with guarded_sequence(ctx, slots_needed=1) as (request, _info):
             await request(ENDPOINTS["list_templates"], params=[], pick_data=("x",))
@@ -359,7 +341,6 @@ async def test_T58_projection_on_is_list_endpoint_is_internal_config_error_befor
     assert len(spy.calls) == 0
 
 
-@_needs_guarded_sequence
 @pytest.mark.asyncio
 async def test_T59_projection_missing_key_raises_malformed_using_the_same_error_builder(monkeypatch):
     ctx, info = _new_api_ctx_and_session()
@@ -388,8 +369,8 @@ async def test_T59_projection_missing_key_raises_malformed_using_the_same_error_
     assert err.endswith("），可能是介面已變更，請回報")
     assert "emailCC" in err
     # Falls straight into the existing except-GuardAbort handler -- no new
-    # handler needed, which is exactly why it's ToolAbort and not
-    # MalformedResponseError (§C5).
+    # handler needed, which is exactly why it's ToolAbort and not a
+    # dedicated MalformedResponseError.
     assert _error_malformed("emailCC")["error"].startswith("104 回應結構異常（")
 
 
@@ -425,8 +406,8 @@ async def test_T60_note_request_counts_every_subrequest_including_failure_and_ti
         async with guarded_api(ctx, ENDPOINTS["resolve_candidate_idno"], params=[]):
             pass  # pragma: no cover
 
-    # note_request runs in `finally` regardless of outcome (design.md §C5:
-    # "每個子請求照樣計帳") -- the same discipline logout_session's
+    # note_request runs in `finally` regardless of outcome (every sub-request
+    # counts toward the rate limit the same way) -- the same discipline logout_session's
     # throttle_gated=False / note_request-always split already established,
     # generalised here to the sub-requests sharing this same _issue_one.
     assert len(counted) == 3
@@ -463,7 +444,6 @@ async def test_T61_guarded_api_before_request_hook_still_runs_after_gate_before_
     assert len(spy.calls) == 0
 
 
-@_needs_guarded_sequence
 @pytest.mark.asyncio
 async def test_T62_guarded_sequence_forwards_slots_needed_to_enforce_throttle_unmodified(monkeypatch):
     ctx, info = _new_api_ctx_and_session()
@@ -485,12 +465,12 @@ async def test_T62_guarded_sequence_forwards_slots_needed_to_enforce_throttle_un
 
 @pytest.mark.asyncio
 async def test_T66_slots_needed_misconfiguration_reaches_agent_as_internal_config_not_retry_after(monkeypatch):
-    # Continuation of test_throttle.py's T-65 (enforce_throttle itself):
-    # this pins what the GUARD does with that ThrottleAbort(kind=
-    # "internal_config") once it crosses into tools/helpers.py -- the
-    # existing internal_config wiring (guarded_api's `abort.kind ==
-    # "throttled"` branch) already handles this without any Phase-2 code,
-    # so this test needs no guarded_sequence at all.
+    # Continuation of test_throttle.py's enforce_throttle case: this pins
+    # what the GUARD does with that ThrottleAbort(kind="internal_config")
+    # once it crosses into tools/helpers.py -- the existing internal_config
+    # wiring (guarded_api's `abort.kind == "throttled"` branch) already
+    # handles this without any new code, so this test needs no
+    # guarded_sequence at all.
     ctx, info = _new_api_ctx_and_session()
     abort = ThrottleAbort(
         kind="internal_config", payload=None,
@@ -511,7 +491,6 @@ async def test_T66_slots_needed_misconfiguration_reaches_agent_as_internal_confi
     assert "程式問題" in exc_info.value.payload["error"]
 
 
-@_needs_guarded_sequence
 @pytest.mark.asyncio
 @pytest.mark.parametrize("failure_kind", ["timeout", "challenge", "unclassifiable"])
 async def test_T81_guarded_sequence_never_logs_body_or_cookie_on_any_last_subrequest_failure(
