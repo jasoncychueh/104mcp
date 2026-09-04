@@ -143,6 +143,51 @@ def test_t052_resolve_data_dir_falls_back_to_per_user_location(monkeypatch):
     assert isinstance(result, Path)
 
 
+# ── 2026-09-04: the default data directory is per account ─────────────────
+#
+# MCP104_ACCOUNT is the 104 login e-mail. Before this, every account landed in
+# the same default directory and the account-label guard refused to start on
+# the second one — a confusing wall for the normal "use my other account" case.
+
+def test_default_data_dir_has_one_subdirectory_per_account(monkeypatch):
+    monkeypatch.delenv("MCP104_DATA_DIR", raising=False)
+
+    root = resolve_data_dir()
+    a = resolve_data_dir("a@example.invalid")
+    b = resolve_data_dir("b@example.invalid")
+
+    assert a.parent == root and b.parent == root
+    assert a != b
+    assert a.name == "a@example.invalid"  # readable: the e-mail itself
+
+
+def test_account_dir_name_is_filesystem_safe_and_stable():
+    from mcp104.config import account_dir_name
+
+    assert account_dir_name("  user@example.com ") == "user@example.com"
+    assert account_dir_name("we/ird:na*me?") == "we_ird_na_me_"
+    assert account_dir_name("x") == account_dir_name("x")
+
+
+def test_explicit_data_dir_ignores_the_account(monkeypatch, tmp_path):
+    target = tmp_path / "explicit"
+    monkeypatch.setenv("MCP104_DATA_DIR", str(target))
+
+    assert resolve_data_dir("a@example.invalid") == target
+
+
+def test_get_config_derives_the_data_dir_from_the_account(monkeypatch, tmp_path):
+    from mcp104.config import get_config
+
+    monkeypatch.delenv("MCP104_DATA_DIR", raising=False)
+    monkeypatch.setenv("MCP104_ACCOUNT", "who@example.invalid")
+
+    cfg = get_config()
+
+    assert cfg.data_dir.name == "who@example.invalid"
+    assert cfg.cookies_path == cfg.data_dir / "cookies.json"
+
+
 # ── T-31 (R5.4): written records key on Config's identity value ────────────
 
 def test_t031_account_label_reflects_config_not_a_hardcoded_default(monkeypatch, tmp_path):

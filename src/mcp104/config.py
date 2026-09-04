@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -89,33 +90,50 @@ def _parse_optional_int_env(name: str) -> int | None:
         ) from None
 
 
-def resolve_data_dir() -> Path:
+def account_dir_name(account_label: str) -> str:
+    """The per-account sub-directory name derived from MCP104_ACCOUNT: the label
+    itself (a 104 login e-mail is the expected value, and `@`/`.` are legal in a
+    directory name on every supported platform), with anything a filesystem could
+    choke on replaced by `_`. Stable: the same label always yields the same name."""
+    return re.sub(r"[^A-Za-z0-9._@+-]", "_", account_label.strip())
+
+
+def resolve_data_dir(account_label: str | None = None) -> Path:
     """Pure: reads the environment only, never creates the directory. Callers
     on the startup path are responsible for creating it and treating failure
     to do so as a startup failure.
 
-    MCP104_DATA_DIR, when set, is used as-is. Otherwise this derives a
-    per-user application data location using each platform's own convention,
-    the same choice a dependency like platformdirs would make, without
-    taking on that dependency."""
+    MCP104_DATA_DIR, when set, is used as-is (the caller owns what lives there).
+    Otherwise this derives a per-user application data location using each
+    platform's own convention, the same choice a dependency like platformdirs
+    would make, without taking on that dependency — and, when `account_label`
+    is given, appends one sub-directory per account (`account_dir_name`).
+
+    Why per account by default (2026-09-04): MCP104_ACCOUNT is meant to be the
+    104 login e-mail, and switching it used to land in the SAME default
+    directory, where the account-label guard in Database.init() then refused
+    to start — a confusing failure for what is the normal way to use a second
+    account. With the account folded into the path, two accounts never share a
+    directory unless the operator explicitly points MCP104_DATA_DIR at one."""
     env_dir = os.getenv("MCP104_DATA_DIR")
     if env_dir is not None and env_dir.strip():
         return Path(env_dir)
 
     if sys.platform == "win32":
         base = os.getenv("LOCALAPPDATA") or os.getenv("APPDATA") or str(Path.home())
-        return Path(base) / "mcp104"
-    if sys.platform == "darwin":
-        return Path.home() / "Library" / "Application Support" / "mcp104"
-    xdg_data_home = os.getenv("XDG_DATA_HOME")
-    if xdg_data_home:
-        return Path(xdg_data_home) / "mcp104"
-    return Path.home() / ".local" / "share" / "mcp104"
+        root = Path(base) / "mcp104"
+    elif sys.platform == "darwin":
+        root = Path.home() / "Library" / "Application Support" / "mcp104"
+    else:
+        xdg_data_home = os.getenv("XDG_DATA_HOME")
+        root = Path(xdg_data_home) / "mcp104" if xdg_data_home else Path.home() / ".local" / "share" / "mcp104"
+
+    if account_label is None or not account_label.strip():
+        return root
+    return root / account_dir_name(account_label)
 
 
 def get_config() -> Config:
-    data_dir = resolve_data_dir()
-
     # The only required setting in this object. A missing, empty, or
     # whitespace-only value is a configuration error, not a case for a
     # silent default — see the message below for why: any value this
@@ -135,6 +153,10 @@ def get_config() -> Config:
             "switching to a different 104 account must be given a "
             "different one."
         )
+
+    # Resolved AFTER the account label: the default location has one
+    # sub-directory per account (see resolve_data_dir).
+    data_dir = resolve_data_dir(account_label)
 
     auth_bind_port = _parse_optional_int_env("MCP104_AUTH_BIND_PORT")
 
