@@ -312,7 +312,11 @@ def _assert_mechanical_conversion(source, response, path="$"):
         for i, (s, r) in enumerate(zip(source, response)):
             _assert_mechanical_conversion(s, r, f"{path}[{i}]")
     else:
-        assert response == source, f"{path}: value changed from {source!r} to {response!r}"
+        # 2026-09-04: the ONE value transformation the résumé tools apply — rich-text
+        # HTML -> plain text (search_mod.html_to_text), a no-op for strings without
+        # markup. Everything else must still be byte-identical.
+        expected = search_mod.html_to_text(source) if isinstance(source, str) else source
+        assert response == expected, f"{path}: value changed from {source!r} to {response!r}"
 
 
 def _corresponding(source_root, response_root, *path):
@@ -1450,3 +1454,101 @@ def result_repr_keys(result: dict) -> str:
     deliberately not structural, since the exact shape of the not-echo-confirmed
     marking is not pinned by design.md (see module comment above)."""
     return json.dumps(result, ensure_ascii=False, default=str)
+
+
+# ── 2026-09-04: list rows are lists, not résumés; HTML becomes plain text ──────────
+#
+# Account holder's decision: a row must not carry `master_url` (a 104 page link only
+# the process's own session can open — no human the Agent talks to can follow it), the
+# per-job objects inside `exp_job_arr` drop their empty fields, and every rich-text
+# value (rows and détail alike) is delivered as plain text. None of it may lose a word
+# the candidate wrote: every non-empty raw value must still be present, converted.
+
+_HTML_TAG = re.compile(r"<[A-Za-z/!][^>]*>")
+
+
+def _fixture_rows(name):
+    result = _load(name)["result"]
+    return result.get("data") or result.get("resumes")
+
+
+def test_html_to_text_flattens_markup_decodes_entities_and_keeps_plain_strings():
+    html_to_text = search_mod.html_to_text
+    rich = (
+        '<p><span style="background-color:rgb(255,255,255);">負責：</span></p>'
+        "<ol><li>甲&nbsp;乙</li><li>A &amp; B</li></ol><p><br /></p><p>  </p>"
+    )
+    assert html_to_text(rich) == "負責：\n甲 乙\nA & B"
+    # Block tags -> line breaks; inline tags vanish without adding a break.
+    assert html_to_text("<div>x</div><div>y <b>z</b></div>") == "x\ny z"
+    # No tag at all -> byte-identical, entities included (104 never wrote it as HTML).
+    assert html_to_text("no tags &amp; kept") == "no tags &amp; kept"
+    assert html_to_text("") == ""
+    # A stray '<' that is not a tag is not markup.
+    assert html_to_text("a < b > c") == "a < b > c"
+
+
+def test_rows_never_carry_master_url_under_any_spelling():
+    raw_rows = _fixture_rows("rows_search.json")
+    assert any("masterUrl" in row for row in raw_rows), "sanity: 104 does send masterUrl"
+    for row in raw_rows:
+        converted = search_mod._convert_resume_row(row)
+        assert "master_url" not in converted and "masterUrl" not in converted
+    from mcp104.tools.discovery import _describe_result_fields
+    assert "master_url" not in _describe_result_fields()["fields"]
+
+
+@pytest.mark.parametrize("name", ["rows_search.json", "rows_recommend.json", "rows_match.json"])
+def test_row_exp_job_entries_drop_empties_and_keep_every_word_as_plain_text(name):
+    seen_html = False
+    seen_empty = False
+    for row in _fixture_rows(name):
+        converted = search_mod._convert_resume_row(row)
+        raw_entries = row.get("expJobArr") or []
+        entries = converted.get("exp_job_arr") or []
+        assert len(entries) == len(raw_entries), "no job may be dropped"
+        for raw_entry, entry in zip(raw_entries, entries):
+            for raw_key, raw_value in raw_entry.items():
+                key = search_mod._snake_case(raw_key)
+                if raw_value is None or raw_value == "" or raw_value == []:
+                    seen_empty = True
+                    assert key not in entry, f"{name}: empty {raw_key} must be dropped"
+                    continue
+                assert key in entry, f"{name}: non-empty {raw_key} must be kept"
+                if isinstance(raw_value, str):
+                    if _HTML_TAG.search(raw_value):
+                        seen_html = True
+                    assert entry[key] == search_mod.html_to_text(raw_value)
+                    assert not _HTML_TAG.search(entry[key]), f"{name}: markup leaked in {raw_key}"
+                else:
+                    assert entry[key] == raw_value
+    assert seen_empty, f"{name}: sanity — fixture has no empty per-job field to drop"
+    assert seen_html, f"{name}: sanity — fixture has no HTML exp_job_note to convert"
+
+
+def test_row_level_fields_are_not_compacted_only_the_nested_job_objects_are():
+    """A row's own key set stays stable (and fully published by describe_result_fields);
+    only the per-job objects inside exp_job_arr drop their empties."""
+    raw_rows = _fixture_rows("rows_search.json")
+    row_with_empty_top_level = next(r for r in raw_rows if r.get("latestMemo") is None)
+    converted = search_mod._convert_resume_row(row_with_empty_top_level)
+    assert "latest_memo" in converted and converted["latest_memo"] is None
+
+
+@pytest.mark.asyncio
+async def test_get_resume_detail_delivers_rich_text_fields_as_plain_text(tmp_path, monkeypatch):
+    ctx, _info, _db = await _new_session(tmp_path)
+    fixture = _load("resume_unrestricted.json")
+    _install_fake_fetch(monkeypatch, _raw_from_bare_json("resume_unrestricted.json"))
+
+    result = await get_resume_detail(candidate_id="1725089703433", ctx=ctx)
+
+    assert "error" not in result
+    source_resume = fixture["data"]["resume"]
+    response_resume = result["resume"]
+    assert _HTML_TAG.search(source_resume["auto"]), "sanity: the fixture's 自傳 is HTML"
+    delivered_auto = _corresponding(source_resume, response_resume, "auto")
+    assert not _HTML_TAG.search(delivered_auto)
+    assert delivered_auto == search_mod.html_to_text(source_resume["auto"])
+    # Field count untouched at every depth — conversion changes values, never keys.
+    _assert_mechanical_conversion(source_resume, response_resume, path="$data.resume")
