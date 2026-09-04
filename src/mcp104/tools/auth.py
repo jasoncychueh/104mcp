@@ -33,7 +33,9 @@ from mcp104.browser.session import (
     PendingLogin,
     SessionInfo,
     clear_cookies,
+    clear_identity,
     load_cookies,
+    load_identity,
     save_cookies,
 )
 from mcp104.browser.stealth import (
@@ -216,7 +218,7 @@ async def provisional_session(ctx: Context, cookies: list[dict]) -> AsyncIterato
     """
     app = ctx.request_context.lifespan_context
     session_id = get_session_id(ctx)
-    info = SessionInfo(cookies=cookies, account_label=app.config.account_label)
+    info = SessionInfo(cookies=cookies, account_label=load_identity(app.config.identity_path))
     app.session_pool.activate_direct(session_id, info)
     registration = _ProvisionalRegistration()
 
@@ -617,8 +619,12 @@ async def _watch_for_login(app, token: str, watcher_epoch: int) -> None:
             # anything (credential file, pool registration, or state).
             return
         save_cookies(app.config.cookies_path, cookies)
+        # A fresh human login may be a different 104 account than the last
+        # one: drop the cached identity, it is re-learned from 104 on the
+        # first tool call (tools/helpers.py ensure_account_identity).
+        clear_identity(app.config.identity_path)
         activated = app.session_pool.activate(token, SessionInfo(
-            cookies=cookies, account_label=app.config.account_label,
+            cookies=cookies, account_label=None,
         ))
         resource.state = LoginState.SETTLING
         resource.stream.mark_completed()
@@ -802,6 +808,7 @@ async def logout(ctx: Context) -> dict:
 
     # Step 3.
     clear_cookies(app.config.cookies_path)
+    clear_identity(app.config.identity_path)
     # Step 4.
     app.session_pool.remove(session_id)
     # Step 5: 每一次登出都寫，與 server_result 的值無關——值域裡已經沒有一個

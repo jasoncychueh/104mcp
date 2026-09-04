@@ -254,7 +254,7 @@ _OPENED_DATABASES: list[Database] = []
 async def _new_session(tmp_path) -> tuple[FakeCtx, SessionInfo, Database]:
     pool = SessionPool()
     database = Database(str(tmp_path / f"db_{uuid4().hex}.sqlite"))
-    await database.init("test@104.com")
+    await database.init()
     _OPENED_DATABASES.append(database)
     ctx = FakeCtx(pool, database)
     sid = get_session_id(ctx)

@@ -42,7 +42,7 @@ async def db(tmp_path):
     # fixture's store starts empty, so any label is accepted; it's unrelated
     # to the per-call account_email arguments the rest of this file's tests
     # pass to upsert_candidate/log_sent/etc.
-    await database.init("owner@104.com")
+    await database.init()
     yield database
     await database.close()
 
@@ -162,7 +162,7 @@ async def test_init_migrates_old_schema_without_id_source(tmp_path):
         await conn.commit()
 
     database = Database(db_path)
-    await database.init("user@104.com")  # must migrate forward, not just no-op
+    await database.init()  # must migrate forward, not just no-op
 
     try:
         # Full round-trip on both tables — exactly what raised
@@ -214,7 +214,7 @@ async def test_init_recovers_from_interrupted_migration(tmp_path):
         await conn.commit()
 
     database = Database(db_path)
-    await database.init("user@104.com")  # must recover, not raise "table already exists"
+    await database.init()  # must recover, not raise "table already exists"
 
     try:
         # The pre-crash row must have survived the recovery (it lived in
@@ -251,7 +251,7 @@ async def test_init_migration_preserves_existing_rows(tmp_path):
         await conn.commit()
 
     database = Database(db_path)
-    await database.init("user@104.com")
+    await database.init()
 
     try:
         # candidates was written from both id spaces before id_source
@@ -307,8 +307,8 @@ async def test_t028_two_independent_lines_of_defense(tmp_path):
     loc_b.mkdir()
     db_a = Database(str(loc_a / "104.db"))
     db_b = Database(str(loc_b / "104.db"))
-    await db_a.init(same_label)
-    await db_b.init(same_label)
+    await db_a.init()
+    await db_b.init()
     try:
         await db_a.upsert_candidate("c1", ID_SOURCE_RESUME, same_label, name="Alice", status="contacted")
         await db_a.log_sent(same_label, "c1", ID_SOURCE_MESSAGE)
@@ -324,7 +324,7 @@ async def test_t028_two_independent_lines_of_defense(tmp_path):
     loc_c = tmp_path / "loc_c"
     loc_c.mkdir()
     db_c = Database(str(loc_c / "104.db"))
-    await db_c.init("owner@104.com")
+    await db_c.init()
     try:
         await db_c.upsert_candidate("c2", ID_SOURCE_RESUME, "alice@104.com", name="AliceRow", status="contacted")
         await db_c.upsert_candidate("c2", ID_SOURCE_RESUME, "bob@104.com", name="BobRow", status="interested")
@@ -341,150 +341,3 @@ async def test_t028_two_independent_lines_of_defense(tmp_path):
         assert await db_c.get_daily_sent_count("bob@104.com") == 2
     finally:
         await db_c.close()
-
-
-# ── T-103 (R5.1): shared-store detection at Database.init() ────────────────
-# Database.init(account_label) must reject a store that already holds rows
-# under an identity value that isn't its own — a fail-closed check against
-# the "two recruiters silently sharing one data directory" failure mode.
-# design.md §C2/§Error Handling scenario 16 requires: rows are never deleted,
-# merged, or rewritten; the message states the observed identity values (not
-# a single asserted cause); and every hit path resolves into one of three
-# named ways out, the universal one being "open a new data directory"
-# (MCP104_DATA_DIR, §C2's environment variable table).
-
-# Matches CLAUDE.md's current SQLite schema (with id_source) — documented
-# project schema, not implementation-private detail.
-CURRENT_SCHEMA_DDL = """
-    CREATE TABLE candidates (
-        candidate_id    TEXT NOT NULL,
-        id_source       TEXT NOT NULL,
-        account_email   TEXT NOT NULL,
-        name            TEXT,
-        status          TEXT,
-        created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
-        PRIMARY KEY (candidate_id, id_source, account_email)
-    );
-    CREATE TABLE sent_log (
-        id              INTEGER PRIMARY KEY AUTOINCREMENT,
-        account_email   TEXT NOT NULL,
-        candidate_id    TEXT,
-        id_source       TEXT NOT NULL,
-        sent_at         DATETIME DEFAULT CURRENT_TIMESTAMP
-    );
-"""
-
-
-async def _seed_store(db_path, account_emails):
-    """Pre-populate a store (bypassing Database, which would refuse to open
-    a store holding a foreign identity) with one candidates row per given
-    account_email, so Database(db_path).init(label) can be exercised against
-    a store that already has content."""
-    async with aiosqlite.connect(db_path) as conn:
-        await conn.executescript(CURRENT_SCHEMA_DDL)
-        for i, account_email in enumerate(account_emails):
-            await conn.execute(
-                "INSERT INTO candidates (candidate_id, id_source, account_email, name) "
-                "VALUES (?, ?, ?, ?)",
-                [f"seed{i}", ID_SOURCE_RESUME, account_email, "Seed"],
-            )
-        await conn.commit()
-
-
-async def _read_all_candidate_rows(db_path):
-    async with aiosqlite.connect(db_path) as conn:
-        cursor = await conn.execute(
-            "SELECT candidate_id, id_source, account_email, name FROM candidates ORDER BY candidate_id"
-        )
-        return await cursor.fetchall()
-
-
-@pytest.mark.asyncio
-async def test_t103_single_foreign_identity_blocks_startup_and_preserves_rows(tmp_path):
-    db_path = str(tmp_path / "shared.db")
-    await _seed_store(db_path, ["alice@104.com"])
-    before = await _read_all_candidate_rows(db_path)
-
-    with pytest.raises(Exception) as exc_info:
-        database = Database(db_path)
-        await database.init("carol@104.com")
-
-    message = str(exc_info.value)
-    # States the observed identity values — its own and the foreign one.
-    assert "alice@104.com" in message
-    assert "carol@104.com" in message
-    # Must not assert a single cause as fact — this exact phrase is the
-    # design's own example of a confidently-wrong single-cause assertion.
-    assert "資料目錄被共用" not in message
-
-    after = await _read_all_candidate_rows(db_path)
-    assert after == before  # not deleted, merged, or rewritten
-
-
-@pytest.mark.asyncio
-async def test_t103_multiple_foreign_identities_point_only_to_new_directory(tmp_path):
-    # Two-plus foreign values: (b) ("set it back to the one already there")
-    # has no target to resolve to, so every hit here must fall into (c).
-    db_path = str(tmp_path / "shared_multi.db")
-    await _seed_store(db_path, ["alice@104.com", "bob@104.com"])
-    before = await _read_all_candidate_rows(db_path)
-
-    with pytest.raises(Exception) as exc_info:
-        database = Database(db_path)
-        await database.init("carol@104.com")
-
-    message = str(exc_info.value)
-    assert "alice@104.com" in message
-    assert "bob@104.com" in message
-    assert "carol@104.com" in message
-    # (c) is the universal exit for this hit: it must point at the lever for
-    # opening a new data directory.
-    assert "MCP104_DATA_DIR" in message
-
-    after = await _read_all_candidate_rows(db_path)
-    assert after == before
-
-
-@pytest.mark.asyncio
-async def test_t103_default_literal_identity_points_only_to_new_directory(tmp_path):
-    # A store entirely keyed on the literal "default" — today's un-fixed
-    # shape — is the one case §C2 calls out by name: "default" doesn't
-    # identify any 104 account, so (b)'s precondition ("the existing foreign
-    # value itself identifies a 104 account") fails even though there is
-    # exactly one foreign value. This hit must also fall into (c).
-    db_path = str(tmp_path / "shared_default.db")
-    await _seed_store(db_path, ["default"])
-    before = await _read_all_candidate_rows(db_path)
-
-    with pytest.raises(Exception) as exc_info:
-        database = Database(db_path)
-        await database.init("carol@104.com")
-
-    message = str(exc_info.value)
-    assert "default" in message
-    assert "carol@104.com" in message
-    assert "MCP104_DATA_DIR" in message
-
-    after = await _read_all_candidate_rows(db_path)
-    assert after == before
-
-
-@pytest.mark.asyncio
-async def test_t103_store_with_only_own_identity_inits_normally(tmp_path):
-    db_path = str(tmp_path / "own_only.db")
-    await _seed_store(db_path, ["carol@104.com", "carol@104.com"])
-
-    database = Database(db_path)
-    await database.init("carol@104.com")  # must not raise
-    await database.close()
-
-
-@pytest.mark.asyncio
-async def test_t103_empty_store_inits_normally(tmp_path):
-    # Pins the known limitation stated in design.md: detection is eventual,
-    # not available on first run — an empty store must not be strengthened
-    # into also requiring a match.
-    db_path = str(tmp_path / "fresh.db")
-    database = Database(db_path)
-    await database.init("carol@104.com")  # must not raise
-    await database.close()

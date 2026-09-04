@@ -143,127 +143,29 @@ def test_t052_resolve_data_dir_falls_back_to_per_user_location(monkeypatch):
     assert isinstance(result, Path)
 
 
-# ── 2026-09-04: the default data directory is per account ─────────────────
+# ── 2026-09-04: no account label is configured any more ─────────────────────
 #
-# MCP104_ACCOUNT is the 104 login e-mail. Before this, every account landed in
-# the same default directory and the account-label guard refused to start on
-# the second one — a confusing wall for the normal "use my other account" case.
+# MCP104_ACCOUNT was dropped: the 104 login e-mail is learned from 104 itself
+# after login (tools/helpers.py ensure_account_identity) and cached in
+# Config.identity_path next to cookies.json.
 
-def test_default_data_dir_has_one_subdirectory_per_account(monkeypatch):
-    monkeypatch.delenv("MCP104_DATA_DIR", raising=False)
-
-    root = resolve_data_dir()
-    a = resolve_data_dir("a@example.invalid")
-    b = resolve_data_dir("b@example.invalid")
-
-    assert a.parent == root and b.parent == root
-    assert a != b
-    assert a.name == "a@example.invalid"  # readable: the e-mail itself
-
-
-def test_account_dir_name_is_filesystem_safe_and_stable():
-    from mcp104.config import account_dir_name
-
-    assert account_dir_name("  user@example.com ") == "user@example.com"
-    assert account_dir_name("we/ird:na*me?") == "we_ird_na_me_"
-    assert account_dir_name("x") == account_dir_name("x")
-
-
-def test_explicit_data_dir_ignores_the_account(monkeypatch, tmp_path):
-    target = tmp_path / "explicit"
-    monkeypatch.setenv("MCP104_DATA_DIR", str(target))
-
-    assert resolve_data_dir("a@example.invalid") == target
-
-
-def test_get_config_derives_the_data_dir_from_the_account(monkeypatch, tmp_path):
+def test_get_config_needs_no_account_label(monkeypatch, tmp_path):
     from mcp104.config import get_config
 
-    monkeypatch.delenv("MCP104_DATA_DIR", raising=False)
-    monkeypatch.setenv("MCP104_ACCOUNT", "who@example.invalid")
-
-    cfg = get_config()
-
-    assert cfg.data_dir.name == "who@example.invalid"
-    assert cfg.cookies_path == cfg.data_dir / "cookies.json"
-
-
-# ── T-31 (R5.4): written records key on Config's identity value ────────────
-
-def test_t031_account_label_reflects_config_not_a_hardcoded_default(monkeypatch, tmp_path):
-    # Catches the call-site-bypasses-config shape: today SessionInfo's dataclass
-    # default silently supplies the literal "default" regardless of what's
-    # configured. Two distinct env values must produce two distinct
-    # cfg.account_label values — a config surface that quietly floors to one
-    # constant would pass a same-value check but fail this one.
-    _configure_env(monkeypatch, tmp_path, label="alice@104.com")
-    cfg_alice = get_config()
-    assert cfg_alice.account_label == "alice@104.com"
-
-    _configure_env(monkeypatch, tmp_path, label="bob@104.com")
-    cfg_bob = get_config()
-    assert cfg_bob.account_label == "bob@104.com"
-
-    assert cfg_alice.account_label != cfg_bob.account_label
-    assert cfg_bob.account_label != "default"
-
-
-@pytest.mark.parametrize("bad_value", ["", "   ", "\t\n "])
-def test_t031_account_label_blank_or_whitespace_is_startup_failure(monkeypatch, tmp_path, bad_value):
-    _configure_env(monkeypatch, tmp_path, label="placeholder@104.com")
-    monkeypatch.setenv("MCP104_ACCOUNT", bad_value)
-
-    with pytest.raises(Exception):
-        get_config()
-
-
-def test_t031_account_label_missing_is_startup_failure(monkeypatch, tmp_path):
-    monkeypatch.setenv("MCP104_DATA_DIR", str(tmp_path))
     monkeypatch.delenv("MCP104_ACCOUNT", raising=False)
-
-    with pytest.raises(Exception):
-        get_config()
-
-
-# ── T-104 (interface: config.get_config): the startup-failure message itself ──
-
-@pytest.mark.parametrize("bad_value,label", [
-    (None, "missing"),
-    ("", "empty string"),
-    ("   ", "whitespace-only"),
-])
-def test_t104_missing_account_label_message_names_var_value_and_reason(monkeypatch, tmp_path, bad_value, label):
     monkeypatch.setenv("MCP104_DATA_DIR", str(tmp_path))
-    if bad_value is None:
-        monkeypatch.delenv("MCP104_ACCOUNT", raising=False)
-    else:
-        monkeypatch.setenv("MCP104_ACCOUNT", bad_value)
 
-    with pytest.raises(Exception) as exc_info:
-        get_config()
+    cfg = get_config()  # must not raise
 
-    message = str(exc_info.value)
+    assert not hasattr(cfg, "account_label")
+    assert cfg.identity_path == tmp_path / "account.json"
+    assert cfg.cookies_path == tmp_path / "cookies.json"
 
-    # (1) names the environment variable — §C2 names MCP104_ACCOUNT as
-    # the one and only owner of this name.
-    assert "MCP104_ACCOUNT" in message, (
-        f"[{label}] message must name the env var: {message!r}"
-    )
 
-    # (2) positively points at a 104 account as what to set it to, and
-    # negatively must NOT use generic wording that would steer someone toward
-    # a machine-layer answer (hostname, OS account, made-up nickname) — those
-    # are exactly the silent mismatches §C2 exists to prevent.
-    assert "104" in message and ("帳號" in message or "account" in message.lower()), (
-        f"[{label}] message must positively point at a 104 account: {message!r}"
-    )
-    forbidden_generic_phrases = [
-        "能區分你的值",
-        "任何穩定字串",
-        "any stable string",
-    ]
-    for phrase in forbidden_generic_phrases:
-        assert phrase not in message, (
-            f"[{label}] message must not use generic machine-layer wording "
-            f"({phrase!r} found): {message!r}"
-        )
+def test_a_stale_account_label_in_the_environment_is_ignored(monkeypatch, tmp_path):
+    from mcp104.config import get_config
+
+    monkeypatch.setenv("MCP104_ACCOUNT", "whatever")
+    monkeypatch.setenv("MCP104_DATA_DIR", str(tmp_path))
+
+    assert get_config().data_dir == tmp_path

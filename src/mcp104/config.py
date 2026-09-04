@@ -1,5 +1,4 @@
 import os
-import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,11 +18,14 @@ class Config:
     db_path: str
     cookies_path: Path                  # login state persistence (replaces the old
                                          # hard-coded /data/cookies.json)
-    # Identifies which 104 employer account this run's records belong to.
-    # candidates/sent_log are keyed on it. Required, no default — see
-    # get_config()'s validation below for why a machine-derived fallback
-    # (hostname, OS login) can't stand in for it.
-    account_label: str
+    # Which 104 account the stored credentials belong to — the login e-mail
+    # 104 itself reports for the signed-in session (event/last-info's
+    # metadata.userEmail, measured 2026-09-04), fetched once after login and
+    # cached here next to cookies.json. Nothing is configured by the operator:
+    # the old MCP104_ACCOUNT label was dropped on 2026-09-04 because it only
+    # ever restated something 104 already knows, and getting it wrong made the
+    # server refuse to start.
+    identity_path: Path
     login_timeout_seconds: int  # How long _watch_for_login waits for a human to finish login
     max_daily_messages: int
     # Request-level throttling (browser/throttle.py) — separate from and in
@@ -90,73 +92,35 @@ def _parse_optional_int_env(name: str) -> int | None:
         ) from None
 
 
-def account_dir_name(account_label: str) -> str:
-    """The per-account sub-directory name derived from MCP104_ACCOUNT: the label
-    itself (a 104 login e-mail is the expected value, and `@`/`.` are legal in a
-    directory name on every supported platform), with anything a filesystem could
-    choke on replaced by `_`. Stable: the same label always yields the same name."""
-    return re.sub(r"[^A-Za-z0-9._@+-]", "_", account_label.strip())
-
-
-def resolve_data_dir(account_label: str | None = None) -> Path:
+def resolve_data_dir() -> Path:
     """Pure: reads the environment only, never creates the directory. Callers
     on the startup path are responsible for creating it and treating failure
     to do so as a startup failure.
 
-    MCP104_DATA_DIR, when set, is used as-is (the caller owns what lives there).
-    Otherwise this derives a per-user application data location using each
-    platform's own convention, the same choice a dependency like platformdirs
-    would make, without taking on that dependency — and, when `account_label`
-    is given, appends one sub-directory per account (`account_dir_name`).
-
-    Why per account by default (2026-09-04): MCP104_ACCOUNT is meant to be the
-    104 login e-mail, and switching it used to land in the SAME default
-    directory, where the account-label guard in Database.init() then refused
-    to start — a confusing failure for what is the normal way to use a second
-    account. With the account folded into the path, two accounts never share a
-    directory unless the operator explicitly points MCP104_DATA_DIR at one."""
+    MCP104_DATA_DIR, when set, is used as-is. Otherwise this derives a
+    per-user application data location using each platform's own convention,
+    the same choice a dependency like platformdirs would make, without
+    taking on that dependency. One directory per OS user: the rows inside are
+    keyed on the 104 login e-mail (see Config.identity_path), so several 104
+    accounts used from the same OS user share the directory without mixing.
+    """
     env_dir = os.getenv("MCP104_DATA_DIR")
     if env_dir is not None and env_dir.strip():
         return Path(env_dir)
 
     if sys.platform == "win32":
         base = os.getenv("LOCALAPPDATA") or os.getenv("APPDATA") or str(Path.home())
-        root = Path(base) / "mcp104"
-    elif sys.platform == "darwin":
-        root = Path.home() / "Library" / "Application Support" / "mcp104"
-    else:
-        xdg_data_home = os.getenv("XDG_DATA_HOME")
-        root = Path(xdg_data_home) / "mcp104" if xdg_data_home else Path.home() / ".local" / "share" / "mcp104"
-
-    if account_label is None or not account_label.strip():
-        return root
-    return root / account_dir_name(account_label)
+        return Path(base) / "mcp104"
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "mcp104"
+    xdg_data_home = os.getenv("XDG_DATA_HOME")
+    if xdg_data_home:
+        return Path(xdg_data_home) / "mcp104"
+    return Path.home() / ".local" / "share" / "mcp104"
 
 
 def get_config() -> Config:
-    # The only required setting in this object. A missing, empty, or
-    # whitespace-only value is a configuration error, not a case for a
-    # silent default — see the message below for why: any value this
-    # process could derive on its own (hostname, OS account) identifies the
-    # machine, not the 104 account, and would silently either merge two
-    # different 104 accounts' records together or split one account's
-    # records across machines.
-    account_label = os.getenv("MCP104_ACCOUNT")
-    if not account_label or not account_label.strip():
-        raise ConfigError(
-            "MCP104_ACCOUNT is not set. Set it to a value that "
-            "identifies which 104 employer account this run is signed into "
-            "(for example, that account's own login email) — "
-            "candidate status and the daily send count are recorded under "
-            "this value, so the same 104 account used from a different "
-            "machine must be given the same MCP104_ACCOUNT, and "
-            "switching to a different 104 account must be given a "
-            "different one."
-        )
-
-    # Resolved AFTER the account label: the default location has one
-    # sub-directory per account (see resolve_data_dir).
-    data_dir = resolve_data_dir(account_label)
+    data_dir = resolve_data_dir()
 
     auth_bind_port = _parse_optional_int_env("MCP104_AUTH_BIND_PORT")
 
@@ -171,7 +135,7 @@ def get_config() -> Config:
         data_dir=data_dir,
         db_path=str(data_dir / "104.db"),
         cookies_path=data_dir / "cookies.json",
-        account_label=account_label,
+        identity_path=data_dir / "account.json",
         # The real 104 flow is OAuth2 + PKCE + an MFA step that fires on
         # every container login, plus (per docs/104-site-facts.md) two
         # human-click branches — product selection and a repeatLogin

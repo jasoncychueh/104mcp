@@ -18,7 +18,7 @@ import types
 
 import pytest
 
-from mcp104.browser.session import SessionInfo, save_cookies
+from mcp104.browser.session import SessionInfo, save_cookies, save_identity
 # Bound at import time, i.e. before conftest's autouse stub replaces the
 # module attribute — these two unit tests exercise the real opener.
 from mcp104.tools.auth import _open_in_local_browser as _real_open_in_local_browser
@@ -174,6 +174,7 @@ async def test_require_login_restores_from_the_credential_file_without_login(tmp
 
     app_ctx = make_app_ctx(tmp_path)
     save_cookies(app_ctx.config.cookies_path, _cookie_jar())
+    save_identity(app_ctx.config.identity_path, "who@example.invalid")
     ctx = make_ctx(app_ctx)
 
     @require_login
@@ -184,7 +185,100 @@ async def test_require_login_restores_from_the_credential_file_without_login(tmp
     restored = app_ctx.session_pool.get_session("s1")
     assert isinstance(restored, SessionInfo)
     assert restored.cookies == _cookie_jar()
-    assert restored.account_label == app_ctx.config.account_label
+    assert restored.account_label == "who@example.invalid"  # from account.json, no request
+
+
+def _fake_last_info_fetch(monkeypatch, user_email, calls):
+    """Stub the transport so ensure_account_identity's one request answers with
+    a family-B envelope carrying metadata.userEmail (measured shape, §8.16)."""
+    import json as _json
+
+    from mcp104.browser.api_client import RawResponse
+    from mcp104.tools import helpers
+
+    async def fake_fetch(endpoint, *, cookie_header, params=None, body=None):
+        calls.append(endpoint.key)
+        payload = {"data": {"emailCC": []}, "metadata": {"userEmail": user_email, "quota": 300}}
+        return RawResponse(status=200, location=None, content_type="application/json",
+                           body=_json.dumps(payload), parsed_json=payload)
+
+    monkeypatch.setattr(helpers, "fetch", fake_fetch)
+
+
+@pytest.mark.asyncio
+async def test_identity_is_learned_from_104_once_and_cached(tmp_path, monkeypatch):
+    """No account label is configured any more: the first tool call after a
+    login asks 104 who is signed in (event/last-info → metadata.userEmail),
+    keys the session on it and caches it in account.json; later calls and a
+    later process do not ask again."""
+    from mcp104.browser.session import load_identity
+    from mcp104.tools.helpers import require_login
+
+    app_ctx = make_app_ctx(tmp_path)
+    ctx = make_ctx(app_ctx)
+    app_ctx.session_pool.activate_direct("s1", SessionInfo(cookies=_cookie_jar(), account_label=None))
+    calls = []
+    _fake_last_info_fetch(monkeypatch, "who@example.invalid", calls)
+
+    seen_labels = []
+
+    @require_login
+    async def tool(ctx):
+        seen_labels.append(app_ctx.session_pool.get_session("s1").account_label)
+        return {"ok": True}
+
+    assert await tool(ctx=ctx) == {"ok": True}
+    assert await tool(ctx=ctx) == {"ok": True}
+
+    assert seen_labels == ["who@example.invalid", "who@example.invalid"]
+    assert calls == ["event_last_info"], "exactly one identity request, then cached"
+    assert load_identity(app_ctx.config.identity_path) == "who@example.invalid"
+
+
+@pytest.mark.asyncio
+async def test_identity_request_failure_blocks_the_tool_with_that_error(tmp_path, monkeypatch):
+    from mcp104.browser.api_client import RawResponse
+    from mcp104.tools import helpers
+    from mcp104.tools.helpers import require_login
+
+    app_ctx = make_app_ctx(tmp_path)
+    ctx = make_ctx(app_ctx)
+    app_ctx.session_pool.activate_direct("s1", SessionInfo(cookies=_cookie_jar(), account_label=None))
+
+    async def expired_fetch(endpoint, *, cookie_header, params=None, body=None):
+        return RawResponse(status=401, location=None, content_type="application/json", body="{}", parsed_json={})
+
+    monkeypatch.setattr(helpers, "fetch", expired_fetch)
+    ran = []
+
+    @require_login
+    async def tool(ctx):
+        ran.append(True)
+        return {"ok": True}
+
+    result = await tool(ctx=ctx)
+    assert "error" in result and ran == []
+    assert not app_ctx.config.identity_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_logout_forgets_the_cached_identity(tmp_path, monkeypatch):
+    from mcp104.tools import auth
+
+    app_ctx = make_app_ctx(tmp_path)
+    ctx = make_ctx(app_ctx)
+    save_cookies(app_ctx.config.cookies_path, _cookie_jar())
+    save_identity(app_ctx.config.identity_path, "who@example.invalid")
+    app_ctx.session_pool.activate_direct("s1", SessionInfo(cookies=_cookie_jar(), account_label="who@example.invalid"))
+
+    async def no_server_logout(ctx):
+        return types.SimpleNamespace(state="not_sent", detail="(test)")
+
+    monkeypatch.setattr(auth, "request_server_logout", no_server_logout)
+    await auth.logout(ctx)
+
+    assert not app_ctx.config.identity_path.exists()
+    assert not app_ctx.config.cookies_path.exists()
 
 
 @pytest.mark.asyncio
