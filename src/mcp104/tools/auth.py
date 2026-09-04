@@ -683,11 +683,11 @@ async def login(ctx: Context) -> dict:
 
     先用既有狀態（記憶體中的 session 或上次的憑證檔）做一次真實的 104 驗證，通過就回
     {"status": "already_logged_in"|"restored"}，不需要真人。否則開一次真人登入，回
-    {"login_url", "token", "browser_opened"}。**接下來 Agent 要做的事：**
-    1. browser_opened 為 True 時，伺服器已用使用者的預設瀏覽器打開登入頁，只要請使用者
-       在跳出的視窗完成 104 登入（含 MFA、產品選擇、「此帳號已登入」確認）；為 False 時
-       把 login_url 給使用者請他打開。
-    2. 立刻呼叫 check_login(token, wait_seconds=90)，回 pending 就再呼叫，直到 status
+    {"login_url", "token", "browser_opened"}。**接下來 Agent 要做的事，順序不能反：**
+    1. **先用文字把 login_url 完整印給使用者**，請他完成 104 登入（含 MFA、產品選擇、
+       「此帳號已登入」確認）。browser_opened 為 True 只表示伺服器順手用預設瀏覽器開了
+       這個網址，使用者不一定看到那個視窗，網址仍然要印出來。
+    2. 印完之後才呼叫 check_login(token, wait_seconds=90)，回 pending 就再呼叫，直到 status
        不是 pending 為止——每次最多等 90 秒、一完成就立刻回傳。**不要停下來等使用者說
        「登入了」**，也不要要求使用者回報；真人完整登入約 3–5 分鐘。
     對一次已在進行中的登入重複呼叫，會原樣回傳那一次的 login_url／token，不會取代它。
