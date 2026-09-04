@@ -44,7 +44,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 @pytest.fixture(autouse=True)
 def _default_identity_env(monkeypatch, tmp_path):
-    monkeypatch.setenv("MCP104_ACCOUNT", "test-account@104.example")
+    monkeypatch.delenv("MCP104_ACCOUNT", raising=False)  # dropped 2026-09-04; must not be needed
     monkeypatch.setenv("MCP104_DATA_DIR", str(tmp_path))
 
 

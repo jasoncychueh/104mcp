@@ -11,8 +11,8 @@ from uuid import uuid4
 
 from mcp.server.fastmcp import Context
 
-from mcp104.browser.api_client import Endpoint, classify, fetch, hostname_for, select_cookies_for_host
-from mcp104.browser.session import SessionInfo, load_cookies, matches_auth_host
+from mcp104.browser.api_client import Endpoint, classify, fetch, hostname_for, select_cookies_for_host, ENDPOINTS
+from mcp104.browser.session import SessionInfo, load_cookies, load_identity, matches_auth_host, save_identity
 from mcp104.browser.throttle import enforce_throttle, note_request
 
 log = logging.getLogger("104-mcp.helpers")
@@ -187,16 +187,54 @@ def _restore_session_from_cookie_file(app, session_id: str) -> bool:
     if not cookies:
         return False
     app.session_pool.activate_direct(
-        session_id, SessionInfo(cookies=cookies, account_label=app.config.account_label)
+        session_id,
+        SessionInfo(cookies=cookies, account_label=load_identity(app.config.identity_path)),
     )
     log.info("Session restored from the credential file for a connection that had not called login()")
     return True
 
 
+async def ensure_account_identity(ctx: Context) -> dict | None:
+    """Make sure this connection's SessionInfo knows which 104 account it is
+    (`account_label` = the login e-mail), which every row in the database is
+    keyed on. Order: already known → nothing; cached in `account.json` next to
+    cookies.json → load it; otherwise ask 104 once — `GET event/last-info`
+    reports the signed-in operator as `metadata.userEmail` (measured 2026-09-04,
+    equal to the account's login e-mail) — and cache it. That request goes
+    through guarded_api like any other (throttled, session-checked), so the
+    first tool call after a fresh login costs one extra request.
+
+    Returns None when the identity is in place, or the error payload the tool
+    should return as-is (session expired, throttled, malformed…). The e-mail is
+    the operator's own; it is stored only in their data directory and never
+    logged or returned to the agent."""
+    app = ctx.request_context.lifespan_context
+    info = app.session_pool.get_session(get_session_id(ctx))
+    if info is None or info.account_label is not None:
+        return None
+    cached = load_identity(app.config.identity_path)
+    if cached:
+        info.account_label = cached
+        return None
+    try:
+        async with guarded_api(ctx, ENDPOINTS["event_last_info"]) as (payload, live_info):
+            metadata = payload.get("metadata")
+            email = metadata.get("userEmail") if isinstance(metadata, dict) else None
+            if not isinstance(email, str) or "@" not in email:
+                return _error_malformed("event/last-info 的 metadata.userEmail 缺失或不是 e-mail")
+            live_info.account_label = email
+            save_identity(app.config.identity_path, email)
+            return None
+    except GuardAbort as e:
+        return e.payload
+
+
 def require_login(func):
     """Decorator: returns error if there is no usable login state — no session for
     this connection AND no credential file to restore one from (see
-    _restore_session_from_cookie_file)."""
+    _restore_session_from_cookie_file) — and otherwise makes sure the session's
+    104 account identity is resolved before the tool body runs (see
+    ensure_account_identity), so tool code can rely on info.account_label."""
     @wraps(func)
     async def wrapper(*args, **kwargs):
         ctx = kwargs.get("ctx") or next(
@@ -209,6 +247,9 @@ def require_login(func):
         if not app.session_pool.is_logged_in(session_id):
             if not _restore_session_from_cookie_file(app, session_id):
                 return ERROR_NOT_LOGGED_IN
+        identity_error = await ensure_account_identity(ctx)
+        if identity_error is not None:
+            return identity_error
         return await func(*args, **kwargs)
     return wrapper
 

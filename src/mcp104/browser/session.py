@@ -24,7 +24,11 @@ class SessionInfo:
     # completes there is no context left to query cookies from. The
     # session must hold its own credentials.
     cookies: list[dict]
-    account_label: str
+    # The 104 login e-mail this session belongs to, as reported by 104 itself
+    # (tools/helpers.py ensure_account_identity). None until fetched — every
+    # tool behind require_login gets it resolved before it runs, so tool code
+    # may treat it as present. Never logged, never returned to the agent.
+    account_label: str | None = None
     last_active: datetime = field(default_factory=datetime.now)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     # Request-count/pacing bookkeeping (browser/throttle.py), one instance
@@ -167,6 +171,32 @@ def load_cookies(path: Path) -> list[dict] | None:
         return json.loads(path.read_text())
     except (json.JSONDecodeError, ValueError):
         return None
+
+
+def save_identity(path: Path, email: str) -> None:
+    """Cache the 104 login e-mail next to cookies.json (`account.json`), so a
+    restart restores it without a request. Same lifetime as the cookie file:
+    written when first learned for a login, removed by clear_identity() on
+    logout and when a fresh human login completes (it may be another
+    account)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"email": email}), encoding="utf-8")
+
+
+def load_identity(path: Path) -> str | None:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    email = data.get("email") if isinstance(data, dict) else None
+    return email if isinstance(email, str) and email.strip() else None
+
+
+def clear_identity(path: Path) -> None:
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
 
 
 def clear_cookies(path: Path):

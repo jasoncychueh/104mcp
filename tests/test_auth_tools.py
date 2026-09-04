@@ -36,7 +36,7 @@ def make_config(tmp_path: Path, **overrides) -> Config:
         data_dir=data_dir,
         db_path=str(data_dir / "104.db"),
         cookies_path=data_dir / "cookies.json",
-        account_label="acct",
+        identity_path=data_dir / "account.json",
         login_timeout_seconds=900,
         max_daily_messages=50,
         max_requests_per_hour=300,

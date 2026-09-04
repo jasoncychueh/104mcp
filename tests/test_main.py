@@ -156,7 +156,7 @@ def test_t032_selftest_browser_stdout_flag_writes_nothing_to_stdout():
 
 def test_t033_init_failure_writes_nothing_to_stdout(tmp_path):
     env = _base_env(tmp_path)
-    env["MCP104_ACCOUNT"] = ""  # required, deliberately left unset
+    env["MCP104_AUTH_BASE_URL"] = "http://127.0.0.1:1"  # half of a required pair, deliberately invalid
 
     proc = subprocess.run(
         [sys.executable, "-m", "mcp104.main"],
@@ -195,7 +195,7 @@ def test_t035_info_level_messages_reach_diagnostic_output():
 
 def test_t036_init_failure_readable_reason_and_nonzero_exit(tmp_path):
     env = _base_env(tmp_path)
-    env["MCP104_ACCOUNT"] = "   "  # whitespace-only, deliberately invalid
+    env["MCP104_AUTH_BASE_URL"] = "http://127.0.0.1:1"  # half of a required pair, deliberately invalid
 
     proc = subprocess.run(
         [sys.executable, "-m", "mcp104.main"],
@@ -208,7 +208,7 @@ def test_t036_init_failure_readable_reason_and_nonzero_exit(tmp_path):
     assert proc.stderr.strip() != b"", (
         "startup failure must write a readable reason to stderr"
     )
-    assert b"MCP104_ACCOUNT" in proc.stderr, (
+    assert b"MCP104_AUTH" in proc.stderr, (
         "the failure reason should name the offending setting"
     )
 
@@ -251,59 +251,6 @@ def test_t037_diagnostic_output_does_not_contain_full_token(tmp_path):
     assert fake_token not in stderr.decode("utf-8", errors="replace"), (
         "diagnostic output must not contain the full login token"
     )
-
-
-# ── Regression: account-label isolation failure at startup must not hang ───
-# (root cause: Database.init() raising SharedDataDirectoryError left the
-# aiosqlite connection _init_globals had already opened un-closed; its
-# non-daemon worker thread then kept the interpreter alive past sys.exit(1),
-# so a stdio MCP client saw a hang/timeout instead of the startup error.
-# Same underlying leak as backlog c41e07, which is about test_database.py
-# hanging at process exit for the same reason.)
-
-def test_account_label_isolation_failure_exits_promptly_with_readable_error(tmp_path):
-    from mcp104.db.database import Database
-
-    data_dir = tmp_path / "data"
-    data_dir.mkdir(parents=True)
-    db_path = str(data_dir / "104.db")
-
-    async def _prepopulate():
-        db = Database(db_path)
-        await db.init("dev")
-        await db.upsert_candidate("12345", "resume", "dev", name="existing", status="contacted")
-        await db.close()
-
-    import asyncio as _asyncio
-    _asyncio.run(_prepopulate())
-
-    env = _base_env(data_dir, label="other")
-
-    proc = subprocess.run(
-        [sys.executable, "-m", "mcp104.main"],
-        input=b"",
-        capture_output=True,
-        env=env,
-        timeout=15,
-    )
-
-    assert proc.returncode != 0, (
-        "startup must fail (not hang) when the data dir already holds a "
-        "different account label's records"
-    )
-    assert proc.stdout == b"", f"stdout must be zero bytes, got {proc.stdout!r}"
-    # The Chinese needle is checked against the subprocess's OWN stream
-    # encoding (locale.getpreferredencoding), not assumed to be UTF-8: on
-    # Windows, Python's stderr defaults to the active code page (observed:
-    # cp950 for a Traditional Chinese locale), so logging.StreamHandler
-    # wrote the message in that encoding, not UTF-8. The pure-ASCII needle
-    # is checked directly against the raw bytes since ASCII is a subset of
-    # every encoding involved here.
-    import locale as _locale
-    stderr_encoding = _locale.getpreferredencoding(False)
-    assert "啟動失敗".encode(stderr_encoding, errors="replace") in proc.stderr
-    assert b"already holds records" in proc.stderr
-
 
 # ── T-49 (interface, main.configure_logging) ───────────────────────────────
 

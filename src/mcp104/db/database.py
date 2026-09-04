@@ -9,32 +9,11 @@ log = logging.getLogger("104-mcp.database")
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 UTC_TZ = ZoneInfo("UTC")
 
-# The storage layer's column is still named account_email — it predates the
-# account_label rename in config.py/session.py and the schema itself hasn't
-# changed. Every public method on Database below takes account_label as its
-# parameter name (matching the in-memory identity everywhere else); the SQL
-# and DDL strings keep the original account_email column name unchanged.
+# The storage layer's column is named account_email; since 2026-09-04 the
+# value really is the 104 login e-mail (SessionInfo.account_label, fetched from
+# 104 after login). Every public method below takes it as `account_label`.
 
 
-class SharedDataDirectoryError(RuntimeError):
-    """Raised by Database.init() when the storage already holds rows keyed
-    under an identity other than the one this run is using. Deliberately not
-    auto-resolved: the rows may belong to a different user and this process
-    has no basis for deciding who they belong to. See init()'s docstring for
-    the reasoning and the three ways an operator can move forward."""
-
-# candidate_id is not one key space. search_resumes/get_resume_detail write
-# the resume card's `id` attribute (e.g. "1728037773409", see
-# docs/104-site-facts.md); messaging's send_message/read_messages write the
-# messaging API's own `pId` (e.g. "7174595", same doc §6b.8-2 — the JSON-API
-# migration's read_messages surfaces this AS `candidate_id`, so what this
-# column stores did not change, only how it is obtained: it used to come off
-# a DOM-rendered conversation-thread page URL, now off the API row's own
-# pId field, both naming the identical messaging-space id). These are
-# NOT known to be the same key space as the résumé-space id above — nothing
-# in the measured facts confirms it in either direction, and their shapes
-# visibly differ. id_source makes every write honest about which system it
-# came from instead of silently conflating the two.
 ID_SOURCE_RESUME = "resume"      # from a search_resumes/get_resume_detail card id
 ID_SOURCE_MESSAGE = "message"    # from messaging's own candidate id (104's pId)
 ID_SOURCE_UNKNOWN = "unknown"    # migrated row predating id_source — provenance genuinely unrecoverable
@@ -45,19 +24,12 @@ class Database:
         self.path = path
         self._conn: aiosqlite.Connection | None = None
 
-    async def init(self, account_label: str):
-        """Open the database, create/migrate its tables, then verify that
-        every row already in storage belongs to account_label — the
-        second, independent isolation defense alongside per-user data
-        directories (the first is that two users' directories are
-        different in the first place). A hit here is a startup failure:
-        this process cannot tell whether the directory is genuinely
-        shared, or the same operator's account_label simply changed (a
-        real account switch, a typo fixed, or a directory inherited from a
-        version predating account_label, where every row is keyed on the
-        literal string "default"), so it reports what it observed instead
-        of guessing, and never deletes, merges, or rewrites a row it
-        cannot attribute."""
+    async def init(self):
+        """Open the database and create/migrate its tables. Rows are keyed on
+        the 104 login e-mail 104 itself reports for the session (the
+        account_email column), so one store can hold several accounts' rows
+        without any operator-supplied label — the former account-label
+        isolation guard was removed with the label on 2026-09-04."""
         self._conn = await aiosqlite.connect(self.path)
         self._conn.row_factory = aiosqlite.Row
         # sent_log's id_source carries the same DEFAULT here as the
@@ -90,65 +62,6 @@ class Database:
         # write raises OperationalError: no such column: id_source. Bring
         # such a database forward explicitly.
         await self._migrate_id_source_column()
-        await self._check_account_label_isolation(account_label)
-
-    async def _check_account_label_isolation(self, account_label: str):
-        cursor = await self._conn.execute(
-            "SELECT DISTINCT account_email FROM candidates "
-            "UNION SELECT DISTINCT account_email FROM sent_log"
-        )
-        rows = await cursor.fetchall()
-        stored_labels = {row[0] for row in rows}
-        foreign_labels = stored_labels - {account_label}
-        if not foreign_labels:
-            return
-
-        sorted_foreign = sorted(foreign_labels)
-        lines = [
-            f"This database ({self.path}) already holds records under an "
-            f"account label other than the one this run is using.",
-            f"  Label(s) found in storage: {', '.join(sorted_foreign)}",
-            f"  This run's own label: {account_label!r}",
-            "",
-            "Two causes are equally possible here, and this check cannot "
-            "tell which one applies:",
-            "  - This data directory is shared by two different users or "
-            "104 accounts.",
-            "  - It's the same operator, and this value changed — either a "
-            "genuine switch to a different 104 account, or just a "
-            "correction to this value itself (a typo, or a different "
-            "machine set it differently). This includes a directory "
-            "written by a version of this package that predates a "
-            "configured account label, where every row is keyed on the "
-            "literal string \"default\", which does not identify any 104 "
-            "account.",
-            "",
-            "None of the rows already in storage were deleted, merged, or "
-            "rewritten — this process has no basis for deciding who they "
-            "belong to. Three ways forward:",
-            "  (a) If two users or accounts really are sharing this "
-            "directory, give each one its own data directory "
-            "(MCP104_DATA_DIR).",
-        ]
-        if len(foreign_labels) == 1 and sorted_foreign[0] != "default":
-            only = sorted_foreign[0]
-            lines.append(
-                f"  (b) If only this run's own account label changed (a "
-                f"typo, or an inconsistent setting on another machine) and "
-                f"{only!r} is itself a value that identifies a 104 "
-                f"account, set the account label back to {only!r}."
-            )
-        lines.append(
-            "  (c) Start a fresh data directory (a new MCP104_DATA_DIR) "
-            "and leave this one untouched; move over any rows worth "
-            "keeping yourself once you know who they belong to. This costs "
-            "today's send count and throttling window for this account — "
-            "both restart at zero in the new directory — a bounded, "
-            "one-time cost chosen knowingly, not a silent reset. The new "
-            "directory also has no login credentials (cookies.json) yet, "
-            "so you will need to run login() again there."
-        )
-        raise SharedDataDirectoryError("\n".join(lines))
 
     async def _column_exists(self, table: str, column: str) -> bool:
         cursor = await self._conn.execute(f"PRAGMA table_info({table})")

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mcp104"
-version = "0.1.1"
+version = "0.2.0"
 description = "MCP server that lets an AI agent operate a 104人力銀行 enterprise recruiting account — résumé search, job listings, messaging and 詢問意願 events, with a device-flow login that keeps credentials out of the LLM"
 readme = "README.md"
 license = {file = "LICENSE"}           # PEP 639 string form (`license = "MIT"`) needs

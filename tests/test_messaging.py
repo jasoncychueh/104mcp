@@ -259,7 +259,7 @@ _OPENED_DATABASES: list[Database] = []
 async def _new_session(tmp_path) -> tuple[FakeCtx, SessionInfo, Database]:
     pool = SessionPool()
     database = Database(str(tmp_path / f"db_{uuid4().hex}.sqlite"))
-    await database.init("test@104.com")
+    await database.init()
     _OPENED_DATABASES.append(database)
     ctx = FakeCtx(pool, database)
     sid = get_session_id(ctx)
@@ -997,7 +997,7 @@ async def test_send_message_exception_after_hook_reports_unconfirmed_even_with_e
     # address as "the send was never attempted" and wrongly report not-sent here.
     pool = SessionPool()
     database = Database(str(tmp_path / f"db_{uuid4().hex}.sqlite"))
-    await database.init("test@104.com")
+    await database.init()
     _OPENED_DATABASES.append(database)
     ctx = FakeCtx(pool, database)
     sid = get_session_id(ctx)
@@ -1986,7 +1986,7 @@ async def test_T53_list_templates_missing_metadata_and_upstream_error_both_fail_
 async def test_T54_list_templates_requires_login_and_goes_through_the_real_throttle_gate(tmp_path, monkeypatch):
     pool = SessionPool()
     database = Database(str(tmp_path / f"db_{uuid4().hex}.sqlite"))
-    await database.init("test@104.com")
+    await database.init()
     _OPENED_DATABASES.append(database)
     ctx = FakeCtx(pool, database)  # no session activated -> not logged in
     _install_never_called_fetch(monkeypatch)

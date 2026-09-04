@@ -96,7 +96,7 @@ _app_ctx: AppContext | None = None
 
 async def _init_globals() -> None:
     """Startup sequence, fixed order: get_config() → create the per-user
-    data directory → Database.init(account_label) → compact_state_file().
+    data directory → Database.init() → compact_state_file().
     resolve_auth_binding() is also called here, during config resolution,
     so a half-set auth binding pair fails at startup instead of producing a
     login_url that silently connects to nothing.
@@ -106,8 +106,8 @@ async def _init_globals() -> None:
     touch stdout or sys.exit itself.
 
     Every failure path below releases what it already opened before
-    re-raising: db.init() failing (e.g. SharedDataDirectoryError from the
-    account-label isolation check) still leaves aiosqlite's own connection
+    re-raising: db.init() failing (e.g. a corrupt or unwritable database
+    file) still leaves aiosqlite's own connection
     open with a live, non-daemon worker thread — without closing it here,
     that thread keeps the interpreter alive past main()'s sys.exit(1), and a
     stdio MCP client sees a hang/timeout instead of the startup error.
@@ -121,7 +121,7 @@ async def _init_globals() -> None:
 
     db = Database(config.db_path)
     try:
-        await db.init(config.account_label)
+        await db.init()
     except Exception:
         await db.close()
         raise
