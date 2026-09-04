@@ -41,7 +41,7 @@
      "mcpServers": {
        "104-mcp": {
          "command": "uvx",
-         "args": ["--from", "git+https://github.com/jasoncychueh/104mcp.git", "mcp104"],
+         "args": ["mcp104"],
          "env": {
            "MCP104_ACCOUNT": "<你的 104 帳號識別，例如公司信箱或帳號名>"
          },
@@ -55,7 +55,8 @@
    每日發送計數）。`timeout` 是單一工具呼叫的上限（毫秒），120 秒是本專案建議
    的值，請照抄。
 
-   套件發布到 PyPI 之後，`args` 可以簡化成 `["mcp104"]`。
+   想用 GitHub 上最新、尚未發布到 PyPI 的版本，`args` 改成
+   `["--from", "git+https://github.com/jasoncychueh/104mcp.git", "mcp104"]`。
 
 3. 啟動 Claude Code，請 Agent 呼叫 `login()`，在跳出的瀏覽器視窗完成 104 登入。
    第一次登入會自動下載一份專用的 Chromium（約 300 MB），不需要自己安裝任何東西。
@@ -65,7 +66,7 @@
 - **第一次連線逾時**：Claude Code 給 MCP server 30 秒啟動時間，`uvx` 第一次要
   下載並建置套件，可能超過 30 秒。用 `/mcp` 重新連線一次即可，之後約 1 秒就能啟動。
 - **更新到新版**：`uvx` 會用快取，不會自動抓新版。跑一次
-  `uvx --refresh --from git+https://github.com/jasoncychueh/104mcp.git mcp104`（PyPI 版是 `uvx --refresh mcp104`）。
+  `uvx --refresh mcp104`（GitHub 版是 `uvx --refresh --from git+https://github.com/jasoncychueh/104mcp.git mcp104`）。
 - **換帳號**：`MCP104_ACCOUNT` 綁定在資料目錄上，同一個目錄只能有一個值。要用第二個
   104 帳號，請另外設 `MCP104_DATA_DIR` 指向一個新目錄。
 
