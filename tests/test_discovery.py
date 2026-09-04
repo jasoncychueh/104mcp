@@ -593,10 +593,11 @@ def test_describe_result_fields_keys_match_a_real_converted_fixture_row():
         f"these keys are on a REAL converted row but describe_result_fields() does "
         f"not document them: {sorted(missing_from_doc)}"
     )
-    # search_resumes' row carries 3 extra fields recommend/match do not (masterUrl,
-    # nationality, plastActionDateDesc per docs/104-site-facts.md §6b.3b) -- the
-    # allow-list is a superset of any single route's row, so the reverse direction
-    # (doc keys not on this particular row) is not asserted here.
+    # search_resumes' row carries 2 extra fields recommend/match do not (nationality,
+    # plastActionDateDesc per docs/104-site-facts.md §6b.3b; the third, masterUrl, is
+    # deliberately not forwarded since 2026-09-04) -- the allow-list is a superset of
+    # any single route's row, so the reverse direction (doc keys not on this particular
+    # row) is not asserted here.
 
 
 def test_every_gloss_entry_is_a_non_empty_string():

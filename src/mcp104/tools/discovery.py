@@ -1,5 +1,5 @@
 """Two zero-request, zero-quota discovery tools: `browse_filter_values` (what values a
-`search_resumes` `filters` key takes) and `describe_result_fields` (what the 35 fields on
+`search_resumes` `filters` key takes) and `describe_result_fields` (what the 34 fields on
 a résumé row mean).
 
 Answers: given a `filters` key from `tools/filters.py`'s `CONDITIONS`, what can go in it —
@@ -96,7 +96,10 @@ RESUME_ROW_FIELD_GLOSS: dict[str, str] = {
                        "這些聯絡欄位本身不在列（row）的回傳範圍內，只有本旗標會出現在列上",
     "documentSnapshotId": "未量測，104 自己的欄位名稱（documentSnapshotId）照登",
     "eduDesc": "最高學歷敘述（文字）",
-    "expJobArr": "工作經歷陣列",
+    "expJobArr": "工作經歷陣列，每筆一份工作（104 自己的 19 個欄位）。值為 null／空字串／"
+                 "空陣列的欄位不列出（0 與 false 不是空值，照列）；exp_job_note（工作內容）"
+                 "104 給的是富文字編輯器的 HTML，本工具已轉成純文字，段落與清單項目以換行"
+                 "分隔。要看完整經歷請用 get_resume_detail",
     "expPeriodDesc": "工作年資敘述（文字）",
     "hasInRecruitFlow": "未量測，104 自己的欄位名稱（hasInRecruitFlow）照登",
     "hunterStatus": "未量測，104 自己的欄位名稱（hunterStatus）照登",
@@ -107,7 +110,6 @@ RESUME_ROW_FIELD_GLOSS: dict[str, str] = {
     "isSave": "未量測，104 自己的欄位名稱（isSave）照登",
     "isTalent50": "未量測，104 自己的欄位名稱（isTalent50）照登",
     "latestMemo": "未量測，104 自己的欄位名稱（latestMemo）照登",
-    "masterUrl": "履歷主檔連結（僅 search_resumes 帶有，recommend/match 不帶）",
     "nationality": "國籍代碼（僅 search_resumes 帶有，recommend/match 不帶）",
     "otherCourse": "未量測，104 自己的欄位名稱（otherCourse）照登",
     "pId": "第二個候選人識別碼，不是 candidate_id",
@@ -115,7 +117,7 @@ RESUME_ROW_FIELD_GLOSS: dict[str, str] = {
     "plastActionDateDesc": "最近活動日敘述（僅 search_resumes 帶有，recommend/match 不帶）",
     "readStatus": "未量測，104 自己的欄位名稱（readStatus）照登——同名也是一個搜尋參數"
                   "（readStatus=all），列上這個欄位的意義未必相同，不可互相推論",
-    "remark": "備註（含 HTML）",
+    "remark": "備註（104 給的是 HTML，本工具已轉成純文字）",
     "remarkWithoutHtml": "備註（已去除 HTML）",
     "remoteWork": "未量測，104 自己的欄位名稱（remoteWork）照登",
     "resumeType": "未量測，104 自己的欄位名稱（resumeType）照登",

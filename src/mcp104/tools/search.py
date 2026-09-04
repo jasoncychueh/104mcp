@@ -17,7 +17,9 @@ implementation can still exercise its decisions without ever driving the MCP too
 wrapper.
 """
 
+import html
 import logging
+import re
 
 from mcp.server.fastmcp import Context, FastMCP
 
@@ -48,30 +50,73 @@ log = logging.getLogger("104-mcp.search")
 # delivered names `_convert_resume_row` below actually produces, and the only way that
 # can never drift is for both modules to call the identical function rather than two
 # independently-maintained copies of one regex.
+# ── HTML -> plain text, applied to every string value delivered by the résumé tools ──
+#
+# Candidates write several résumé fields in 104's rich-text editor, and 104 returns
+# those values as the editor's HTML verbatim — `<p>`, `<ol>/<li>`, `<span style=...>`,
+# `&nbsp;` — on the list rows (`expJobArr[].expJobNote`, `remark`) and on the détail
+# (`auto`, `introduction`, `workDesc`, `specialty[].desc`, `achievement[].desc`, the
+# same `expJobNote`). Measured 2026-09-04 on the committed fixtures: the markup is
+# ~17% of a 50-row search page and carries no information a caller can use — the
+# Agent has no renderer, it re-presents the text to a human. Converting it to plain
+# text here (block-level tags become line breaks, every other tag is dropped, entities
+# are decoded) keeps the WORDS the candidate wrote and drops only the markup. Strings
+# without any tag pass through byte-identical — the restricted-contact placeholders
+# (tests T-16) and every code/date/e-mail value are untouched.
+_HTML_TAG_RE = re.compile(r"<[A-Za-z/!][^>]*>")
+_HTML_BLOCK_TAG_RE = re.compile(
+    r"</?(?:p|div|br|li|ol|ul|tr|h[1-6]|table|blockquote)\b[^>]*>", re.IGNORECASE
+)
+
+
+def html_to_text(value: str) -> str:
+    """Plain text for a rich-text field: block-level tags (`p`, `div`, `br`, `li`,
+    `ol`/`ul`, `tr`, `h1`–`h6`, `table`, `blockquote`) become line breaks, every other
+    tag is removed, HTML entities are decoded, `&nbsp;` becomes a space, and blank or
+    whitespace-only lines are dropped. A string with no tag at all is returned as-is
+    (not even entity-decoded), so values 104 never wrote as HTML stay byte-identical.
+    """
+    if not _HTML_TAG_RE.search(value):
+        return value
+    text = _HTML_BLOCK_TAG_RE.sub("\n", value)
+    text = _HTML_TAG_RE.sub("", text)
+    text = html.unescape(text).replace("\xa0", " ")
+    lines = (line.strip() for line in text.split("\n"))
+    return "\n".join(line for line in lines if line)
+
+
 def _convert(value):
     """Recursively convert every dict key at every depth via _snake_case; list elements
-    are walked one by one; every other value (str, int, bool, None, ...) passes through
-    completely unchanged. Used for both the détail response (every field, mechanically)
-    and the nested structures inside a row (e.g. expJobArr) once the row's own top-level
+    are walked one by one; string values go through `html_to_text` (a no-op for strings
+    without markup); every other value (int, bool, None, ...) passes through completely
+    unchanged. Used for both the détail response (every field, mechanically) and the
+    nested structures inside a row (e.g. expJobArr) once the row's own top-level
     allow-list has already picked which fields to keep.
     """
     if isinstance(value, dict):
         return {_snake_case(k): _convert(v) for k, v in value.items()}
     if isinstance(value, list):
         return [_convert(v) for v in value]
+    if isinstance(value, str):
+        return html_to_text(value)
     return value
 
 
 # ── Résumé row conversion (search / recommend / match) ──────────────────
 #
-# The 35 fields 104 actually sends on a résumé row, across all three list routes:
-# recommend and match send exactly the same 32; search sends those 32 plus masterUrl,
-# nationality and plastActionDateDesc [M docs/104-site-facts.md §6b.3b — verified
-# 2026-08-14 against tests/fixtures/rows_{search,recommend,match}.json]. An ALLOW-LIST,
-# not "every field present": unlike the détail response (every field, however many 104
-# adds later, mechanically), a row is a small, previously-measured set — a field 104
-# adds to a row tomorrow is deliberately NOT surfaced until someone has looked at it,
-# rather than silently appearing with nobody having vetted it for size or content.
+# 104 sends 35 fields on a résumé row across the three list routes: recommend and
+# match send exactly the same 32; search sends those 32 plus masterUrl, nationality
+# and plastActionDateDesc [M docs/104-site-facts.md §6b.3b — verified 2026-08-14
+# against tests/fixtures/rows_{search,recommend,match}.json]. 34 of them are forwarded:
+# `masterUrl` (the résumé page's own URL, carrying a percent-encoded copy of the whole
+# query) is deliberately NOT — it is only openable by a browser that holds the very
+# session this process holds, so no human the Agent talks to can follow it, and its
+# ~500 characters per row bought nothing (account holder's decision, 2026-09-04). An
+# ALLOW-LIST, not "every field present": unlike the détail response (every field,
+# however many 104 adds later, mechanically), a row is a small, previously-measured
+# set — a field 104 adds to a row tomorrow is deliberately NOT surfaced until someone
+# has looked at it, rather than silently appearing with nobody having vetted it for
+# size or content.
 #
 # The allow-list itself, and its glosses, live in tools/discovery.py's
 # RESUME_ROW_FIELD_GLOSS — moved out of this module (not merely referenced from it) so
@@ -99,10 +144,36 @@ def _convert_resume_row(raw: dict) -> dict:
     from idNo).
     """
     picked = {k: v for k, v in raw.items() if k in _RESUME_ROW_FIELDS}
+    if isinstance(picked.get("expJobArr"), list):
+        picked["expJobArr"] = [_compact_exp_job(entry) for entry in picked["expJobArr"]]
     converted = _convert(picked)
     if "id_no" in converted:
         converted["candidate_id"] = converted.pop("id_no")
     return converted
+
+
+def _compact_exp_job(entry):
+    """One expJobArr entry with its empty fields removed. An entry carries 19 fields
+    and, on the committed fixtures (436 entries, 2026-09-04), 8 of them are empty on
+    most jobs (`expFirmLogo`, `expManagementDesc`, `expWage*`, `expJobSkill*`, ...):
+    forwarding `"exp_wage_year": null` for 4 jobs × 50 rows was ~30k characters of a
+    ~230k page saying nothing. "Empty" is what 104 itself uses for "not filled in" —
+    None, "" and [] all occur on the fixtures, nothing else stands in for absence; 0
+    and False are values, not absence, and are kept. Row-level fields are NOT
+    compacted — a row's key set stays stable and fully published by
+    describe_result_fields(); only these nested per-job objects, whose keys are 104's
+    own and vary by what the candidate filled in, drop their empties. A non-dict entry
+    (never observed) passes through untouched rather than raising.
+    """
+    if not isinstance(entry, dict):
+        return entry
+    return {k: v for k, v in entry.items() if not _is_empty_exp_job_value(v)}
+
+
+def _is_empty_exp_job_value(value) -> bool:
+    # Type-by-type on purpose: `value in (None, "", [])` would also be True for
+    # 0 == False-style coincidences the moment a comparable sentinel is added.
+    return value is None or value == "" or (isinstance(value, list) and not value)
 
 
 # ── Route-specific container/page extraction ─────────────────────────────
@@ -596,6 +667,13 @@ _FILTER_KEY_REFERENCE = _filter_key_reference()
 # direction runs this module -> discovery.py, never the reverse.
 _SECOND_IDENTIFIER_NOTE = discovery_mod.SECOND_IDENTIFIER_NOTE
 
+# What a list row deliberately is NOT (2026-09-04): the same note on all three list
+# tools, so an Agent reading any one of them knows where the rest of the résumé lives.
+_ROW_NOTE = (
+    "列上不含 master_url（需登入的網頁連結，使用者開不了）；exp_job_arr 略過空欄位、"
+    "HTML 已轉純文字；完整履歷用 get_resume_detail。"
+)
+
 _SEARCH_RESUMES_DESCRIPTION = f"""搜尋 104 履歷（走 JSON API，不再解析頁面 DOM）。
 
 Args:
@@ -609,11 +687,11 @@ Args:
 
 ⚠ area/experience/education 已停用，傳入非 None 值會回傳錯誤（附替代寫法），不送出請求。
 
-⚠ filters={{'expect_pay': {{'month': {{'mode': 'up', ...}}}}}} 的 'up' 模式在真實資料
-上幾乎沒有篩選效果——比對的是期望薪資『下限』，幾乎每個人下限都 ≥ 1 萬，語意上接近無效，
-但仍會正確送達、不報錯。
+⚠ expect_pay.month 的 'up' 模式在真實資料上幾乎沒有篩選效果（比對的是期望薪資『下限』，
+幾乎每個人下限都 ≥ 1 萬），但仍會正確送達、不報錯。
 
 {_SECOND_IDENTIFIER_NOTE}
+{_ROW_NOTE}
 
 成功時固定回傳 {{"results": [...], "pagination": {{"page","total_pages","total"}},
 "browse_limit": {{"resume_max","on_that_day_count"}}|null, "warnings": [...],
@@ -642,6 +720,7 @@ list_matched_resumes 對已關閉的職缺則是 HTTP 404 + 錯誤訊息（見�
 異不能互相推論。
 
 {_SECOND_IDENTIFIER_NOTE}
+{_ROW_NOTE}
 
 成功時固定回傳 {{"results": [...], "pagination": {{"page","total_pages","total"}},
 "browse_limit": {{"resume_max","on_that_day_count"}}|null, "warnings": [...]}}——不論
@@ -668,6 +747,7 @@ Args:
 配對清單是推薦清單的子集（switch 為 on 的職缺）；配對回傳的欄位與推薦完全相同。
 
 {_SECOND_IDENTIFIER_NOTE}
+{_ROW_NOTE}
 
 成功時固定回傳 {{"results": [...], "pagination": {{"page","total_pages","total"}},
 "browse_limit": {{"resume_max","on_that_day_count"}}|null, "warnings": [...]}}——不論
@@ -683,8 +763,13 @@ Args:
         紀錄時的 id_source 為 "resume"。
 
 成功時固定回傳 {{"resume": {{...}}, "browse_limit": {{"resume_max","on_that_day_count"}}|null,
-"warnings": [...]}}。resume 底下是伺服器提供的每一個履歷欄位，鍵一律機械式轉為
-snake_case，不重新命名、不合併、不省略任何欄位（包含巢狀物件與陣列內部）——包括
+"warnings": [...]}}。resume 底下是伺服器提供的每一個履歷欄位（113 個：基本資料、聯絡方式、
+學歷、工作經歷含每份工作的說明、自傳、專長、成就、附件清單、求職條件——與 104 網頁詳情頁
+讀的是同一份 JSON），鍵一律機械式轉為 snake_case，不重新命名、不合併、不省略任何欄位
+（包含巢狀物件與陣列內部）；候選人用富文字編輯器填的值（auto、introduction、work_desc、
+exp_job_arr[].exp_job_note、specialty[].desc、achievement[].desc）104 給的是 HTML，本工具
+已轉成純文字（段落與清單項目以換行分隔），鍵與欄位數不變。列（row）上沒有的細節都在這裡，
+要呈現給使用者請讀這個工具，不要引用任何 104 網址（Agent 的登入不能給網頁用）。——包括
 resume 自己的 id_no（原始 idNo）：這裡不套用 candidate_id 的重新命名規則，因為 rows
 的 candidate_id 命名規則是為了保留既有資料庫的候選人 id 空間，而這裡的欄位就是履歷
 本身的欄位，不是卡片列。resume 巢狀在自己的鍵之下，不與 browse_limit / warnings 混在
