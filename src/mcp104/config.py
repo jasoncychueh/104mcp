@@ -42,6 +42,16 @@ class Config:
     # module docstring for why a floor and not a manufactured distribution.
     min_call_interval_seconds: int
     throttle_state_path: Path           # append-only request-timestamp log (browser/throttle.py)
+    # The one SUBDIRECTORY under data_dir (everything else there is flat).
+    # Candidate photos and résumé attachments land here — this project's
+    # first personal data on disk — and the reason for a subdirectory is the
+    # deletion rule: a retention sweep that deleted by filename pattern
+    # inside the directory holding cookies.json would be one typo away from
+    # deleting the user's login state. The blast radius is structural here
+    # instead. Created lazily, at first write; deleted whole by logout().
+    # No environment variable governs it or its retention: see
+    # tools/resume_files.py for why that is deliberate.
+    resume_files_dir: Path
     # Marks "the previous logout() could not confirm the server-side 104
     # session was actually invalidated". Existence is its whole content; the
     # recovery path on the next run reads it. Local teardown confirmation is
@@ -159,6 +169,7 @@ def get_config() -> Config:
         rest_duration_minutes=_parse_int_env("REST_DURATION_MINUTES", 3),
         min_call_interval_seconds=_parse_int_env("MIN_CALL_INTERVAL_SECONDS", 5),
         throttle_state_path=data_dir / "throttle_state.log",
+        resume_files_dir=data_dir / "resume-files",
         logout_unconfirmed_path=data_dir / "logout_unconfirmed",
         auth_bind_port=auth_bind_port,
         auth_base_url=auth_base_url,

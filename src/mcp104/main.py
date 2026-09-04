@@ -22,6 +22,7 @@ from mcp104.tools.auth import (
 )
 from mcp104.tools.discovery import register_discovery_tools
 from mcp104.tools.messaging import register_messaging_tools
+from mcp104.tools.resume_files import register_resume_file_tools, sweep_expired_files
 from mcp104.tools.search import register_search_tools
 from mcp104.tools.status import register_status_tools
 from mcp104.web.auth_server import AuthEndpoint, resolve_auth_binding
@@ -127,6 +128,13 @@ async def _init_globals() -> None:
         raise
 
     compact_state_file(config.throttle_state_path)
+    # One pass over the landed-asset directory at startup, right after the
+    # throttle log's own compaction. It is also run before every write, so
+    # this is the "process has been idle for a day" pass, not the only one;
+    # a missing directory (the normal first-run state, since it is created
+    # lazily) and an unreadable one are both non-fatal by design — see
+    # sweep_expired_files.
+    sweep_expired_files(config.resume_files_dir)
 
     _app_ctx = AppContext(
         config=config,
@@ -212,6 +220,7 @@ mcp = FastMCP("104-mcp-server", lifespan=app_lifespan)
 
 register_auth_tools(mcp)
 register_search_tools(mcp)
+register_resume_file_tools(mcp)
 register_messaging_tools(mcp)
 register_status_tools(mcp)
 register_discovery_tools(mcp)

@@ -26,11 +26,12 @@ import mcp104.tools.discovery as discovery_mod
 from mcp104.browser.api_client import ENDPOINTS
 from mcp104.browser.session import SessionInfo
 from mcp104.db.database import ID_SOURCE_MESSAGE
-from mcp104.tools.discovery import _event_labels, _snake_case
+from mcp104.tools.discovery import _event_labels
 from mcp104.tools.helpers import (
     GuardAbort,
     MalformedResponseError,
     ToolAbort,
+    convert_keys,
     guarded_api,
     guarded_sequence,
     require_login,
@@ -169,12 +170,10 @@ def _read_state(message_id: object, watermark: int | None, direction: str) -> bo
 # it rather than keeping its own copy: describe_result_fields(row_type=...) must key
 # its payload on the SAME delivered names this produces.
 
-def _convert(value):
-    if isinstance(value, dict):
-        return {_snake_case(k): _convert(v) for k, v in value.items()}
-    if isinstance(value, list):
-        return [_convert(v) for v in value]
-    return value
+# tools/helpers.py's convert_keys, bound to the name this module has always
+# used. No `string_transform`: message content is delivered exactly as 104
+# sent it, unlike the résumé tools' rich-text fields.
+_convert = convert_keys
 
 
 def _convert_inbox_row(raw: dict) -> dict:
@@ -836,9 +835,9 @@ def register_messaging_tools(mcp: FastMCP):
         dry-run。純文字訊息請改用 send_message；未來量到其他招募事件（邀約面試、
         感謝函等）會各自另開一個新工具，不會加到本工具的參數上。
 
-        一次呼叫送出**三個**請求（反向橋 → last-info → 事件本體），是本專案
-        目前唯一一個多請求工具；正常情況下幾秒內完成，最壞情況（三個子請求都
-        逾時）約 50 秒。⚠ 若 MCP 客戶端在最後一個 POST 已送出後才逾時，這裡看
+        一次呼叫送出**三個**請求（反向橋 → last-info → 事件本體），是本專案送出
+        請求數最多的工具（get_candidate_photo／get_resume_attachment 各送兩個）；
+        正常情況下幾秒內完成，最壞情況（三個子請求都逾時）約 50 秒。⚠ 若 MCP 客戶端在最後一個 POST 已送出後才逾時，這裡看
         不到任何回傳，但對方可能已經收到那封信——請改用
         read_messages(job_nos=[job_id]) 或 104 後台確認，不要重送。
 

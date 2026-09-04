@@ -161,7 +161,7 @@ _CONVERSATION_ENVELOPE_MORE_PAGES = {
 
 def _raw(status: int, content_type: str, body: str, parsed_json, location: str | None = None) -> RawResponse:
     return RawResponse(status=status, location=location, content_type=content_type,
-                        body=body, parsed_json=parsed_json)
+                        body=body, body_bytes=body.encode("utf-8"), parsed_json=parsed_json)
 
 
 def _raw_from_body(body: dict, status: int = 200) -> RawResponse:
@@ -798,6 +798,7 @@ async def test_send_message_auth_host_redirect_returns_error_not_unconfirmed_and
             location="https://bsignin.104.com.tw/login",
             content_type="text/html; charset=utf-8",
             body="",
+            body_bytes=b"",
             parsed_json=None,
         )
 

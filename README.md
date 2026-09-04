@@ -104,6 +104,8 @@
 - `list_matched_resumes(jobno, page, update_date_type)` — 列出配對到某職缺的履歷；`update_date_type="2"` 只看當日配對
 - `get_resume_detail(candidate_id)` — 取得單一候選人的完整履歷
 - `list_jobs(page)` — 列出這個帳號底下的職缺
+- `get_candidate_photo(candidate_id)` — 把候選人的大頭照下載到本機並回傳路徑（沒放照片時回 `photo: null`，那是正常狀態）
+- `get_resume_attachment(candidate_id, sort)` — 把履歷附件（作品集、證照掃描檔、另一版履歷 PDF……）下載到本機並回傳路徑
 
 **篩選與欄位說明（純本機資料，不呼叫 104）**
 - `browse_filter_values(key, code)` — 查 `search_resumes` 某個篩選鍵接受哪些值
@@ -152,6 +154,11 @@
 - **遇到 Cloudflare 機器人驗證**：工具會回傳明確錯誤並要求暫停至少 1 小時。這不是
   「查無資料」，換關鍵字重試只會讓封鎖更嚴重。
 - **不送已讀回報**：Agent 讀訊息不會讓對方看到「已讀」，這是刻意的。
+- **候選人的照片與附件會寫進本機資料目錄**：`get_candidate_photo`／
+  `get_resume_attachment` 把檔案存到資料目錄的 `resume-files/` 底下再把路徑交給
+  Agent。**那些是候選人的個人資料。** 它們會在 **24 小時後自動清除**，呼叫
+  `logout()` 則立即清除整個目錄；單檔上限 32 MB。這些規則只在本套件自己的程式碼裡
+  成立——你自己複製走的檔案、備份軟體同步走的檔案，本套件管不到。
 - **登入憑證存在本機資料目錄**，請不要把那個目錄下的檔案交給任何人或提交進版本控制。
 
 ---

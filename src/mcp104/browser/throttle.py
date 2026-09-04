@@ -223,10 +223,11 @@ def evaluate(
     `slots_needed` (default 1, bit-identical to every prior single-request
     call site) asks a different question than the old check did: not "is
     the window already full" but "does the window have room for this many
-    MORE requests". A multi-request caller (guarded_sequence's
-    send_inquiry, three requests in one tool call) that started when the
+    MORE requests". A multi-request caller (guarded_sequence's callers:
+    send_inquiry with three requests in one tool call, and the two asset
+    tools with two each) that started when the
     window had only 1 free slot would otherwise be admitted here and then
-    blow the hourly cap by 2 on its own — the window is charged per
+    blow the hourly cap on its own — the window is charged per
     request (note_request, once per sub-request) but this gate would have
     looked at it only once, for the whole burst. See the budget branch
     below for how the refusal's retry_after_seconds is computed to match:

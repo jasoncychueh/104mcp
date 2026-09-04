@@ -50,6 +50,7 @@ from mcp104.tools.helpers import (
     get_session_id,
     guarded_api,
 )
+from mcp104.tools.resume_files import clear_resume_files
 from mcp104.web.auth_server import create_auth_app, start_auth_site
 
 if TYPE_CHECKING:
@@ -809,6 +810,12 @@ async def logout(ctx: Context) -> dict:
     # Step 3.
     clear_cookies(app.config.cookies_path)
     clear_identity(app.config.identity_path)
+    # …including every landed candidate photo/attachment. logout()'s
+    # "success": True says the local half of the login state is clean, and
+    # leaving a candidate's PDF behind would make that sentence false. The
+    # four-key return shape is a contract, so a failure here adds a sentence
+    # to the existing (always non-empty) `warning` rather than a fifth key.
+    files_warning = clear_resume_files(app.config.resume_files_dir)
     # Step 4.
     app.session_pool.remove(session_id)
     # Step 5: 每一次登出都寫，與 server_result 的值無關——值域裡已經沒有一個
@@ -819,7 +826,10 @@ async def logout(ctx: Context) -> dict:
     return {
         "success": True,
         "server_logout": server_result.state,
-        "warning": f"本機登入憑證已刪除、記憶體中的 session 已清空。{server_result.detail}",
+        "warning": (
+            f"本機登入憑證已刪除、記憶體中的 session 已清空。{server_result.detail}"
+            f"{files_warning}"
+        ),
         "teardown_confirmed": teardown_confirmed,
     }
 

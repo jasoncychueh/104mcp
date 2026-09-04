@@ -58,6 +58,7 @@ def _raw(status: int, content_type: str, body: str, parsed_json, location: str |
         location=location,
         content_type=content_type,
         body=body,
+        body_bytes=body.encode("utf-8"),
         parsed_json=parsed_json,
     )
 
@@ -631,6 +632,7 @@ async def test_guarded_api_does_not_follow_redirect_and_reports_auth_host_redire
             location="https://bsignin.104.com.tw/login",
             content_type="text/html; charset=utf-8",
             body="",
+            body_bytes=b"",
             parsed_json=None,
         )
 
@@ -1025,3 +1027,256 @@ def test_classify_does_not_assemble_payload_for_a_failed_verdict_even_with_a_sib
 
     assert verdict.ok is False
     assert verdict.payload is None
+
+
+# =========================================================================
+# The asset host: ASSET_ROUTES, the two closed tables, validate_asset_url,
+# the shared classify prologue, and classify_asset's decision order.
+# Every byte below is synthetic — hand-built file headers, never a real
+# photo, attachment or filename.
+# =========================================================================
+
+from mcp104.browser.api_client import (  # noqa: E402
+    ASSET_MAX_BYTES,
+    ASSET_ROUTES,
+    AssetRoute,
+    EXPIRY_MARKER,
+    _classify_prologue,
+    classify_asset,
+    detect_magic,
+    validate_asset_url,
+)
+
+# Minimal, synthetic file headers. Each is the real signature plus filler —
+# enough for magic detection, and containing nothing from any real file.
+_SYNTH_JPEG = b"\xff\xd8\xff\xe0\x00\x10JFIF" + b"\x00" * 32
+_SYNTH_PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+_SYNTH_PDF = b"%PDF-1.4\n% synthetic\n" + b"\x00" * 32
+_SYNTH_GIF = b"GIF89a" + b"\x00" * 32
+_SYNTH_ZIP = b"PK\x03\x04" + b"\x00" * 32
+# The measured not-authenticated page: HTTP 200, ~500 bytes of HTML holding
+# one <script> that sets location.href. Synthesised to that shape.
+_NOT_AUTH_HTML = (
+    '<html><head><script>location.href="https://vip.104.com.tw/";</script>'
+    "</head><body></body></html>"
+)
+
+_PHOTO_ROUTE = ASSET_ROUTES["candidate_photo"]
+_ATTACH_ROUTE = ASSET_ROUTES["resume_attachment"]
+_PHOTO_URL = "https://asset.vip.104.com.tw/download/webHeadShot?v=SYNTHETIC%2FTOKEN%3D"
+_ATTACH_URL = "https://asset.vip.104.com.tw/download/resumeAttach/SYNTHETICTOKEN"
+
+
+def _asset_raw(status=200, *, body_bytes=b"", body=None, content_type=None, location=None):
+    """A RawResponse shaped the way fetch_asset produces one: `body` is the
+    TEXT PROJECTION — empty once the bytes are a known file family."""
+    if body is None:
+        body = "" if detect_magic(body_bytes) is not None else body_bytes[:4096].decode("utf-8", errors="replace")
+    return RawResponse(status=status, location=location, content_type=content_type,
+                       body=body, body_bytes=body_bytes, parsed_json=None)
+
+
+def test_asset_routes_table_is_declared_and_self_consistent():
+    assert len(ASSET_ROUTES) == 2
+    for key, route in ASSET_ROUTES.items():
+        assert route.key == key
+        assert route.host == "asset"
+        assert isinstance(route.accepted_magic, tuple) and route.accepted_magic
+
+
+def test_asset_routes_declare_the_measured_fields_verbatim():
+    assert _PHOTO_ROUTE.path_prefix == "/download/webHeadShot"
+    assert _PHOTO_ROUTE.cookie_required is False
+    assert _PHOTO_ROUTE.referer_required is False
+    assert _PHOTO_ROUTE.accepted_magic == ("jpeg", "png")
+
+    assert _ATTACH_ROUTE.path_prefix == "/download/resumeAttach/"
+    assert _ATTACH_ROUTE.cookie_required is True
+    assert _ATTACH_ROUTE.referer_required is False
+    assert _ATTACH_ROUTE.accepted_magic == ("jpeg", "pdf", "png")
+
+
+def test_the_two_declaration_tables_are_each_closed():
+    # An Endpoint may not address the file host...
+    with pytest.raises(ValueError):
+        Endpoint(key="x", host="asset", path="/p", method="GET", family="A",
+                 extra_headers=(), family_b_shape=None, throttle_gated=True)
+    # ...and an AssetRoute may not address a JSON host.
+    with pytest.raises(ValueError):
+        AssetRoute(key="x", host="auth", path_prefix="/p", cookie_required=True,
+                   referer_required=False, accepted_magic=("pdf",))
+
+
+# -- validate_asset_url ---------------------------------------------------
+
+def test_validate_asset_url_accepts_a_real_asset_url_and_keeps_the_query_verbatim():
+    assert validate_asset_url(_PHOTO_ROUTE, _PHOTO_URL) is None
+    # The token is percent-encoded already; nothing here re-encodes or
+    # rebuilds the URL, so what was validated is what gets fetched.
+    assert "%2FTOKEN%3D" in _PHOTO_URL
+    assert validate_asset_url(_ATTACH_ROUTE, _ATTACH_URL) is None
+
+
+@pytest.mark.parametrize("url,expected_check,expected_hostname", [
+    ("http://asset.vip.104.com.tw/download/webHeadShot?v=x", "scheme", None),
+    ("https://vip.104.com.tw/download/webHeadShot?v=x", "host", "vip.104.com.tw"),
+    # An endswith-based check would let this through; an exact match must not.
+    ("https://asset.vip.104.com.tw.evil.example/download/webHeadShot?v=x",
+     "host", "asset.vip.104.com.tw.evil.example"),
+    ("https://asset.vip.104.com.tw/download/somethingElse?v=x", "path", None),
+])
+def test_validate_asset_url_refuses_each_wrong_shape(url, expected_check, expected_hostname):
+    problem = validate_asset_url(_PHOTO_ROUTE, url)
+    assert problem is not None
+    assert problem.check == expected_check
+    assert problem.hostname == expected_hostname
+
+
+def test_validate_asset_url_problem_never_carries_the_url_itself():
+    problem = validate_asset_url(_PHOTO_ROUTE, "https://evil.example/download/webHeadShot?v=SECRETTOKEN")
+    assert "SECRETTOKEN" not in repr(problem)
+    assert "/download" not in repr(problem)
+
+
+# -- the shared prologue --------------------------------------------------
+
+@pytest.mark.parametrize("raw,expected_kind", [
+    (RawResponse(status=200, location=None, content_type="text/html", body="<a>" + EXPIRY_MARKER + "</a>",
+                 body_bytes=b"", parsed_json=None), "expired"),
+    (RawResponse(status=302, location="https://vip.104.com.tw" + EXPIRY_MARKER, content_type="text/html",
+                 body="", body_bytes=b"", parsed_json=None), "expired"),
+    (RawResponse(status=403, location=None, content_type="text/html", body="denied",
+                 body_bytes=b"denied", parsed_json=None), "blocked"),
+])
+def test_classify_and_classify_asset_share_one_prologue(raw, expected_kind):
+    # The same two checks, in the same order, reached from both entry
+    # points — one function, not two copies that agree today.
+    assert _classify_prologue(raw).kind == expected_kind
+    assert classify(ENDPOINTS["search_resumes"], raw).kind == expected_kind
+    assert classify_asset(_PHOTO_ROUTE, raw).kind == expected_kind
+
+
+def test_classify_prologue_returns_none_when_neither_check_fires():
+    assert _classify_prologue(_asset_raw(body_bytes=_SYNTH_JPEG)) is None
+
+
+def test_asset_expiry_is_found_in_the_location_header_with_an_empty_body():
+    # The Location half of the expiry check: an unfollowed 3xx to the
+    # company-switch page is NOT an auth host and carries an empty body, so
+    # neither the hostname check nor a body scan would see it.
+    raw = _asset_raw(status=302, location="https://vip.104.com.tw" + EXPIRY_MARKER)
+    assert classify_asset(_ATTACH_ROUTE, raw).kind == "expired"
+
+
+# -- classify_asset's decision order --------------------------------------
+
+@pytest.mark.parametrize("status", [401, 404, 500])
+def test_any_non_200_is_unrecognised_status_not_a_body_based_verdict(status):
+    # Deliberately NOT asset_not_authenticated and NOT asset_unknown_format:
+    # a 404 carrying HTML must not be described as "not signed in", nor have
+    # its first 8 bytes printed as a format signature. Also a deliberate
+    # divergence from _classify_family_b, which maps 401 to expired.
+    raw = _asset_raw(status=status, body_bytes=_NOT_AUTH_HTML.encode("utf-8"))
+    verdict = classify_asset(_ATTACH_ROUTE, raw)
+    assert verdict.ok is False
+    assert verdict.kind == "unrecognised_status"
+    assert str(status) in verdict.detail
+
+
+def test_403_is_blocked_on_the_asset_path_too():
+    raw = _asset_raw(status=403, body_bytes=b"denied")
+    assert classify_asset(_ATTACH_ROUTE, raw).kind == "blocked"
+
+
+@pytest.mark.parametrize("route,body_bytes,expected_format", [
+    (_PHOTO_ROUTE, _SYNTH_JPEG, "jpeg"),
+    (_PHOTO_ROUTE, _SYNTH_PNG, "png"),
+    (_ATTACH_ROUTE, _SYNTH_JPEG, "jpeg"),
+    (_ATTACH_ROUTE, _SYNTH_PNG, "png"),
+    (_ATTACH_ROUTE, _SYNTH_PDF, "pdf"),
+])
+def test_whitelisted_magic_succeeds_and_carries_format_plus_bytes(route, body_bytes, expected_format):
+    verdict = classify_asset(route, _asset_raw(body_bytes=body_bytes))
+    assert verdict.ok is True
+    assert verdict.payload == {"format": expected_format, "body_bytes": body_bytes}
+
+
+def test_pdf_is_not_accepted_on_the_photo_route():
+    # accepted_magic is per route, not per host.
+    assert classify_asset(_PHOTO_ROUTE, _asset_raw(body_bytes=_SYNTH_PDF)).kind == "asset_unknown_format"
+
+
+def test_gif_is_refused_even_when_104_declares_image_gif():
+    raw = _asset_raw(body_bytes=_SYNTH_GIF, content_type="image/gif")
+    verdict = classify_asset(_PHOTO_ROUTE, raw)
+    assert verdict.kind == "asset_unknown_format"
+
+
+def test_pk_signature_is_refused_there_is_no_zip_whitelist():
+    verdict = classify_asset(_ATTACH_ROUTE, _asset_raw(body_bytes=_SYNTH_ZIP))
+    assert verdict.kind == "asset_unknown_format"
+    assert verdict.detail.startswith(_SYNTH_ZIP[:8].hex())
+
+
+def test_the_measured_not_authenticated_html_is_its_own_kind():
+    raw = _asset_raw(body_bytes=_NOT_AUTH_HTML.encode("utf-8"), content_type="text/html; charset=utf-8")
+    assert classify_asset(_ATTACH_ROUTE, raw).kind == "asset_not_authenticated"
+
+
+def test_empty_body_is_its_own_kind_and_offers_no_signature():
+    verdict = classify_asset(_ATTACH_ROUTE, _asset_raw(body_bytes=b""))
+    assert verdict.kind == "asset_empty_body"
+    # There are zero bytes; nothing downstream may claim to show eight.
+    assert verdict.detail == ""
+
+
+def test_unknown_bytes_carry_eight_hex_bytes_and_the_declared_content_type():
+    junk = bytes(range(8, 40))
+    verdict = classify_asset(_ATTACH_ROUTE, _asset_raw(body_bytes=junk, content_type="application/octet-stream"))
+    assert verdict.kind == "asset_unknown_format"
+    signature, _, content_type = verdict.detail.partition("|")
+    assert signature == junk[:8].hex()
+    assert content_type == "application/octet-stream"
+
+
+def test_the_size_check_runs_before_the_magic_check():
+    # Over the limit, but starting with a perfectly valid JPEG signature:
+    # size must win, or an oversized file gets accepted and written.
+    oversized = _SYNTH_JPEG + b"\x00" * (ASSET_MAX_BYTES + 1 - len(_SYNTH_JPEG))
+    assert len(oversized) == ASSET_MAX_BYTES + 1
+    assert classify_asset(_PHOTO_ROUTE, _asset_raw(body_bytes=oversized)).kind == "asset_too_large"
+
+
+def test_exactly_the_limit_is_not_too_large():
+    at_limit = _SYNTH_PDF + b"\x00" * (ASSET_MAX_BYTES - len(_SYNTH_PDF))
+    assert classify_asset(_ATTACH_ROUTE, _asset_raw(body_bytes=at_limit)).ok is True
+
+
+def test_detect_magic_has_one_table_shared_by_fetch_asset_and_classify_asset():
+    # fetch_asset decides RawResponse.body from detect_magic; classify_asset
+    # decides success from the same call. Same bytes, same conclusion — the
+    # projection half is asserted against the real fetch_asset in
+    # tests/test_helpers.py (this file has no HTTP seam to drive it with).
+    for body_bytes, expected in ((_SYNTH_JPEG, "jpeg"), (_SYNTH_PNG, "png"),
+                                 (_SYNTH_PDF, "pdf"), (_SYNTH_GIF, None), (b"", None)):
+        assert detect_magic(body_bytes) == expected
+        verdict = classify_asset(_ATTACH_ROUTE, _asset_raw(body_bytes=body_bytes))
+        # A route accepting jpeg/pdf/png succeeds on exactly the bytes
+        # detect_magic named, and on nothing else.
+        assert verdict.ok is (expected in _ATTACH_ROUTE.accepted_magic)
+
+
+def test_a_binary_containing_marker_strings_is_still_a_successful_fetch():
+    # Half of the false-positive defence: the text projection a poisoned
+    # JPEG produces, and classify's verdict on it. The scans those markers
+    # would trip (`_detect_cloudflare_challenge`, the expiry substring) run
+    # in _issue_one, ahead of classify, so they are unreachable from here —
+    # tests/test_helpers.py drives the same bytes through guarded_sequence
+    # to cover that half end to end.
+    poisoned = _SYNTH_JPEG + "正在執行安全驗證".encode("utf-8") + EXPIRY_MARKER.encode("utf-8")
+    raw = _asset_raw(body_bytes=poisoned)
+    assert raw.body == ""
+    assert _classify_prologue(raw) is None
+    verdict = classify_asset(_PHOTO_ROUTE, raw)
+    assert verdict.ok is True
+    assert verdict.payload["format"] == "jpeg"

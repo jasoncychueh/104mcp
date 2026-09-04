@@ -29,11 +29,17 @@ import mcp104.tools.drop_detection as drop_detection_mod
 import mcp104.tools.filters as filters_mod
 from mcp104.browser.api_client import ENDPOINTS
 from mcp104.db.database import ID_SOURCE_RESUME
-from mcp104.tools.discovery import _snake_case
-from mcp104.tools.helpers import GuardAbort, MalformedResponseError, guarded_api, require_login
+from mcp104.tools.helpers import (
+    GuardAbort,
+    MalformedResponseError,
+    browse_limit_warning as _browse_limit_warning,
+    convert_keys,
+    extract_browse_limit as _extract_browse_limit,
+    guarded_api,
+    require_login,
+)
 
 log = logging.getLogger("104-mcp.search")
-
 
 # ── Mechanical key conversion ────────────────────────────────────────────
 #
@@ -45,10 +51,11 @@ log = logging.getLogger("104-mcp.search")
 # runtime guard here would be a second, untested place implementing the same promise
 # the test already makes).
 #
-# `_snake_case` itself is imported from tools/discovery.py, not defined here:
-# `describe_result_fields()` must key its payload on the SAME
+# `_snake_case` itself lives in tools/discovery.py and is applied here only
+# through tools/helpers.py's `convert_keys`, never re-exported under this
+# module's name: `describe_result_fields()` must key its payload on the SAME
 # delivered names `_convert_resume_row` below actually produces, and the only way that
-# can never drift is for both modules to call the identical function rather than two
+# can never drift is for every module to call the identical function rather than two
 # independently-maintained copies of one regex.
 # ── HTML -> plain text, applied to every string value delivered by the résumé tools ──
 #
@@ -92,14 +99,12 @@ def _convert(value):
     unchanged. Used for both the détail response (every field, mechanically) and the
     nested structures inside a row (e.g. expJobArr) once the row's own top-level
     allow-list has already picked which fields to keep.
+
+    The walk itself is tools/helpers.py's `convert_keys` — this module's one
+    remaining contribution is the string transform, which is exactly what
+    distinguishes it from tools/messaging.py's use of the same walk.
     """
-    if isinstance(value, dict):
-        return {_snake_case(k): _convert(v) for k, v in value.items()}
-    if isinstance(value, list):
-        return [_convert(v) for v in value]
-    if isinstance(value, str):
-        return html_to_text(value)
-    return value
+    return convert_keys(value, string_transform=html_to_text)
 
 
 # ── Résumé row conversion (search / recommend / match) ──────────────────
@@ -253,59 +258,13 @@ def _extract_match_rows(result) -> tuple[list[dict], dict]:
 
 
 # ── browse_limit ("quota") + threshold warning ───────────────────────────
-
-# Warn at 90% of resumeMax (270 against the measured 300) — a specified figure, not an
-# [INF] guess. Kept as a ratio rather than a hardcoded 270 so it tracks whatever
-# resumeMax a given response actually carries, should it ever differ from the measured
-# 300. This is a heads-up only, never a boundary this module enforces: 104's own
-# enforcement at resumeMax, if any, has never been observed, and refusing on an
-# unobserved boundary would be this tool's guess overriding the site's — see
-# _browse_limit_warning (reaching the maximum never refuses a call here).
-_BROWSE_LIMIT_WARNING_RATIO = 0.9
-
-
-def _extract_browse_limit(container: dict) -> dict | None:
-    """container.browseLimit -> {resume_max, on_that_day_count}, mechanically converted,
-    or None when browseLimit is absent/not-a-dict — never a fabricated
-    {resume_max: None, ...} shell, so a caller can tell "104 didn't report a quota this
-    time" from "quota is unset" (104's own response carries no browseLimit key at all in
-    that case, rather than one with null sub-fields). Shared by all five tools:
-    browseLimit sits at the same relative position (a sibling of the row container / of
-    `resume`) on every route that carries it.
-    """
-    browse_limit = container.get("browseLimit")
-    if not isinstance(browse_limit, dict):
-        return None
-    converted = _convert(browse_limit)
-    # 104 自己的型別不一致（量到：resumeMax 是整數 300、onThatDayCount 是字串 "0"），
-    # 純數字字串一律轉成 int，讓呼叫端拿到兩個同型別的數字。
-    for key in ("resume_max", "on_that_day_count"):
-        value = converted.get(key)
-        if isinstance(value, str) and value.strip().lstrip("-").isdigit():
-            converted[key] = int(value.strip())
-    return converted
-
-
-def _browse_limit_warning(browse_limit: dict | None) -> str | None:
-    """A heads-up when today's browse count has reached the design-pinned 90% threshold
-    of resumeMax (270/300 as measured) — see _BROWSE_LIMIT_WARNING_RATIO. Never refuses:
-    104's own enforcement at the maximum has never been observed, so this tool does not
-    guess a boundary the site itself has not been seen to enforce.
-    """
-    if not browse_limit:
-        return None
-    try:
-        resume_max = int(browse_limit.get("resume_max"))
-        on_that_day = int(browse_limit.get("on_that_day_count"))
-    except (TypeError, ValueError):
-        return None
-    if resume_max <= 0 or on_that_day < resume_max * _BROWSE_LIMIT_WARNING_RATIO:
-        return None
-    return (
-        f"今日已瀏覽 {on_that_day}/{resume_max} 筆履歷，已達提醒門檻（上限的 90%，"
-        "依規格訂定，非猜測值）。本次呼叫不會因此被拒絕 —— 104 從未被觀察到在上限本身"
-        "拒絕請求，本工具不會替 104 猜測一個未經觀察的邊界。"
-    )
+#
+# `_extract_browse_limit` / `_browse_limit_warning` are imported from
+# tools/helpers.py (bound to those names above, unchanged behaviour): every
+# tool whose 104 route carries `browseLimit` needs them, including
+# tools/resume_files.py, which shares nothing else with this module. See
+# helpers.MalformedResponseError's docstring for the precedent that decides
+# where a helper shared by two tool modules lives.
 
 
 # ── applied_filters ───────────────────────────────────────────────────────

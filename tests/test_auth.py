@@ -14,6 +14,8 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 
+from pathlib import Path
+
 import pytest
 
 from mcp104.tools.auth import (
@@ -118,19 +120,29 @@ class _FakeBrowserResource:
 class _FakeConfig:
     auth_bind_port: int | None = None
 
+    # A plain class, so a missing attribute is a runtime AttributeError
+    # rather than the construction-time TypeError the real frozen Config
+    # gives. resume_files_dir is REQUIRED and must be absolute: logout()'s
+    # cleanup hands it to shutil.rmtree, and a relative default would
+    # resolve against whatever cwd the run happens to have (the repo root,
+    # in practice).
+    def __init__(self, resume_files_dir: Path):
+        assert Path(resume_files_dir).is_absolute()
+        self.resume_files_dir = Path(resume_files_dir)
+
 
 class _FakeApp:
-    def __init__(self):
+    def __init__(self, resume_files_dir: Path):
         self._watcher_tasks = {}
         self._pending_logins = {}
         self._finished_logins = {}
         self.session_pool = _FakeSessionPool()
-        self.config = _FakeConfig()
+        self.config = _FakeConfig(resume_files_dir)
         self.auth_site = None
 
 
 @pytest.mark.asyncio
-async def test_finalize_pending_login_does_not_hang_on_a_stuck_watcher(monkeypatch):
+async def test_finalize_pending_login_does_not_hang_on_a_stuck_watcher(monkeypatch, tmp_path):
     # Simulate a watcher whose own cleanup hangs even after cancellation —
     # e.g. `await context.close()` on a browser whose CDP connection is
     # already dead (CLAUDE.md's known-issue #1, /dev/shm pressure).
@@ -145,7 +157,7 @@ async def test_finalize_pending_login_does_not_hang_on_a_stuck_watcher(monkeypat
             # — models a blocking close, not a well-behaved cancellable await.
             await asyncio.sleep(100)
 
-    app = _FakeApp()
+    app = _FakeApp(tmp_path / "resume-files")
     task = asyncio.ensure_future(stuck_watcher())
     app._watcher_tasks["tok"] = task
 
@@ -179,3 +191,70 @@ async def test_finalize_pending_login_does_not_hang_on_a_stuck_watcher(monkeypat
             await task
         except asyncio.CancelledError:
             pass
+
+
+# ── logout() also clears the landed candidate files ──────────────────────
+#
+# logout()'s "success": True means "the local half of the login state is
+# clean". A candidate's PDF left behind would make that sentence false.
+# The four-key return shape is a contract, so a deletion failure reports
+# through the already-always-non-empty `warning`, never a fifth key.
+#
+# The app-context/session helpers come from tests/test_auth_tools.py, which
+# is this repo's one place they are built; duplicating them here would be
+# the copy-that-drifts this project keeps being bitten by.
+
+_SYNTH_PDF = b"%PDF-1.4" + bytes([10]) + b"% synthetic" + bytes([10]) + bytes(32)
+_LOGOUT_KEYS = {"success", "server_logout", "warning", "teardown_confirmed"}
+
+
+async def _logout_with_landed_files(tmp_path, monkeypatch):
+    from tests.test_auth_tools import make_app_ctx, make_ctx, make_session, stub_guarded_api_abort
+    from mcp104.browser.session import SessionPool
+    from mcp104.tools import auth
+
+    pool = SessionPool()
+    pool.activate_direct("s1", make_session())
+    app_ctx = make_app_ctx(tmp_path, pool=pool)
+    directory = app_ctx.config.resume_files_dir
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "attach-1111111111111-1.pdf").write_bytes(_SYNTH_PDF)
+    (directory / "photo-1111111111111.jpg").write_bytes(bytes([255, 216, 255]) + b" synthetic")
+
+    monkeypatch.setattr(auth, "guarded_api", stub_guarded_api_abort("not_logged_in"), raising=False)
+    result = await auth.logout(make_ctx(app_ctx))
+    return app_ctx, result
+
+
+@pytest.mark.asyncio
+async def test_logout_removes_the_landed_resume_files_and_keeps_the_four_key_shape(tmp_path, monkeypatch):
+    app_ctx, result = await _logout_with_landed_files(tmp_path, monkeypatch)
+
+    directory = app_ctx.config.resume_files_dir
+    assert not directory.exists() or list(directory.iterdir()) == []
+    assert set(result) == _LOGOUT_KEYS
+    assert result["success"] is True
+    assert result["warning"]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_delete_keeps_the_shape_and_says_so_in_the_warning(tmp_path, monkeypatch):
+    import types
+
+    from mcp104.tools import auth, resume_files
+
+    def failing_rmtree(path, *args, **kwargs):
+        raise OSError("synthetic delete failure")
+
+    # Swap the `shutil` NAME inside the module under test rather than
+    # rmtree on the real stdlib module: monkeypatch would restore either,
+    # but only this leaves shutil itself untouched for the rest of the run.
+    monkeypatch.setattr(resume_files, "shutil", types.SimpleNamespace(rmtree=failing_rmtree))
+    app_ctx, result = await _logout_with_landed_files(tmp_path, monkeypatch)
+
+    assert set(result) == _LOGOUT_KEYS
+    assert result["success"] is True
+    # The human is still told, through the key that is always present.
+    assert "檔案" in result["warning"]
+    assert str(app_ctx.config.resume_files_dir) in result["warning"]
+    assert auth  # the module under test really was exercised
