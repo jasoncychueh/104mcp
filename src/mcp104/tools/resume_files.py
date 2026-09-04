@@ -28,6 +28,7 @@ variable for any other mechanism either (browser/throttle.py's own
 compaction policy is likewise a constant).
 """
 
+import hashlib
 import logging
 import os
 import shutil
@@ -63,27 +64,93 @@ RESUME_FILE_RETENTION_SECONDS = 24 * 3600
 # has never been seen on the wire.
 _EXTENSION_FOR_FORMAT = {"jpeg": ".jpg", "png": ".png", "pdf": ".pdf"}
 
-# 104's own "no photo" placeholder lives on a different host entirely, with
-# a /104main/vipphp path prefix. Two of twenty measured head-shots pointed
-# there. That host is never fetched: the decision is made from the hostname,
-# before any request, which is the only half of this that needs no guessing
-# (the alternative — recognising the placeholder by its bytes — would have
-# to download it first and would fail silently the day 104 changes the
-# image).
+# 104 serves the same "no photo" placeholder image from TWO places, so
+# there are two gates for it and neither one subsumes the other.
+#
+# Gate 1 — hostname. The placeholder is reachable at static.104.com.tw with
+# a /104main/vipphp path prefix; two of twenty measured head-shots pointed
+# there (§8.23). That host is never fetched: the decision is made before any
+# request, so it costs nothing.
+#
+# Gate 2 — sha256 of the fetched bytes. An earlier version of this module
+# rejected a byte check on the grounds that it "would have to download it
+# first and would fail silently the day 104 changes the image", and kept the
+# hostname as the only rule. That choice has since been falsified: the
+# hostname-only rule is the one failing silently, by reporting 104's grey
+# silhouette as a candidate's photo (§8.24).
+#
+# The two pieces of evidence say DIFFERENT things and are not
+# interchangeable:
+#   • That the placeholder also arrives from the ASSET host — where the
+#     hostname gate cannot see it — is ANOTHER SESSION's direct observation
+#     during live use (40 candidates, two of them returned a normal `photo`
+#     object whose bytes were the placeholder: 894 bytes, PNG, md5
+#     d388efdd9ec6e9a242753f2fdedd90c6). A `photo` object is only reachable
+#     through the asset route, which is what makes that observation
+#     conclusive about the host. This project has NOT measured it.
+#   • What this project measured (100 photos,
+#     research/results/default_avatar_probe.json) is only that the image is
+#     ONE FIXED FILE, recognisable by hash — the sole repeated byte-group,
+#     n=6, the sha256 below. ⚠ All six of those hits were on
+#     static.104.com.tw, so our own sample says nothing about which hosts
+#     serve it and must not be read as corroborating the bullet above.
+#
+# The original objection is still true and is ACCEPTED: a pinned hash goes
+# stale the day 104 changes the image. But the failure that produces — a
+# placeholder reported as a photo — is exactly the failure the hostname-only
+# rule produces today, so it is no worse, and the two gates together catch
+# strictly more than either alone.
+#
+# ⚠ Accepted residual risk: the shipped digest below participates in no
+# behavioural test — every gate test repoints it at synthetic bytes, because
+# 104's actual placeholder must not enter this tree, and a doc-comparison
+# test is not available either (docs/ is not published with the repo, and
+# doc-vs-code comparison tests were deliberately removed on 2026-09-03). A
+# transposed digit therefore ships green; it was hand-verified against
+# §8.24. The one test that does read this constant asserts only its SHAPE
+# (64 lowercase hex) — that still earns its place, because a blanked or
+# non-digest constant is invisible to every monkeypatching test.
+#
+# The same image also has an md5 pinned in the 104-candidate-screening
+# skill's build_report.py, as a redundant net for bytes obtained without
+# this tool. THIS constant owns the rule; if 104 changes the image, both
+# must be updated together (see that file's comment).
 _PLACEHOLDER_PHOTO_HOST = "static.104.com.tw"
+_PLACEHOLDER_PHOTO_SHA256 = (
+    "641c739dfdf9977307029eac29d5fffd57c1d54dd43f027d7a2c325625c0e427"
+)
 
 # Resolved through the same public accessor the guard uses to pick
 # cookies, so this module never carries its own copy of the hostname.
 _ASSET_HOSTNAME = hostname_for(ASSET_ROUTES["candidate_photo"])
 
 _NO_PHOTO_WARNING = "這位候選人沒有放大頭照。"
+# Two wordings, one leading sentence. The caller never has to tell the gates
+# apart to know「這位候選人沒有放大頭照」; the difference after the colon only
+# says how it was recognised, and the second one must NOT name
+# static.104.com.tw — those bytes came from the asset host.
 _PLACEHOLDER_PHOTO_WARNING = (
     "這位候選人沒有放大頭照：104 給的是它自己的預設頭像（在 static.104.com.tw 上，"
     "不是這位候選人的照片），因此本工具不下載它。"
 )
+_PLACEHOLDER_BYTES_WARNING = (
+    "這位候選人沒有放大頭照：104 交出來的檔案本身就是它自己的預設頭像（位元組與已量測的"
+    "預設頭像完全相同，不是這位候選人的照片），因此本工具不把它落地。"
+)
+# The 「當天」 qualifier is load-bearing and was added after the fact: §8.25
+# (another session's live use on 2026-09-05, not this project's own
+# measurement) shows the browse quota is keyed on (candidate, DATE). Reading
+# a candidate again the SAME day is free — which is what licenses these two
+# tools to re-read the résumé detail internally at all — but a candidate
+# read yesterday costs a slot again today. The design was written before
+# that half was known; an Agent that fetches photos the day after it picked
+# the candidates pays one slot each, silently.
 _BROWSE_LIMIT_NOTE = (
     "browse_limit 是 104 在這次呼叫的履歷詳情請求裡回報的數字，不是本工具對「這次呼叫"
-    "扣了幾格」的宣稱——抓照片與抓附件本身不扣履歷瀏覽配額。"
+    "扣了幾格」的宣稱——抓照片與抓附件本身不扣履歷瀏覽配額。⚠ 但本工具內部那次履歷"
+    "詳情請求，只有對「**當天**已經讀過履歷詳情」的候選人才不扣：配額的鍵是（候選人, "
+    "日期），昨天讀過的人今天再抓照片／附件，照樣一位扣一格。跨日補抓 40 位就是實扣 "
+    "40 格，請把照片與附件排在讀履歷詳情的同一天做。"
 )
 # Differentiated at the TOOL layer, because the shared per-request unit's
 # own `except Exception` answers every transport failure with "可能是逾時或
@@ -284,8 +351,11 @@ Args:
 頭像（warnings 會說明是哪一種）。失敗時回 {"error": str}，沒有 photo 這個鍵。
 
 一次呼叫送出兩個 104 請求（先讀一次履歷詳情取網址，再抓檔案），因此佔兩個節流名額；
-候選人沒有照片時只送一個。抓檔案本身不扣 104 的每日履歷瀏覽配額，但回傳的
-browse_limit 來自那次履歷詳情請求。檔案落在資料目錄的 resume-files/ 底下，**24 小時
+履歷上沒有照片網址、或網址一看就是預設頭像時只送一個（抓下來才認出是預設頭像的情況仍是兩個，
+一樣不落地任何檔案）。抓檔案本身不扣 104 的每日履歷瀏覽配額，但回傳的
+browse_limit 來自那次履歷詳情請求。⚠ 那次內部的履歷詳情請求**只有對當天已經讀過詳情的
+候選人才不扣配額**——配額鍵是（候選人, 日期），昨天讀過的人今天抓照片一位扣一格。**照片
+請與讀履歷詳情排在同一天做**，跨日補抓 40 位就是實扣 40 格。檔案落在資料目錄的 resume-files/ 底下，**24 小時
 後自動清除**，logout() 會立即清除；單檔上限 32 MB。這些是候選人的個人資料。
 
 ⚠ 逾時（可能是大檔或線路慢）時不要連續重試：每次重試都會再花掉一次履歷詳情請求與一個
@@ -307,9 +377,13 @@ Args:
 失敗時回 {"error": str}，沒有 attachment 這個鍵；指定的 sort 不存在、而這份履歷確實有
 其他附件時另附 "available": [{"sort","title"}, ...]。**指定一筆不存在的附件是問法有誤，
 不是抓取失敗**（與照片不同：照片沒有是正常狀態，回 photo: null）。
+刻意保留的用法：想知道這份履歷有哪些附件，可以故意傳一個不存在的 sort（例如 999），
+用回傳的 available 清單來看，不必為此讀一次完整的 get_resume_detail。
 
 一次呼叫送出兩個 104 請求（先讀一次履歷詳情取網址，再抓檔案），佔兩個節流名額。抓檔案
-本身不扣履歷瀏覽配額，但 browse_limit 來自那次履歷詳情請求。檔案落在資料目錄的
+本身不扣履歷瀏覽配額，但 browse_limit 來自那次履歷詳情請求。⚠ 那次內部的履歷詳情請求
+**只有對當天已經讀過詳情的候選人才不扣配額**——配額鍵是（候選人, 日期），昨天讀過的人
+今天再抓一位扣一格；**附件請與讀履歷詳情排在同一天做**。檔案落在資料目錄的
 resume-files/ 底下，**24 小時後自動清除**，logout() 立即清除；單檔上限 32 MB。這些是
 候選人的個人資料。落地檔名一律由本工具自己組（104 給的原始檔名常含候選人姓名，一個位元
 組都不使用），副檔名純由檔案本身的 magic bytes 決定。
@@ -369,6 +443,27 @@ def register_resume_file_tools(mcp: FastMCP):
                     raise
 
                 body_bytes = asset["body_bytes"]
+                if hashlib.sha256(body_bytes).hexdigest() == _PLACEHOLDER_PHOTO_SHA256:
+                    # No file is written — and an ALREADY-LANDED file at this
+                    # path is deliberately left alone. Deleting it here would
+                    # make this tool a second owner of the retention rule;
+                    # sweep_expired_files is the only thing that removes
+                    # landed files (plus logout()'s clear_resume_files). Do
+                    # not "fix" this by unlinking the target.
+                    #
+                    # The sweep itself IS still run, and that is not in
+                    # tension with the line above: it is the retention rule
+                    # doing its own job on age alone, identical to what the
+                    # write path would have triggered, and unlike an unlink
+                    # it never singles out this candidate's file. Skipping it
+                    # would mean a run whose photo calls all hit placeholders
+                    # expires nothing — this path did real work (a request
+                    # went out), so it carries the sweep the way the other
+                    # working path does.
+                    sweep_expired_files(app.config.resume_files_dir)
+                    warnings.insert(0, _PLACEHOLDER_BYTES_WARNING)
+                    return {"photo": None, "browse_limit": browse_limit, "warnings": warnings}
+
                 sweep_expired_files(app.config.resume_files_dir)
                 path = write_asset_atomically(
                     app.config.resume_files_dir,

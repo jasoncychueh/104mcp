@@ -10,6 +10,7 @@ obviously so. The file headers are hand-built signatures plus filler; the
 so a leak into a landed filename or a return value is unmistakable.
 """
 
+import hashlib
 import json
 import logging
 import os
@@ -38,6 +39,10 @@ _SYNTH_JPEG = b"\xff\xd8\xff\xe0\x00\x10JFIF" + b"\x00" * 32
 _SYNTH_PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
 _SYNTH_PDF = b"%PDF-1.4\n% synthetic\n" + b"\x00" * 32
 _SYNTH_ZIP = b"PK\x03\x04" + b"\x00" * 32
+# Stands in for 104's placeholder head-shot. Synthetic on purpose: the real
+# image never enters this tree, so every test that exercises the byte gate
+# repoints the module's pinned digest at THESE bytes.
+_SYNTH_PLACEHOLDER = _SYNTH_PNG + b"SYNTHETIC-PLACEHOLDER-BYTES"
 _NOT_AUTH_HTML = (
     '<html><head><script>location.href="https://vip.104.com.tw/";</script>'
     "</head><body></body></html>"
@@ -481,6 +486,47 @@ async def test_104s_own_placeholder_head_shot_is_photo_null_and_never_fetched(tm
 
 
 @pytest.mark.asyncio
+async def test_the_placeholder_bytes_from_the_asset_host_are_photo_null_and_land_no_file(
+    tmp_path, monkeypatch
+):
+    # The regression case: 104 serves the SAME placeholder image from the
+    # asset host too, where the hostname gate cannot see it. The bytes here
+    # are synthetic and the pinned hash is repointed at them for the
+    # duration of this test -- 104's actual placeholder PNG is never put in
+    # this repo, and the shipped constant is checked separately below.
+    ctx, _db = await _new_session(tmp_path)
+    monkeypatch.setattr(
+        resume_files_mod,
+        "_PLACEHOLDER_PHOTO_SHA256",
+        hashlib.sha256(_SYNTH_PLACEHOLDER).hexdigest(),
+    )
+    spy = _Spy([
+        _detail(personal_pic=_PHOTO_URL),
+        _asset_resp(body_bytes=_SYNTH_PLACEHOLDER),
+    ])
+    _patch_transports(monkeypatch, spy)
+
+    result = await _tools()["get_candidate_photo"](CANDIDATE_ID, ctx=ctx)
+
+    assert result["photo"] is None
+    assert "error" not in result
+    assert "沒有放大頭照" in result["warnings"][0]
+    assert "預設頭像" in result["warnings"][0]
+    # The bytes did not come from that host, so the warning must not say so.
+    assert "static.104.com.tw" not in result["warnings"][0]
+    assert spy.calls == [("json", "get_resume_detail"), ("asset", "candidate_photo")]
+    assert _files_in(ctx) == []
+
+
+def test_the_shipped_placeholder_hash_is_a_pinned_sha256():
+    # The image itself stays out of the tree; what is asserted here is only
+    # that the constant is a real sha256 digest, not a placeholder string.
+    value = resume_files_mod._PLACEHOLDER_PHOTO_SHA256
+    assert len(value) == 64
+    assert all(c in "0123456789abcdef" for c in value)
+
+
+@pytest.mark.asyncio
 async def test_an_unmeasured_photo_host_is_an_error_naming_only_the_hostname(tmp_path, monkeypatch):
     # NOT photo: null — "we do not fetch from an unmeasured host" and "this
     # candidate has no photo" are different facts.
@@ -559,17 +605,39 @@ async def test_the_returned_attachment_omits_filename_link_and_preview(tmp_path,
 # ── the return shape is fixed ─────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_a_successful_photo_call_has_a_fixed_key_set_with_warnings_always_present(tmp_path, monkeypatch):
+@pytest.mark.parametrize("case", ["photo", "no_url", "placeholder_host", "placeholder_bytes"])
+async def test_every_photo_outcome_has_the_same_key_set_with_warnings_always_present(
+    tmp_path, monkeypatch, case
+):
+    # All four published outcomes, not just the successful one: the
+    # description promises 「鍵集合不隨結果變動、warnings 恆在」, and the three
+    # photo: null paths each build their return value separately, so a
+    # dropped browse_limit on one of them is invisible to a test that only
+    # exercises the happy path.
     ctx, _db = await _new_session(tmp_path)
-    _patch_transports(monkeypatch, _Spy([
-        _detail(personal_pic=_PHOTO_URL), _asset_resp(body_bytes=_SYNTH_JPEG),
-    ]))
+    if case == "photo":
+        scripted = [_detail(personal_pic=_PHOTO_URL), _asset_resp(body_bytes=_SYNTH_JPEG)]
+    elif case == "no_url":
+        scripted = [_detail(personal_pic=None)]
+    elif case == "placeholder_host":
+        scripted = [_detail(personal_pic=_PLACEHOLDER_URL)]
+    else:
+        monkeypatch.setattr(
+            resume_files_mod,
+            "_PLACEHOLDER_PHOTO_SHA256",
+            hashlib.sha256(_SYNTH_PLACEHOLDER).hexdigest(),
+        )
+        scripted = [_detail(personal_pic=_PHOTO_URL), _asset_resp(body_bytes=_SYNTH_PLACEHOLDER)]
+    _patch_transports(monkeypatch, _Spy(scripted))
 
     result = await _tools()["get_candidate_photo"](CANDIDATE_ID, ctx=ctx)
 
     assert set(result) == {"photo", "browse_limit", "warnings"}
-    assert set(result["photo"]) == {"path", "bytes", "format"}
     assert isinstance(result["warnings"], list)
+    if case == "photo":
+        assert set(result["photo"]) == {"path", "bytes", "format"}
+    else:
+        assert result["photo"] is None
 
 
 # ── browse_limit comes from the first sub-request ─────────────────────────
