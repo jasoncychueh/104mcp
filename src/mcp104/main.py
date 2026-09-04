@@ -85,6 +85,9 @@ class AppContext:
     _pending_logins: dict[str, PendingLoginResources] = field(default_factory=dict)
     _finished_logins: dict[str, str] = field(default_factory=dict)
     _watcher_tasks: dict[str, asyncio.Task] = field(default_factory=dict)
+    # 背景的 `patchright install chromium` 子行程（tools/auth.py 的自動安裝路徑）；
+    # 整個行程最多同時一個，None 表示沒有在跑、或上一次已經結束並被收掉。
+    _browser_install: asyncio.Task | None = None
 
 
 # ── Global singleton (initialized once at process startup) ───────────
@@ -162,6 +165,17 @@ async def _shutdown_globals() -> None:
             log.exception(
                 "shutdown: finalize of pending login %s failed, continuing", token
             )
+
+    install = _app_ctx._browser_install
+    if install is not None and not install.done():
+        # 行程要結束了，下載中的瀏覽器安裝子行程一併收掉（install_browser 的取消
+        # 路徑會 kill 子行程）；下一次 login() 會重新開始，patchright 自己會處理
+        # 半途的下載。
+        install.cancel()
+        try:
+            await install
+        except BaseException:
+            pass
 
     _app_ctx.session_pool.cleanup_all()
     await _app_ctx.db.close()

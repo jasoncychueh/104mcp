@@ -276,7 +276,7 @@ _PAGE_HTML = """<!doctype html>
     } else if (msg.type === "state") {
       if (msg.value === "completed") {
         receivedCompleted = true;
-        setStatus("登入已完成，這段期間不需要做任何事，頁面即將自動關閉。");
+        setStatus("登入已完成，不需要再做任何事；本頁會嘗試自動關閉，關不掉時請自行關閉。");
       } else if (msg.value === "waiting") {
         setStatus("請在下方畫面中完成 104 登入。");
       }
@@ -286,6 +286,9 @@ _PAGE_HTML = """<!doctype html>
   ws.onclose = function () {
     if (receivedCompleted) {
       setStatus("登入已完成，可以關閉本頁。");
+      // 只有由指令碼開啟的視窗才允許自行關閉；使用者自己開的分頁瀏覽器會忽略這一行
+      // （不會拋錯、也不會有任何提示），所以上面那句話一定要留著。
+      try { window.close(); } catch (e) {}
     } else {
       setStatus("連線中斷，請重新呼叫 login()。");
     }

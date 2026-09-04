@@ -15,7 +15,10 @@
 
 import asyncio
 import logging
+import os
 import secrets
+import subprocess
+import sys
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from enum import Enum
@@ -33,7 +36,12 @@ from mcp104.browser.session import (
     load_cookies,
     save_cookies,
 )
-from mcp104.browser.stealth import create_stealth_context, launch_browser
+from mcp104.browser.stealth import (
+    MissingBrowserError,
+    create_stealth_context,
+    install_browser,
+    launch_browser,
+)
 from mcp104.tools.helpers import (
     ERROR_BLOCKED_API_RESTORE_VERIFY,
     GuardAbort,
@@ -61,6 +69,20 @@ log = logging.getLogger("104-mcp.auth")
 VIP_SESSION_COOKIE_NAMES = ("its", "ithp")
 COOKIE_POLL_INTERVAL = 1.0  # seconds
 WATCHER_CANCEL_TIMEOUT = 10.0  # seconds — see _finalize_pending_login
+
+# 一次工具呼叫在伺服器端最多等多久——兩個數字都刻意壓在 90 秒：本 repo 建議的 MCP client
+# 逾時是 120 秒（README／.mcp.json 的 "timeout"），Claude Code 文件說這個欄位對 stdio
+# server 同樣生效、且是硬性牆鐘時間；90 秒對 120 秒留有餘裕，一次完整真人登入（約 265
+# 秒）由 Agent 連續呼叫幾次 check_login 湊成，每次都在單一呼叫的預算內。
+BROWSER_INSTALL_WAIT_SECONDS = 90.0  # login() 一次呼叫最多等背景安裝多久
+CHECK_LOGIN_MAX_WAIT_SECONDS = 90  # check_login 的 wait_seconds 上限
+CHECK_LOGIN_POLL_INTERVAL = 0.5  # seconds
+
+INSTALLING_BROWSER_MESSAGE = (
+    "首次使用：正在背景下載安裝 login() 需要的 Chromium（約 300 MB，通常幾十秒到幾分鐘）。"
+    "請稍後再呼叫一次 login()——每次呼叫最多等 90 秒，裝好就會直接接著開登入，不需要"
+    "使用者做任何事。"
+)
 
 
 class LoginState(str, Enum):
@@ -316,22 +338,30 @@ def _make_get_admissible_stream(app):
     return get_admissible_stream
 
 
-async def _start_human_login(app, ctx: Context, session_id: str) -> dict:
-    """開一次全新的真人登入：延後啟動監聽端（第一次真的需要它才啟動）、開一顆無頭
-    瀏覽器（畫面由 CDP screencast 送出，不需要顯示器）、導覽到登入頁、登錄
-    pending 項目，並啟動背景 watcher。
+def _open_in_local_browser(url: str) -> bool:
+    """只在「真人與本行程同機」的組態（臨時埠形態，`auth_bind_port is None`）下由呼叫端
+    決定要不要呼叫：用作業系統的預設瀏覽器打開 login_url，省掉「Agent 貼網址、真人
+    複製貼上」那一步。子行程的 stdin/stdout/stderr 一律接 DEVNULL——本行程的 stdout 是
+    MCP 協定通道，xdg-open 之類的工具會往上面寫字。失敗回 False、不拋出：打不開只是
+    少了一個便利，login_url 照樣回給 Agent 轉交真人。"""
+    devnull = subprocess.DEVNULL
+    try:
+        if sys.platform.startswith("win"):
+            os.startfile(url)  # type: ignore[attr-defined]
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", url], stdin=devnull, stdout=devnull, stderr=devnull)
+        else:
+            subprocess.Popen(["xdg-open", url], stdin=devnull, stdout=devnull, stderr=devnull)
+        return True
+    except Exception as exc:
+        log.info("Could not open the login page in a local browser: %s", exc)
+        return False
 
-    不需要在這裡清掉「這個 session 的舊 pending 項目」：能走到這個函式，代表
-    login() 上面的分支 A 已經確認這個 session 沒有任何 `state == awaiting_human`
-    的 pending token——而一個離開 `awaiting_human` 的 token，`SessionPool.activate()`
-    已經在同一個同步函式體內把它從 `_token_to_session` 彈掉，所以不存在一個「非
-    awaiting_human、卻仍然掛在這個 session 底下」的孤兒 token 需要額外收拾。
-    """
-    if app.auth_site is None:
-        auth_app = create_auth_app(_make_get_admissible_stream(app))
-        app.auth_site = await start_auth_site(auth_app, app.config)
 
-    token = secrets.token_urlsafe(32)
+async def _open_login_browser() -> tuple:
+    """開一顆無頭 stealth 瀏覽器、導覽到登入頁、啟動 CDP 串流；回 (browser, context,
+    page, stream)。任何一步失敗都先關掉已經開出來的東西再往上拋——這時還沒有登錄任何
+    pending 項目，沒有別人會替這些資源收尾。"""
     browser: "Browser | None" = None
     context: "BrowserContext | None" = None
     try:
@@ -339,15 +369,12 @@ async def _start_human_login(app, ctx: Context, session_id: str) -> dict:
         context = await create_stealth_context(browser)
         page = await context.new_page()
         await page.goto(LOGIN_URL)
-
         stream = CdpLoginStream(page)
         await stream.start()
+        return browser, context, page, stream
     except Exception:
-        # Nothing below this point has registered a pending-login entry
-        # yet, so no one else owns these resources — this function must
-        # close whatever it managed to create before the failure, in
-        # narrowest-scope-first order, each step swallowing its own
-        # exception so one failed close does not hide another.
+        # narrowest-scope-first, each step swallowing its own exception so
+        # one failed close does not hide another.
         if context is not None:
             try:
                 await context.close()
@@ -360,6 +387,60 @@ async def _start_human_login(app, ctx: Context, session_id: str) -> dict:
                 log.exception("Failed closing browser after a failed login start")
         raise
 
+
+async def _await_browser_install(app) -> dict | None:
+    """缺瀏覽器時的自動安裝：整個行程最多一個安裝子行程（`app._browser_install`），
+    沒有就啟動一個；然後在本次呼叫的預算（BROWSER_INSTALL_WAIT_SECONDS）內等它。
+    回 None 表示裝好了、呼叫端可以重試啟動瀏覽器；回 dict 表示這次 login() 要原樣回給
+    Agent 的形狀——還在裝（status: installing_browser）或裝失敗（error；下一次 login()
+    會重新啟動一次安裝）。本次呼叫的等待被取消（client 斷線）時安裝子行程照跑不誤。"""
+    task = app._browser_install
+    if task is None or (task.done() and (task.cancelled() or task.exception() is not None)):
+        log.warning("Chromium is missing — starting `patchright install chromium` in the background")
+        task = asyncio.create_task(install_browser())
+        app._browser_install = task
+    done, _ = await asyncio.wait({task}, timeout=BROWSER_INSTALL_WAIT_SECONDS)
+    if not done:
+        return {"status": "installing_browser", "message": INSTALLING_BROWSER_MESSAGE}
+    app._browser_install = None
+    if task.cancelled():
+        return {"error": "自動安裝 Chromium 被中止（行程關閉中）。再呼叫一次 login() 會重新安裝。"}
+    exc = task.exception()
+    if exc is not None:
+        return {
+            "error": (
+                f"自動安裝 Chromium 失敗：{exc}。再呼叫一次 login() 會重試；若持續失敗，"
+                "請使用者在裝有本套件的環境手動執行 `python -m patchright install chromium`。"
+            )
+        }
+    return None
+
+
+async def _start_human_login(app, ctx: Context, session_id: str) -> dict:
+    """開一次全新的真人登入：開一顆無頭瀏覽器（畫面由 CDP screencast 送出，不需要
+    顯示器；缺瀏覽器時先走自動安裝）、延後啟動監聽端（第一次真的需要它才啟動）、
+    登錄 pending 項目、啟動背景 watcher，並在同機組態下順手用預設瀏覽器打開 login_url。
+
+    不需要在這裡清掉「這個 session 的舊 pending 項目」：能走到這個函式，代表
+    login() 上面的分支 A 已經確認這個 session 沒有任何 `state == awaiting_human`
+    的 pending token——而一個離開 `awaiting_human` 的 token，`SessionPool.activate()`
+    已經在同一個同步函式體內把它從 `_token_to_session` 彈掉，所以不存在一個「非
+    awaiting_human、卻仍然掛在這個 session 底下」的孤兒 token 需要額外收拾。
+    """
+    try:
+        browser, context, page, stream = await _open_login_browser()
+    except MissingBrowserError:
+        outcome = await _await_browser_install(app)
+        if outcome is not None:
+            return outcome
+        # 裝好了：再試一次；這次再缺就是真的壞了，原樣往上拋給 Agent 看。
+        browser, context, page, stream = await _open_login_browser()
+
+    if app.auth_site is None:
+        auth_app = create_auth_app(_make_get_admissible_stream(app))
+        app.auth_site = await start_auth_site(auth_app, app.config)
+
+    token = secrets.token_urlsafe(32)
     app.session_pool.add_pending(token, PendingLogin(mcp_session_id=session_id))
     app._pending_logins[token] = PendingLoginResources(
         browser=browser, context=context, page=page, stream=stream,
@@ -371,7 +452,9 @@ async def _start_human_login(app, ctx: Context, session_id: str) -> dict:
     app._watcher_tasks[token] = watcher_task
     watcher_task.add_done_callback(lambda t, tok=token: _on_watcher_done(app, tok, t))
 
-    return {"login_url": f"{app.auth_site.base_url}/auth/{token}", "token": token}
+    login_url = f"{app.auth_site.base_url}/auth/{token}"
+    opened = _open_in_local_browser(login_url) if app.config.auth_bind_port is None else False
+    return {"login_url": login_url, "token": token, "browser_opened": opened}
 
 
 # ── Background completion watcher ─────────────────────────────────────
@@ -590,15 +673,20 @@ async def _watch_for_login(app, token: str, watcher_epoch: int) -> None:
 
 
 async def login(ctx: Context) -> dict:
-    """啟動 104 人力銀行登入流程（不阻塞，立即回傳）。
+    """啟動 104 人力銀行登入流程（立即回傳，不等真人）。
 
-    會先嘗試以既有的登入狀態（本次執行記憶體中的 session，或上次留下的憑證檔）
-    通過一次真實的 104 驗證；驗證通過時直接回報 already_logged_in／restored，
-    不需要真人操作。驗證失敗、或完全沒有既有狀態時，開一次新的真人登入並回傳
-    login_url／token——使用者打開該網址完成 104 登入（含可能的 MFA、產品選擇、
-    帳號已在他處登入的處理），系統會自動偵測完成並生效，不需要手動呼叫
-    check_login。對一次已在進行中的登入重複呼叫，會原樣回傳那一次的
-    login_url／token，不會取代它。
+    先用既有狀態（記憶體中的 session 或上次的憑證檔）做一次真實的 104 驗證，通過就回
+    {"status": "already_logged_in"|"restored"}，不需要真人。否則開一次真人登入，回
+    {"login_url", "token", "browser_opened"}。**接下來 Agent 要做的事：**
+    1. browser_opened 為 True 時，伺服器已用使用者的預設瀏覽器打開登入頁，只要請使用者
+       在跳出的視窗完成 104 登入（含 MFA、產品選擇、「此帳號已登入」確認）；為 False 時
+       把 login_url 給使用者請他打開。
+    2. 立刻呼叫 check_login(token, wait_seconds=90)，回 pending 就再呼叫，直到 status
+       不是 pending 為止——每次最多等 90 秒、一完成就立刻回傳。**不要停下來等使用者說
+       「登入了」**，也不要要求使用者回報；真人完整登入約 3–5 分鐘。
+    對一次已在進行中的登入重複呼叫，會原樣回傳那一次的 login_url／token，不會取代它。
+    首次使用若尚未安裝 Chromium，回 {"status": "installing_browser", "message"}：伺服器
+    正在背景下載，稍後再呼叫一次 login() 即可（每次最多等 90 秒，裝好會直接接著開登入）。
     """
     app = ctx.request_context.lifespan_context
     session_id = get_session_id(ctx)
@@ -617,6 +705,7 @@ async def login(ctx: Context) -> dict:
                 return {
                     "login_url": f"{app.auth_site.base_url}/auth/{pending_token}",
                     "token": pending_token,
+                    "browser_opened": False,
                 }
 
         cookies = load_cookies(app.config.cookies_path)
@@ -630,22 +719,11 @@ async def login(ctx: Context) -> dict:
     return await _start_human_login(app, ctx, session_id)
 
 
-async def check_login(token: str, ctx: Context) -> dict:
-    """檢查登入進度（advisory、零 I/O：背景 watcher 會自動偵測完成並生效，
-    通常不需手動呼叫此工具）。
-
-    Args:
-        token: login() 回傳的 token。
-
-    四種狀態依序判定：本次執行已有可用 session 一律回 success（不論帶的是哪個
-    token）；否則若 token 是本次執行仍在進行中的登入，回 pending；否則若 token
-    是本次執行自己鑄造、而本次執行親眼看著它逾時或被放棄，回 failed；其餘
-    （含每一個由先前執行鑄造的 token）回 unknown——那次登入很可能已經成功，
-    取得確定答案的方式是呼叫 login()。
-    """
-    app = ctx.request_context.lifespan_context
-    session_id = get_session_id(ctx)
-
+def _check_login_now(app, session_id: str, token: str) -> dict:
+    """check_login 的單次判定（零 I/O）。四種狀態依序：本次執行已有可用 session 一律
+    success（不論帶的是哪個 token）；token 是本次執行仍在進行中的登入 → pending；token 是
+    本次執行自己鑄造、而本次執行親眼看著它逾時或被放棄 → failed；其餘（含每一個由先前
+    執行鑄造的 token）→ unknown。"""
     if app.session_pool.get_session(session_id) is not None:
         return {"status": "success"}
 
@@ -663,6 +741,34 @@ async def check_login(token: str, ctx: Context) -> dict:
             "登入狀態並回報。"
         ),
     }
+
+
+async def check_login(token: str, ctx: Context, wait_seconds: int = 0) -> dict:
+    """等待／查詢一次登入的進度。
+
+    Args:
+        token: login() 回傳的 token。
+        wait_seconds: 最多等幾秒（0–90，超過以 90 計；預設 0 = 立刻回答）。狀態是
+            pending 時會在伺服器端等到登入完成或時間用完才回傳，一完成就立刻回傳。
+
+    建議用法：login() 回傳 login_url 之後反覆呼叫 check_login(token, wait_seconds=90)，
+    直到 status 不是 "pending"。四種狀態：success（可以開始用其他工具）、pending（真人
+    還在登入中，再呼叫一次）、failed（本次執行看著這次登入逾時或被放棄，重新 login()）、
+    unknown（token 不是本次執行發出的，例如來自行程重啟之前；那次登入很可能已經成功，
+    呼叫 login() 會驗證真正的狀態並回報）。
+    """
+    app = ctx.request_context.lifespan_context
+    session_id = get_session_id(ctx)
+
+    wait = max(0, min(int(wait_seconds), CHECK_LOGIN_MAX_WAIT_SECONDS))
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + wait
+    while True:
+        result = _check_login_now(app, session_id, token)
+        remaining = deadline - loop.time()
+        if result["status"] != "pending" or remaining <= 0:
+            return result
+        await asyncio.sleep(min(CHECK_LOGIN_POLL_INTERVAL, remaining))
 
 
 async def logout(ctx: Context) -> dict:

@@ -6,6 +6,8 @@
 `stop_playwright`）屬於呼叫端（`main.py`），這個模組只提供函式。"""
 
 import asyncio
+import logging
+import sys
 
 from patchright.async_api import async_playwright, Browser, BrowserContext, Error as PatchrightError
 
@@ -30,13 +32,58 @@ _playwright = None
 # half-initialized state.
 _playwright_lock: asyncio.Lock | None = None
 
+log = logging.getLogger("104-mcp.stealth")
+
 _MISSING_BROWSER_MARKER = "Executable doesn't exist"
 
+# 措辭要準：每個 patchright 版本綁定一個特定的 Chromium revision，ms-playwright 目錄裡
+# 有其他工具（playwright、其他 MCP）裝的別的 revision 並不算數——2026-09-04 實機上該
+# 目錄已有 chromium-1200/1208/1228 仍然報這個錯，真正缺的是 patchright 要的 1234。
 _MISSING_BROWSER_MESSAGE = (
-    "找不到 Chromium 執行檔。patchright 的瀏覽器快取是 user-level 的 "
-    "ms-playwright 目錄，唯一會被讀取的環境變數是 PLAYWRIGHT_BROWSERS_PATH——"
-    "任何一種方式在這台機器上裝過一次瀏覽器之後，這裡都會找得到。"
+    "找不到這個 patchright 版本所需的 Chromium revision。瀏覽器快取是 user-level 的 "
+    "ms-playwright 目錄（唯一會被讀取的環境變數是 PLAYWRIGHT_BROWSERS_PATH）；目錄裡"
+    "由其他工具裝的別的 revision 不算數。login() 會自動在背景下載安裝。"
 )
+
+
+class MissingBrowserError(PatchrightError):
+    """`launch_browser` 找不到本 patchright 版本所需的 Chromium 時拋出。獨立成型別，
+    讓 `login()` 能認出「缺瀏覽器」這一種失敗並走自動安裝，其他啟動失敗照原樣往上拋。"""
+
+
+# `python -m patchright install chromium`——python 是本行程自己的直譯器（sys.executable）：
+# uvx 與 pip -e 兩種安裝下 patchright 都裝在同一個環境裡，這是唯一不需要猜路徑的寫法。
+# 2026-09-04 實機驗證：uvx 環境下這條指令下載 chromium-1234 + chromium_headless_shell-1234
+# （約 190 + 110 MiB），幾十秒完成，之後 login() 正常。
+BROWSER_INSTALL_ARGS = ("-m", "patchright", "install", "chromium")
+
+
+async def install_browser() -> None:
+    """在子行程執行 `python -m patchright install chromium`。子行程的 stdin 接 DEVNULL、
+    stdout/stderr 全部接到 pipe 再逐行轉進本行程的 log（stderr）——**絕不能讓它繼承本行程
+    的 stdout**，那是 MCP 協定通道。非零結束碼拋 RuntimeError，訊息帶輸出的最後幾行；
+    被取消時殺掉子行程再重新拋出，不留下孤兒下載程序。"""
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable, *BROWSER_INSTALL_ARGS,
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+    )
+    try:
+        out, _ = await proc.communicate()
+    except asyncio.CancelledError:
+        try:
+            proc.kill()
+            await proc.wait()
+        except Exception:
+            pass
+        raise
+    lines = [ln.rstrip() for ln in out.decode("utf-8", errors="replace").splitlines() if ln.strip()]
+    for ln in lines:
+        log.info("patchright install: %s", ln)
+    if proc.returncode != 0:
+        tail = " / ".join(lines[-5:])
+        raise RuntimeError(f"patchright install chromium 以結束碼 {proc.returncode} 結束：{tail}")
 
 
 async def get_playwright():
@@ -89,7 +136,7 @@ async def launch_browser(headless: bool = True) -> Browser:
         )
     except Exception as e:
         if _MISSING_BROWSER_MARKER in str(e):
-            raise PatchrightError(_MISSING_BROWSER_MESSAGE) from e
+            raise MissingBrowserError(_MISSING_BROWSER_MESSAGE) from e
         raise
     return browser
 

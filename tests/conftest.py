@@ -68,3 +68,17 @@ class _SeqFetchSpy:
         if isinstance(item, BaseException):
             raise item
         return item
+
+
+@pytest.fixture(autouse=True)
+def _never_open_a_real_browser_tab(monkeypatch):
+    """login() now asks the OS to open the login page in the user's default
+    browser (tools/auth._open_in_local_browser) in the same-machine
+    configuration. No test may ever pop a real browser window: stub it to
+    "could not open" for every test, and let the tests that care about the
+    call re-patch it with a recorder."""
+    try:
+        import mcp104.tools.auth as auth_mod
+    except ImportError:
+        return
+    monkeypatch.setattr(auth_mod, "_open_in_local_browser", lambda url: False, raising=False)

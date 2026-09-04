@@ -338,7 +338,7 @@ async def _receive_state(ws, timeout=5):
 
 
 _SCREEN_1_WAITING = "請在下方畫面中完成 104 登入。"
-_SCREEN_2_COMPLETED_CONNECTED = "登入已完成，這段期間不需要做任何事，頁面即將自動關閉。"
+_SCREEN_2_COMPLETED_CONNECTED = "登入已完成，不需要再做任何事；本頁會嘗試自動關閉，關不掉時請自行關閉。"
 _SCREEN_3_COMPLETED_THEN_CLOSED = "登入已完成，可以關閉本頁。"
 _SCREEN_4_NEVER_COMPLETED_CLOSED = "連線中斷，請重新呼叫 login()。"
 

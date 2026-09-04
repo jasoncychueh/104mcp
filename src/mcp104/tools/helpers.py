@@ -12,7 +12,7 @@ from uuid import uuid4
 from mcp.server.fastmcp import Context
 
 from mcp104.browser.api_client import Endpoint, classify, fetch, hostname_for, select_cookies_for_host
-from mcp104.browser.session import SessionInfo, matches_auth_host
+from mcp104.browser.session import SessionInfo, load_cookies, matches_auth_host
 from mcp104.browser.throttle import enforce_throttle, note_request
 
 log = logging.getLogger("104-mcp.helpers")
@@ -176,8 +176,27 @@ def get_session_id(ctx: Context) -> str:
     return sid
 
 
+def _restore_session_from_cookie_file(app, session_id: str) -> bool:
+    """行程重啟（或新連線）之後憑證檔還在時，直接把它掛成這個連線的 session，不要求
+    Agent 再呼叫一次 login()——2026-09-04 實測：真人登入完成後行程重啟，下一個工具
+    呼叫回「請先呼叫 login()」，使用者看到的是「我明明登入了它還說沒登入」。
+
+    這裡刻意**不驗證**：接下來這個工具自己的那一次請求就是驗證——憑證過期時守衛會判成
+    expired 並回報「已過期，請重新 login()」，login() 再負責清掉壞掉的憑證檔。"""
+    cookies = load_cookies(app.config.cookies_path)
+    if not cookies:
+        return False
+    app.session_pool.activate_direct(
+        session_id, SessionInfo(cookies=cookies, account_label=app.config.account_label)
+    )
+    log.info("Session restored from the credential file for a connection that had not called login()")
+    return True
+
+
 def require_login(func):
-    """Decorator: returns error if MCP session has not called login() yet."""
+    """Decorator: returns error if there is no usable login state — no session for
+    this connection AND no credential file to restore one from (see
+    _restore_session_from_cookie_file)."""
     @wraps(func)
     async def wrapper(*args, **kwargs):
         ctx = kwargs.get("ctx") or next(
@@ -188,7 +207,8 @@ def require_login(func):
         app = ctx.request_context.lifespan_context
         session_id = get_session_id(ctx)
         if not app.session_pool.is_logged_in(session_id):
-            return ERROR_NOT_LOGGED_IN
+            if not _restore_session_from_cookie_file(app, session_id):
+                return ERROR_NOT_LOGGED_IN
         return await func(*args, **kwargs)
     return wrapper
 
