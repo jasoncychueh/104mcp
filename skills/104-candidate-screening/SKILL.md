@@ -1,6 +1,6 @@
 ---
 name: 104-candidate-screening
-description: 用 mcp104（104人力銀行 MCP server）替一個職缺找人、篩人，並產生一份可離線閱讀的 HTML 履歷報表（含照片、附件、完整履歷原文）。Use this whenever the user is working with 104 candidates in any way — 找人選、看推薦履歷、看配對人選、篩履歷、幫某個職缺找人、整理候選人名單、把履歷做成報表、比較幾個人選 — even when they only say something small like「看一下今天的推薦履歷」or「這個職缺有誰可以看」and never mention screening or a report. It carries the quota-safe call order (only get_resume_detail costs the 300/day budget), the résumé record schema, how to turn a hiring manager's want/exclude list into reproducible groups, and a bundled renderer.
+description: 用 mcp104（104人力銀行 MCP server）替職缺找人、篩人，並把候選人整理成一份可離線閱讀的 HTML 履歷報表（含照片、履歷附件、完整履歷原文）。Use this for ANY step of working with 104 candidates, not only the first one — 看推薦履歷或配對人選、幫某個職缺找人、依條件篩履歷、抓候選人的大頭照與履歷附件、比較幾個人選的經歷與期望薪資、把已經篩好的名單做成 HTML 報表給主管看。It applies when the request is small（「看一下今天的推薦履歷」）, and also mid-workflow, when the user already has a shortlist and never repeats the word「104」because the candidates obviously came from there — 例如「把那四十個人做成一個 html，完整履歷都要在裡面」或「這幾個人選幫我比一下經歷跟期望薪資」。Not for editing mcp104's own code or config, posting a job, or messaging candidates. Carries the quota-safe call order (only get_resume_detail costs the 300/day budget), the résumé record schema, the screening-group method, and a bundled renderer.
 compatibility: 需要已設定並登入的 mcp104 MCP server；產生報表需要 Python 3 與 Pillow。
 ---
 
