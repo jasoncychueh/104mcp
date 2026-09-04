@@ -124,6 +124,15 @@
 
 ---
 
+## 搭配的 Claude Code Skill
+
+`skills/104-candidate-screening/` 是一份把「找人選 → 篩選 → 產出履歷報表」整條流程寫下來的
+Claude Code skill，內容來自用這個 server 實際跑完一輪招募的過程。它**不在 `pip install` 的
+套件裡**（那是給 Claude Code 用的，不是 Python 套件的一部分）——安裝方式是複製到
+`~/.claude/skills/`，見 `skills/README.md`。
+
+---
+
 ## 環境變數
 
 全部選填，一般使用不需要設定任何一個。

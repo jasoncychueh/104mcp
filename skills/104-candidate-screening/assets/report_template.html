@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="zh-Hant"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>__TITLE__</title>
+<style>
+:root{--bg:#faf9f7;--fg:#1c1a17;--mut:#6b655c;--line:#e3ded5;--card:#fff;--acc:#8a5a2b;
+      --bad:#b03a2e;--ok:#3f6d4e;--warn:#b4551f;--soft:#f4f1ea}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){
+  --bg:#15140f;--fg:#eae6dd;--mut:#9a938a;--line:#332f27;--card:#1e1c16;--acc:#d9a066;
+  --bad:#e07a6d;--ok:#7fb08c;--warn:#e08a4d;--soft:#242118}}
+:root[data-theme=dark]{--bg:#15140f;--fg:#eae6dd;--mut:#9a938a;--line:#332f27;--card:#1e1c16;
+  --acc:#d9a066;--bad:#e07a6d;--ok:#7fb08c;--warn:#e08a4d;--soft:#242118}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);
+     font:15px/1.7 "Noto Sans TC",-apple-system,"Segoe UI",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:24px 20px 80px}
+h1{margin:0 0 4px;font-size:21px;font-weight:650;letter-spacing:-.01em}
+.sub{color:var(--mut);font-size:13px;margin-bottom:16px}
+.bar{display:flex;gap:6px;flex-wrap:wrap;align-items:center;position:sticky;top:0;z-index:9;
+     background:var(--bg);padding:10px 0;border-bottom:1px solid var(--line);margin-bottom:8px}
+button.f,button.x{font:inherit;font-size:12.5px;padding:5px 12px;border:1px solid var(--line);
+  background:var(--card);color:var(--mut);border-radius:999px;cursor:pointer;white-space:nowrap}
+button.f[aria-pressed=true]{background:var(--acc);border-color:var(--acc);color:#fff}
+button.x:hover{color:var(--fg);border-color:var(--acc)}
+input[type=search]{font:inherit;padding:6px 11px;border:1px solid var(--line);border-radius:7px;
+  background:var(--card);color:var(--fg);min-width:170px}
+.cnt{color:var(--mut);font-size:12.5px;margin-left:auto}
+h2.grp{font-size:14px;margin:26px 0 4px;font-weight:650;color:var(--acc)}
+.c{background:var(--card);border:1px solid var(--line);border-radius:11px;margin:9px 0;
+   overflow:hidden}
+.c.bad{border-left:3px solid var(--bad)} .c.ok{border-left:3px solid var(--ok)}
+.hd{padding:12px 16px;display:flex;gap:13px;align-items:flex-start}
+.pw{flex:0 0 66px}
+.pw img{width:66px;height:66px;border-radius:9px;object-fit:cover;display:block;
+        border:1px solid var(--line)}
+.pw .np{width:66px;height:66px;border-radius:9px;border:1px dashed var(--line);display:flex;
+        align-items:center;justify-content:center;color:var(--mut);font-size:10.5px;
+        text-align:center;line-height:1.35}
+.hb{flex:1;min-width:0}
+.hd1{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}
+.nm{font-size:17px;font-weight:700}
+.meta{color:var(--mut);font-size:13px}
+.t{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid currentColor;
+   white-space:nowrap}
+.t-bad{color:var(--bad)} .t-ok{color:var(--ok)} .t-w{color:var(--warn)} .t-m{color:var(--mut)}
+.recent{font-size:13.6px;margin-top:6px}
+.recent b{font-weight:600}
+.quick{display:flex;gap:14px;flex-wrap:wrap;color:var(--mut);font-size:12.7px;margin-top:5px}
+.quick span b{color:var(--fg);font-weight:600}
+.att{margin-top:8px;font-size:12.7px;color:var(--mut)}
+.att b{color:var(--acc);font-weight:600}
+.att span{display:inline-block;border:1px solid var(--line);border-radius:5px;padding:1px 7px;
+          margin:2px 4px 0 0;color:var(--fg)}
+.nt{background:var(--soft);border-radius:8px;padding:9px 12px;font-size:13.4px;margin-top:10px;
+    border-left:3px solid var(--warn)}
+details{border-top:1px solid var(--line)}
+details>summary{cursor:pointer;color:var(--mut);font-size:13px;user-select:none;padding:9px 16px;
+  list-style:none;display:flex;align-items:center;gap:6px}
+details>summary::-webkit-details-marker{display:none}
+details>summary::before{content:"\25B8";font-size:11px;transition:transform .15s}
+details[open]>summary::before{transform:rotate(90deg)}
+details>summary:hover{color:var(--fg);background:var(--soft)}
+.dbody{padding:2px 16px 16px}
+.sec{margin-top:13px}
+.sec>h3{font-size:12px;font-weight:700;color:var(--acc);margin:0 0 4px;letter-spacing:.06em}
+.txt{white-space:pre-wrap;font-size:14.1px;line-height:1.78}
+.kv{display:grid;grid-template-columns:repeat(auto-fit,minmax(215px,1fr));gap:3px 18px;
+    font-size:13.2px}
+.kv div{color:var(--mut)} .kv b{color:var(--fg);font-weight:600;margin-right:5px}
+.job{border-left:2px solid var(--line);padding:2px 0 2px 13px;margin:11px 0}
+.job .jh{font-weight:650;font-size:14.3px}
+.job .jm{color:var(--mut);font-size:12.6px;margin:1px 0 5px}
+.job .jd{white-space:pre-wrap;font-size:13.7px;line-height:1.74}
+.ct{font:13px ui-monospace,monospace;color:var(--acc)}
+@media print{.bar{display:none}details{display:block}details>summary{display:none}
+  .dbody{display:block!important}.c{page-break-inside:avoid;border:1px solid #ccc}}
+</style></head><body><div class="wrap">
+<h1>__TITLE__</h1>
+<div class="sub" id="sub"></div>
+<div class="bar" id="bar"></div>
+<div id="out"></div>
+</div>
+<script>
+const CFG = __CONFIG__;
+const D   = __DATA__;
+
+const esc = s => String(s ?? "").replace(/[&<>"]/g,
+  c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+const GLBL = Object.fromEntries((CFG.groups || []).map(g => [g.key, g.label]));
+const GKEYS = (CFG.groups || []).map(g => g.key);
+const FLAGS = CFG.flags || [];
+
+// 薪資規則：over = 超出預算，inr = 明確落在區間。兩者都由設定檔的 regex 決定，
+// 沒設就一律視為「未判定」，卡片維持中性色。
+const reOver = CFG.salary && CFG.salary.over_pattern ? new RegExp(CFG.salary.over_pattern) : null;
+const reIn   = CFG.salary && CFG.salary.in_pattern   ? new RegExp(CFG.salary.in_pattern)   : null;
+
+D.forEach(r => {
+  r.jobs = r.jobs || [];
+  r.att  = r.att  || [];
+  r.blob = [r.n, r.auto, r.note, r.edu, r.cert, r.skill, r.cat, r.area, r.wc, r.hope,
+            ...r.jobs.map(j => [j.f, j.t, j.d].join(" "))].join(" ").toLowerCase();
+  r.over = !!(reOver && reOver.test(r.hope || ""));
+  r.inr  = !!(reIn   && reIn.test(r.hope || ""));
+  r._flag = {};
+  FLAGS.forEach(f => { r._flag[f.key] = String(r[f.field] || "").includes(f.contains); });
+});
+
+// 篩選鈕：固定的幾顆 + 每個 flag 一顆 + 每個組別一顆。只有真的有資料的才畫出來，
+// 免得使用者按到一顆永遠是空的按鈕。
+const BTNS = [{k: "all", label: "全部 " + D.length}];
+if (reOver) BTNS.push({k: "fit", label: "薪資可行"}, {k: "over", label: "超出預算"});
+if (reIn)   BTNS.push({k: "in", label: "明確落在區間"});
+if (D.some(r => r.st === "待業中"))  BTNS.push({k: "idle", label: "待業中"});
+if (D.some(r => r.att.length))       BTNS.push({k: "att",  label: "有履歷附件"});
+FLAGS.forEach(f => BTNS.push({k: "flag:" + f.key, label: f.label}));
+GKEYS.forEach(g => { if (D.some(r => r.g === g)) BTNS.push({k: g, label: GLBL[g]}); });
+
+document.getElementById("bar").innerHTML =
+  BTNS.map((b, i) => `<button class="f" data-k="${esc(b.k)}" aria-pressed="${i === 0}">${
+    esc(b.label)}</button>`).join("") +
+  '<input type="search" id="q" placeholder="搜尋內容…">' +
+  '<button class="x" id="ex">全部展開</button><span class="cnt" id="cnt"></span>';
+
+document.getElementById("sub").textContent = CFG.subtitle || "";
+
+let k = "all", openAll = false;
+
+function card(r) {
+  const cls = r.over ? "c bad" : (r.inr ? "c ok" : "c");
+  const vt  = r.over ? "t-bad" : (r.inr ? "t-ok" : "t-m");
+  const j0  = r.jobs[0] || {};
+  const o   = openAll ? " open" : "";
+  const tags = FLAGS.map(f => {
+    const txt = r._flag[f.key] ? f.tag_when_true : f.tag_when_false;
+    return txt ? `<span class="t t-bad">${esc(txt)}</span>` : "";
+  }).join("");
+  return `<div class="${cls}">
+   <div class="hd">
+    <div class="pw">${r.photo
+      ? `<img alt="" src="data:image/jpeg;base64,${r.photo}">`
+      : '<div class="np">無照片</div>'}</div>
+    <div class="hb">
+     <div class="hd1">
+      <span class="nm">${esc(r.n)}</span>
+      <span class="meta">${esc(r.age ?? "")} 歲 ｜ ${esc(r.area)} ｜ ${esc(r.exp)}經驗</span>
+      <span class="t ${vt}">${esc(r.hope)}</span>
+      ${r.st === "待業中" ? '<span class="t t-w">待業中</span>' : ""}
+      ${tags}
+     </div>
+     <div class="recent"><b>${esc(j0.f || "—")}</b> · ${esc(j0.t || "")}
+       <span class="meta">${esc(j0.p || "")}</span></div>
+     <div class="quick">
+      <span><b>可上班</b> ${esc(r.start)}</span>
+      <span><b>希望職稱</b> ${esc((r.cat || "").slice(0, 40))}</span>
+      <span><b>電話</b> <span class="ct">${esc(String(r.tel || "").split("（")[0])}</span></span>
+     </div>
+     ${r.att.length ? `<div class="att"><b>履歷附件 ${r.att.length} 件</b>　${
+        r.att.map(a => `<span>${esc(a)}</span>`).join("")}</div>` : ""}
+     ${r.note ? `<div class="nt"><b>評註：</b>${esc(r.note)}</div>` : ""}
+    </div>
+   </div>
+   <details${o}><summary>工作經歷（${r.jobs.length} 段）</summary><div class="dbody">
+     ${r.jobs.map(j => `<div class="job">
+        <div class="jh">${esc(j.f)} · ${esc(j.t)}</div>
+        <div class="jm">${esc(j.p)}${j.i ? " ｜ " + esc(j.i) : ""}${
+          j.sz && j.sz !== "—" ? " ｜ " + esc(j.sz) : ""}</div>
+        <div class="jd">${esc(j.d)}</div></div>`).join("")}
+   </div></details>
+   <details${o}><summary>自傳${
+     !r.auto || String(r.auto).startsWith("（未填") ? "（未填）" : "（" + r.auto.length + " 字）"
+   }</summary>
+     <div class="dbody"><div class="txt">${esc(r.auto)}</div></div></details>
+   <details${o}><summary>求職條件 · 學歷 · 證照 · 聯絡方式</summary><div class="dbody">
+     <div class="sec"><h3>求職條件</h3><div class="kv">
+       <div><b>希望待遇</b>${esc(r.hope)}</div>
+       <div><b>可上班</b>${esc(r.start)}</div>
+       <div><b>在職狀態</b>${esc(r.st)}</div>
+       <div><b>希望職稱</b>${esc(r.cat)}</div>
+       <div style="grid-column:1/-1"><b>希望工作地</b>${esc(r.wc)}</div>
+       <div style="grid-column:1/-1"><b>上班時段</b>${esc(r.shift || "—")}</div>
+     </div></div>
+     <div class="sec"><h3>聯絡方式</h3><div class="kv">
+       <div><b>電話</b><span class="ct">${esc(r.tel)}</span></div>
+       <div><b>Email</b><span class="ct">${esc(r.mail)}</span></div>
+     </div></div>
+     <div class="sec"><h3>學歷 · 證照 · 語言</h3><div class="kv">
+       <div style="grid-column:1/-1"><b>學歷</b>${esc(r.edu)}</div>
+       <div style="grid-column:1/-1"><b>證照</b>${esc(r.cert || "—")}</div>
+       <div><b>語言</b>${esc(r.lang || "—")}</div>
+       <div><b>兵役</b>${esc(r.mil || "—")}</div>
+     </div></div>
+     ${r.skill && !String(r.skill).startsWith("（未填")
+       ? `<div class="sec"><h3>專長</h3><div class="txt">${esc(r.skill)}</div></div>` : ""}
+     ${r.ref ? `<div class="sec"><h3>推薦人 · 附件 · 往來紀錄</h3>
+       <div class="txt">${esc(r.ref)}</div></div>` : ""}
+   </div></details>
+  </div>`;
+}
+
+function render() {
+  const q = document.getElementById("q").value.trim().toLowerCase();
+  const f = D.filter(r => {
+    if (q && !r.blob.includes(q)) return false;
+    if (k === "all")  return true;
+    if (k === "fit")  return !r.over;
+    if (k === "over") return r.over;
+    if (k === "in")   return r.inr;
+    if (k === "idle") return r.st === "待業中";
+    if (k === "att")  return r.att.length > 0;
+    if (k.startsWith("flag:")) return r._flag[k.slice(5)];
+    return r.g === k;
+  });
+  // 沒有分組的記錄不會被組別迴圈撿到，補一段「未分組」，免得它們默默消失。
+  let h = "";
+  for (const g of GKEYS) {
+    const rs = f.filter(r => r.g === g);
+    if (rs.length) h += `<h2 class="grp">${esc(GLBL[g])} · ${rs.length} 位</h2>`
+                      + rs.map(card).join("");
+  }
+  const rest = f.filter(r => !GKEYS.includes(r.g));
+  if (rest.length) h += `<h2 class="grp">未分組 · ${rest.length} 位</h2>` + rest.map(card).join("");
+
+  document.getElementById("out").innerHTML =
+    h || '<p style="color:var(--mut);padding:30px 0">沒有符合的人選</p>';
+  document.getElementById("cnt").textContent = `${f.length} / ${D.length} 位`;
+}
+
+document.getElementById("bar").addEventListener("click", e => {
+  const b = e.target.closest("button.f");
+  if (!b) return;
+  k = b.dataset.k;
+  document.querySelectorAll("button.f").forEach(x =>
+    x.setAttribute("aria-pressed", String(x === b)));
+  render();
+});
+document.getElementById("q").addEventListener("input", render);
+document.getElementById("ex").addEventListener("click", () => {
+  openAll = !openAll;
+  document.getElementById("ex").textContent = openAll ? "全部收合" : "全部展開";
+  render();
+});
+render();
+</script></body></html>
