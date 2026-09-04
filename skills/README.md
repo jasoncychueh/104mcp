@@ -6,14 +6,27 @@
 
 ## 安裝
 
-複製到 Claude Code 的 skills 目錄：
+### 方式一：裝成 plugin（建議）
+
+這個 repo 同時是一個 Claude Code marketplace 和它自己的 plugin，所以兩行就好：
+
+```
+/plugin marketplace add jasoncychueh/104mcp
+/plugin install mcp104@104mcp
+```
+
+裝完會同時拿到 **skill** 和 **MCP server 的設定**（`.claude-plugin/plugin.json` 裡宣告了
+`uvx mcp104` 這個 stdio server），不必自己編 `.mcp.json`。更新用 `/plugin marketplace update 104mcp`。
+
+前提是機器上有 `uv`／`uvx`；`uvx` 會在第一次啟動時自己去 PyPI 取 `mcp104`。
+
+### 方式二：只要 skill，手動複製
+
+不想裝 plugin、或只想要 skill 不想要 MCP 設定的話：
 
 ```bash
-# 個人層級，任何專案都能用
-cp -r skills/104-candidate-screening ~/.claude/skills/
-
-# 或專案層級，只在該專案內生效
-cp -r skills/104-candidate-screening <你的專案>/.claude/skills/
+cp -r skills/104-candidate-screening ~/.claude/skills/          # 個人層級
+cp -r skills/104-candidate-screening <你的專案>/.claude/skills/  # 專案層級
 ```
 
 Windows（PowerShell）：
@@ -22,7 +35,7 @@ Windows（PowerShell）：
 Copy-Item -Recurse skills\104-candidate-screening $HOME\.claude\skills\
 ```
 
-裝好之後 Claude 會自己在相關的請求上叫用它，不需要手動觸發。
+兩種方式裝好之後，Claude 都會自己在相關的請求上叫用它，不需要手動觸發。
 
 ## 目前有什麼
 

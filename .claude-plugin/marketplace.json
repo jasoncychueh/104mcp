@@ -1,0 +1,20 @@
+{
+  "name": "104mcp",
+  "description": "104 人力銀行招募工具：MCP server + 人選篩選與履歷報表 skill",
+  "owner": {
+    "name": "Jason Chueh",
+    "email": "jasoncychueh@gmail.com"
+  },
+  "plugins": [
+    {
+      "name": "mcp104",
+      "description": "在 Claude Code 裡操作 104 人力銀行企業招募帳號：履歷搜尋／推薦／配對、候選人照片與履歷附件、訊息與詢問意願，登入走 device-flow 讓帳密不經過 LLM。附帶一個把找人、篩人到產生離線 HTML 履歷報表整條流程寫下來的 skill。",
+      "version": "0.3.1",
+      "source": "./",
+      "author": {
+        "name": "Jason Chueh",
+        "email": "jasoncychueh@gmail.com"
+      }
+    }
+  ]
+}
