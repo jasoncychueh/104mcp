@@ -546,14 +546,21 @@ class _T121Db:
 class _T121Config:
     auth_bind_port: int | None = None
 
+    # See _FakeConfig in tests/test_auth.py: a hand-written stand-in gets no
+    # protection from the real Config's no-default fields, and this one
+    # reaches shutil.rmtree, so the directory is required and absolute.
+    def __init__(self, resume_files_dir: Path):
+        assert Path(resume_files_dir).is_absolute()
+        self.resume_files_dir = Path(resume_files_dir)
+
 
 class _T121App:
-    def __init__(self, calls, *, raise_for_token=None):
+    def __init__(self, calls, resume_files_dir, *, raise_for_token=None):
         self._watcher_tasks = {}
         self._pending_logins = {}
         self._finished_logins = {}
         self.session_pool = _T121SessionPool(calls, raise_for_token=raise_for_token)
-        self.config = _T121Config()
+        self.config = _T121Config(resume_files_dir)
         self.auth_site = _T121AuthSite(calls)
         self.db = _T121Db(calls)
         self._browser_install = None
@@ -579,9 +586,9 @@ def _t121_add_pending(app, calls, token, state):
 
 
 @pytest.mark.asyncio
-async def test_t121_shutdown_globals_tears_down_every_pending_login(monkeypatch):
+async def test_t121_shutdown_globals_tears_down_every_pending_login(monkeypatch, tmp_path):
     calls = _T121Calls()
-    app = _T121App(calls)
+    app = _T121App(calls, tmp_path / "resume-files")
     task1, stream1, context1, browser1 = _t121_add_pending(
         app, calls, "tok-awaiting", LoginState.AWAITING_HUMAN
     )
@@ -641,14 +648,14 @@ async def test_t121_shutdown_globals_tears_down_every_pending_login(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_t121_one_items_teardown_raising_does_not_strand_the_other_or_the_driver(monkeypatch):
+async def test_t121_one_items_teardown_raising_does_not_strand_the_other_or_the_driver(monkeypatch, tmp_path):
     calls = _T121Calls()
     # tok-awaiting's own teardown fails inside _finalize_pending_login (its
     # discard_pending call, the one call in that function's body NOT wrapped
     # in its own try/except) -- Requirement 9.4's failure mode is exactly a
     # leaked browser process, so tok-settling and the shared driver must
     # still be handled despite tok-awaiting's finalize blowing up.
-    app = _T121App(calls, raise_for_token="tok-awaiting")
+    app = _T121App(calls, tmp_path / "resume-files", raise_for_token="tok-awaiting")
     task1, stream1, context1, browser1 = _t121_add_pending(
         app, calls, "tok-awaiting", LoginState.AWAITING_HUMAN
     )

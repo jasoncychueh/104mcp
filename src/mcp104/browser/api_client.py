@@ -48,7 +48,7 @@ import json
 import re
 from dataclasses import dataclass
 from typing import Sequence
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urlparse
 
 import aiohttp
 
@@ -59,10 +59,26 @@ from mcp104.browser.fingerprint import ACCEPT_LANGUAGE, USER_AGENT
 # "vip" / "auth" are the two tokens Endpoint.host is allowed to carry — see
 # the module docstring for why hitting the wrong one of these two actual
 # hostnames fails silently. [M docs/104-site-facts.md §6b.6-pre]
+#
+# "asset" is the third host, and it belongs to a DIFFERENT table: it serves
+# files, not JSON, and both success and failure arrive as HTTP 200
+# (docs/104-site-facts.md §8.23). The two tables are each closed —
+# Endpoint.__post_init__ refuses host="asset", AssetRoute.__post_init__
+# refuses anything else — because once a third key exists here a typo in a
+# JSON endpoint could point it at the file host, and that failure looks
+# exactly like the first pitfall this module's docstring records (404 plus
+# a marketing page). Adding the host without the two whitelists would leave
+# precisely that gap open.
 _HOST_NAMES = {
     "vip": "vip.104.com.tw",
     "auth": "auth.vip.104.com.tw",
+    "asset": "asset.vip.104.com.tw",
 }
+
+# The only host token an Endpoint may declare, and the only one an
+# AssetRoute may declare — enforced in the respective __post_init__.
+_ENDPOINT_HOSTS = frozenset({"vip", "auth"})
+_ASSET_HOST = "asset"
 
 # Site-root Referer, sufficient for every route that checks it at all —
 # the check is coarse-grained (station-level, not page-accurate), so one
@@ -90,12 +106,38 @@ _ALLOWED_FAMILIES = frozenset({"A", "B", "opaque"})
 # now-removed page-navigation guard (guarded_page) this value was carried
 # over from without reason to diverge, and it is kept unchanged here for
 # the same reason: combined with the interval floor in browser/throttle.py
-# (MIN_CALL_INTERVAL_SECONDS), a call's worst case inside the session lock
-# is the floor plus this timeout, which must stay under the MCP client's
-# own default request timeout — a client that gives up while 104 is still
-# answering reports a failure that did not happen (measured once already,
-# on read_messages, before MAX_INLINE_WAIT_SECONDS existed).
+# (MIN_CALL_INTERVAL_SECONDS), a JSON call's worst case inside the session
+# lock is the floor plus this timeout, which must stay under the MCP
+# client's own default request timeout — a client that gives up while 104
+# is still answering reports a failure that did not happen (measured once
+# already, on read_messages, before MAX_INLINE_WAIT_SECONDS existed).
+#
+# This arithmetic no longer covers every tool: the asset path
+# (fetch_asset) has its OWN, longer timeout (ASSET_FETCH_TIMEOUT_SECONDS
+# below), so a tool that issues a résumé-detail request followed by an
+# asset request has a worst case of floor + this + that. CLAUDE.md's
+# ".mcp.json timeout" derivation carries the resulting figure; it is
+# deliberately not restated here.
 FETCH_TIMEOUT_SECONDS = 15.0
+
+# The asset path's own read budget. 15 s is not enough for a file: the
+# largest attachment measured is 6.69 MB, which would need a sustained
+# ~3.6 Mbps to land inside 15 s. 60 s lets that same file land on a
+# ~0.9 Mbps line. This is an engineering trade-off, not a guarantee —
+# paired with sock_connect/sock_read (see fetch_asset), "cannot connect"
+# and "stalled" still fail fast, and only a transfer that keeps making
+# progress is allowed to use the whole budget.
+ASSET_FETCH_TIMEOUT_SECONDS = 60.0
+
+# This project's own ceiling on a single landed asset, NOT a guess at
+# 104's own upload limit (unmeasured). Measured attachment sizes span
+# 177,384 – 7,014,009 bytes (n=10, magic-verified, docs/104-site-facts.md
+# §8.23), so 32 MB sits ~4.8x above the largest one seen: the job of this
+# number is to bound one unbounded disk write, which means hitting it has
+# to mean "something is wrong", not "this candidate attached a big file".
+# It lives here, not in the tool layer, because fetch_asset's read bound
+# and classify_asset's comparison must be the same constant.
+ASSET_MAX_BYTES = 32 * 1024 * 1024
 
 # 3xx statuses fetch() reports via RawResponse.location rather than
 # following — see fetch()'s docstring for why redirects are never followed.
@@ -187,6 +229,12 @@ class Endpoint:
     throttle_gated: bool  # whether this route passes through enforce_throttle's judgment gate (tools/helpers.py's guarded_api/guarded_sequence) — every row must answer this explicitly; the sole False today is logout_session (see ENDPOINTS below for why it qualifies for the exemption)
 
     def __post_init__(self) -> None:
+        if self.host not in _ENDPOINT_HOSTS:
+            raise ValueError(
+                f"Endpoint {self.key!r}: host must be one of {sorted(_ENDPOINT_HOSTS)}, "
+                f"got {self.host!r} — the asset host serves files, not JSON, and is "
+                "addressed by ASSET_ROUTES instead"
+            )
         if self.method not in _ALLOWED_METHODS:
             raise ValueError(f"Endpoint {self.key!r}: method must be one of {sorted(_ALLOWED_METHODS)}, got {self.method!r}")
         if self.family not in _ALLOWED_FAMILIES:
@@ -491,11 +539,190 @@ ENDPOINTS: dict[str, Endpoint] = {
 }
 
 
-def hostname_for(endpoint: Endpoint) -> str:
-    """The actual FQDN for `endpoint.host`. Pure; exists so callers outside
+@dataclass(frozen=True)
+class AssetRoute:
+    """One entry of ASSET_ROUTES — the file host's counterpart to Endpoint,
+    and a SECOND declaration table, not an extension of the first. No field
+    has a default, for the same reason no Endpoint field does.
+
+    Why not simply an Endpoint with a new host: `Endpoint.path` means "the
+    path THIS project assembled", and build_url percent-encodes every
+    placeholder value it fills. 104's asset URLs arrive whole, with their
+    token already percent-encoded, so putting one through build_url would
+    double-encode it. Letting `path` sometimes mean "a path someone else
+    gave us" would be one field carrying two meanings.
+
+    `key` is a field, not merely the dict key: ASSET_ROUTES is keyed on it
+    (same self-consistency ENDPOINTS has), tools/helpers.py's shared
+    failure log line reads `target.key`, and it is the only route-identifying
+    token allowed into an Agent-visible error message (an asset URL carries
+    a credential-bearing token and must never appear in a return value or a
+    log line).
+
+    There is deliberately NO throttle_gated counterpart. That flag is read
+    in exactly one place — guarded_api's gate — and an asset request ALWAYS
+    travels through guarded_sequence, whose gate is unconditional (the
+    slots a sequence reserves belong to the caller, not to any one request
+    in the burst). A field nobody would ever read would be misleading, not
+    complete.
+
+    `cookie_required` does NOT decide whether cookies are sent — they always
+    are, because that is what a real browser does and omitting them would
+    manufacture a request shape no human produces. It records what was
+    measured, and only shapes the wording when 104 answers with the
+    not-authenticated redirect page.
+    """
+
+    key: str
+    host: str  # "asset" — enforced below; the two tables are each closed
+    path_prefix: str  # every URL this route accepts must start with this path
+    cookie_required: bool  # measured: does this route need the login cookie to serve the file
+    referer_required: bool  # measured: does this route need a Referer (both routes: no)
+    accepted_magic: tuple[str, ...]  # detect_magic() results that count as a real file on this route
+
+    def __post_init__(self) -> None:
+        if self.host != _ASSET_HOST:
+            raise ValueError(
+                f"AssetRoute {self.key!r}: host must be {_ASSET_HOST!r}, got {self.host!r} "
+                "— JSON endpoints are declared in ENDPOINTS"
+            )
+
+
+# Tool-facing name -> AssetRoute. Both routes live on
+# asset.vip.104.com.tw. [M docs/104-site-facts.md §8.23]
+#
+# cookie/referer requirements are MEASURED, both directions:
+#   - the attachment route: cookie is necessary and sufficient; Referer is
+#     neither necessary nor sufficient (four variants of one pdf —
+#     cookies+referer and cookies_only both returned the identical file by
+#     sha8; referer_only and bare both returned the redirect HTML).
+#   - the head-shot route: neither is needed at all (the bare variant still
+#     returned a jpeg).
+# So `referer_required=False` here is "measured unnecessary", not "not
+# measured", and no Referer is sent on either route.
+#
+# accepted_magic carries mixed evidence strength ON PURPOSE:
+#   - jpeg/pdf are [M]: 18 head-shots and 10 magic-verified attachments.
+#   - png is [U] on BOTH routes. No png bytes have ever been seen on the
+#     wire from either route; the only png bytes measured at all are the
+#     "no photo" placeholder that lives on static.104.com.tw, which this
+#     design never fetches. It is accepted because 3 of the 14 measured
+#     attachment `filename` values end in .png, so 104 plainly accepts png
+#     uploads and refusing it would manufacture a capability gap — but it
+#     is an inference, and it is labelled as one.
+#   - zip/OOXML (PK) is absent, and the reason is the measurement, not a
+#     judgement about what candidates upload: a PK signature has never been
+#     observed on the wire. A `.docx` FILENAME was seen once, in a probe run
+#     whose result file was later overwritten, and that same run never
+#     captured what bytes 104 actually served for it. A signature nobody has
+#     seen does not enter the whitelist; the consequence — a real user
+#     hitting asset_unknown_format — is why that error must carry the first
+#     8 bytes and ask for a report (tools/helpers.py).
+ASSET_ROUTES: dict[str, AssetRoute] = {
+    "candidate_photo": AssetRoute(
+        key="candidate_photo",
+        host="asset",
+        path_prefix="/download/webHeadShot",
+        cookie_required=False,
+        referer_required=False,
+        accepted_magic=("jpeg", "png"),
+    ),
+    "resume_attachment": AssetRoute(
+        key="resume_attachment",
+        host="asset",
+        path_prefix="/download/resumeAttach/",
+        cookie_required=True,
+        referer_required=False,
+        accepted_magic=("jpeg", "pdf", "png"),
+    ),
+    # Deliberately NOT declared: attachArr[].preview (/download/webImg/),
+    # the third measured asset route. It serves a reduced copy of a file
+    # this design already delivers whole, its cookie requirement was never
+    # measured item by item, and whether a PDF's preview is only the first
+    # page is unmeasured — handing an Agent a possibly-first-page image it
+    # would present as the document itself is the failure that keeps it out.
+}
+
+
+def hostname_for(target: "Endpoint | AssetRoute") -> str:
+    """The actual FQDN for `target.host`. Pure; exists so callers outside
     this module (tools/helpers.py's cookie selection) never have to know
-    the "vip"/"auth" token mapping themselves — one place decides it."""
-    return _HOST_NAMES[endpoint.host]
+    the "vip"/"auth"/"asset" token mapping themselves — one place decides
+    it, for JSON endpoints and asset routes alike."""
+    return _HOST_NAMES[target.host]
+
+
+@dataclass(frozen=True)
+class AssetUrlProblem:
+    """Why validate_asset_url refused a URL. Names the failed check and,
+    for the host check only, the hostname that failed — never the path,
+    never the query string, and never the URL itself: `?v=<token>` is a
+    credential, and this value reaches an Agent-visible error string
+    (tools/helpers.py's _error_internal_config inlines its detail verbatim).
+    """
+
+    check: str  # "scheme" | "host" | "path"
+    hostname: str | None  # only ever set for check == "host"
+
+
+def validate_asset_url(route: AssetRoute, url: str) -> AssetUrlProblem | None:
+    """Pure. `None` when `url` is one this project may fetch on `route`,
+    otherwise the reason it is not.
+
+    This is the mechanical form of "this project only ever fetches URLs 104
+    itself handed us": scheme must be https, the hostname must equal the
+    measured asset host EXACTLY (not endswith — `asset.vip.104.com.tw.evil.example`
+    passes a suffix test and must not pass this one), and the path must start
+    with the route's declared prefix. Query string and fragment are left
+    untouched — webHeadShot's token lives in `?v=`.
+    """
+    parsed = urlparse(url)
+    if parsed.scheme != "https":
+        return AssetUrlProblem(check="scheme", hostname=None)
+    hostname = parsed.hostname
+    if hostname != _HOST_NAMES[_ASSET_HOST]:
+        return AssetUrlProblem(check="host", hostname=hostname)
+    if not parsed.path.startswith(route.path_prefix):
+        return AssetUrlProblem(check="path", hostname=None)
+    return None
+
+
+# File-format signatures, one table, used by BOTH fetch_asset (to decide
+# whether raw.body should be a text projection at all) and classify_asset
+# (to decide success). Two copies would be free to disagree about what a
+# given byte string is, and the whole "magic decides, text never does"
+# ordering rests on them agreeing.
+#
+# Only formats this project actually lands appear here. A signature that is
+# not in this table produces None, which classify_asset reports as
+# asset_unknown_format with the first 8 bytes attached — the entry point
+# for measuring a family we have not seen (GIF and PK both land there
+# today, deliberately).
+_MAGIC_SIGNATURES: tuple[tuple[bytes, str], ...] = (
+    (b"\xff\xd8\xff", "jpeg"),
+    (b"\x89PNG\r\n\x1a\n", "png"),
+    (b"%PDF-", "pdf"),
+)
+
+
+def detect_magic(body_bytes: bytes) -> str | None:
+    """Pure. The format name for `body_bytes`'s leading signature, or None
+    when it matches nothing this project lands. Never consults the declared
+    Content-Type: on /download/webHeadShot that header said `image/gif` on
+    18 of 18 measured responses whose bytes were jpeg. [M §8.23]"""
+    for signature, name in _MAGIC_SIGNATURES:
+        if body_bytes.startswith(signature):
+            return name
+    return None
+
+
+# How much of a non-file response is decoded into RawResponse.body for the
+# text-based checks (Cloudflare challenge, expiry marker). The measured
+# not-authenticated page is 509–520 bytes and a challenge page is far under
+# 4 KB, so this bound never truncates anything a decision reads; anything
+# larger than this that still matched no magic signature is not something
+# to guess at from its content.
+_ASSET_TEXT_PROJECTION_BYTES = 4096
 
 
 def build_url(endpoint: Endpoint, params: Sequence[tuple[str, str]] | None = None) -> str:
@@ -590,12 +817,34 @@ class RawResponse:
     failure scenarios (the Cloudflare challenge screen and the HTML-script
     expiry redirect) are never valid JSON and must still be inspectable as
     text.
+
+    `body` is this response's TEXT PROJECTION, which is not always the same
+    thing as "the response decoded". On the JSON path it is the whole body
+    decoded, exactly as before. On the asset path fetch_asset sets it to the
+    empty string once detect_magic has confirmed the bytes are a known file
+    family — that is "there is no text here to inspect", NOT "the body was
+    empty" (an empty body is body_bytes == b"", which classify_asset reports
+    as its own condition). The empty string is what keeps the shared
+    per-request order intact: the Cloudflare and expiry scans run on it
+    unchanged and both correctly find nothing, instead of hunting for
+    marker strings inside a megabyte of JPEG noise, where a hit would be a
+    false positive reporting a successful download as "stop for an hour".
+
+    `body_bytes` has type `bytes`, with NO default and no `| None`. It is
+    not covered by the no-default rule the declaration tables follow (this
+    is a transport value object, not a declaration table); the reason here
+    is narrower — the asset path's correctness rests entirely on these
+    bytes being present, so a default would turn a forgotten constructor
+    argument into a None discovered at classify time rather than a
+    TypeError at construction. There is no "this response has no bytes"
+    state: an empty body is b"".
     """
 
     status: int
     location: str | None  # Location header, only when status is a 3xx we did not follow
     content_type: str | None  # declared header value, verbatim — used only for error messages, never for parse decisions
     body: str
+    body_bytes: bytes  # the response body verbatim; `body` is its text projection (see above)
     parsed_json: object | None  # dict | list | None
 
 
@@ -672,7 +921,117 @@ async def fetch(
         location=location,
         content_type=content_type,
         body=body_text,
+        body_bytes=body_bytes,
         parsed_json=parsed_json,
+    )
+
+
+async def fetch_asset(
+    route: AssetRoute,
+    url: str,
+    *,
+    cookie_header: str,
+) -> RawResponse:
+    """Issue exactly one GET against `url` on the file host and return it as
+    a RawResponse, so the shared per-request unit (tools/helpers.py's
+    `_issue_one`) can run its existing steps in their existing order.
+
+    `url` is 104's own URL, forwarded verbatim — never assembled here and
+    never passed through build_url, whose placeholder quoting would
+    double-encode the token 104 already percent-encoded. It must have been
+    accepted by validate_asset_url before this is called; that check lives
+    at the call site because it has to run ahead of the caller's own
+    try/except around this function (a rejected URL is a program bug, not a
+    network blip).
+
+    Like fetch(), this opens its OWN ClientSession per request, and here
+    that is load-bearing rather than incidental: every response from the
+    asset host carries Set-Cookie (three of them on a head-shot). A shared
+    session would fold those into the jar and send them on later requests —
+    the probe scripts were fooled by exactly this once, seeing "the first
+    one works, everything after it gets a redirect page".
+
+    Also like fetch(): redirects are NOT followed (allow_redirects=False)
+    and `location` is filled only for a status in _REDIRECT_STATUSES. That
+    is a client POLICY, not a restatement of the measurement that no asset
+    response has ever redirected — 104 is free to start sending a 302
+    tomorrow, and the expiry check that reads `location` must keep working
+    when it does.
+
+    Reading is bounded and incremental: a LOOP over
+    `content.read(remaining)` that stops at EOF or once it holds
+    ASSET_MAX_BYTES + 1 bytes, whichever comes first. The loop is not a
+    style choice — `StreamReader.read(n)` with n >= 0 does NOT return n
+    bytes: it waits only until some data is buffered and then hands back
+    whatever is already there, capped at n. Only `read(-1)` (what fetch()
+    uses, correctly) loops to EOF internally. A single `read(cap + 1)`
+    therefore returns the FIRST chunk, and since the magic bytes sit at
+    offset 0 a truncated file would classify as a valid asset and be
+    landed under a correct-looking extension — this project has already
+    seen that failure once, as the 946/946/660/946/946-byte head-shot
+    fetches in the measurement round.
+
+    The one extra byte IS the over-limit evidence, so no separate field
+    has to carry it — and the loop stops the moment it holds it rather
+    than draining the rest of a body that is already known to be too big.
+    `ClientTimeout(total=...)` covers the whole loop, so the total is the
+    asset budget while sock_connect and sock_read stay at the JSON
+    timeout's value — "cannot connect" and "stalled" still fail in 15 s,
+    but a transfer that keeps making progress may use the full 60.
+
+    `parsed_json` is always None on this path — never attempted. Not merely
+    because a file will not parse: classify_asset reads none of it, and a
+    populated value would look like a usable input to whoever adds the next
+    branch.
+    """
+    headers = {
+        "User-Agent": USER_AGENT,
+        "Accept-Language": ACCEPT_LANGUAGE,
+        # Cookies are sent on BOTH routes regardless of route.cookie_required
+        # — that is what a real browser does, and deliberately withholding
+        # them would manufacture a request shape no human produces.
+        # cookie_required only shapes the wording when 104 answers with the
+        # redirect page instead of a file.
+        "Cookie": cookie_header,
+    }
+    if route.referer_required:
+        headers["Referer"] = REFERER_SITE_ROOT
+
+    timeout = aiohttp.ClientTimeout(
+        total=ASSET_FETCH_TIMEOUT_SECONDS,
+        sock_connect=FETCH_TIMEOUT_SECONDS,
+        sock_read=FETCH_TIMEOUT_SECONDS,
+    )
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.get(url, headers=headers, allow_redirects=False) as response:
+            status = response.status
+            content_type = response.headers.get("Content-Type")
+            location = response.headers.get("Location") if status in _REDIRECT_STATUSES else None
+            cap = ASSET_MAX_BYTES + 1
+            chunks: list[bytes] = []
+            received = 0
+            while received < cap:
+                chunk = await response.content.read(cap - received)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                received += len(chunk)
+            body_bytes = b"".join(chunks)
+
+    # The text projection, decided here so that the shared per-request
+    # order downstream needs no asset-specific branch. See RawResponse.body.
+    if detect_magic(body_bytes) is not None:
+        body_text = ""
+    else:
+        body_text = body_bytes[:_ASSET_TEXT_PROJECTION_BYTES].decode("utf-8", errors="replace")
+
+    return RawResponse(
+        status=status,
+        location=location,
+        content_type=content_type,
+        body=body_text,
+        body_bytes=body_bytes,
+        parsed_json=None,
     )
 
 
@@ -700,18 +1059,16 @@ class Verdict:
     detail: str = ""
 
 
-def classify(endpoint: Endpoint, raw: RawResponse) -> Verdict:
-    """Pure. Decide success or failure for one response, driven entirely by
-    `endpoint.family` — never inferred from the body's own shape.
+def _classify_prologue(raw: RawResponse) -> Verdict | None:
+    """Pure. The two checks that run ahead of every other classification,
+    on the JSON path and the asset path alike — expiry, then 403 — or None
+    when neither fires and the caller should continue with its own rules.
 
-    A single predicate cannot serve both families, and the two natural
-    ways to write one fail invisibly in OPPOSITE directions
-    (docs/104-site-facts.md §6b.3e): testing `status != "SUCCESS"` rejects
-    every healthy family-B response (family B has no `status` key at all);
-    defaulting the key to success admits every family-B error. Dispatching
-    on the endpoint's DECLARED family, rather than probing the body for a
-    `status` key, is what keeps the two checks from ever being swapped by
-    accident.
+    One function, called by both classify() and classify_asset(), rather
+    than two copies that agree today: an early draft of the asset design
+    tried to restate these two checks in prose and had already lost the 403
+    branch and the `raw.location` half of the expiry check before a line of
+    code existed.
     """
     # Session expired. Checked as a plain substring BEFORE any JSON/HTML
     # branch and before either family's own logic, because the measured
@@ -737,6 +1094,31 @@ def classify(endpoint: Endpoint, raw: RawResponse) -> Verdict:
     # classify() only names the condition.
     if raw.status == 403:
         return Verdict(False, kind="blocked")
+
+    return None
+
+
+def classify(endpoint: Endpoint, raw: RawResponse) -> Verdict:
+    """Pure. Decide success or failure for one response, driven entirely by
+    `endpoint.family` — never inferred from the body's own shape.
+
+    A single predicate cannot serve both families, and the two natural
+    ways to write one fail invisibly in OPPOSITE directions
+    (docs/104-site-facts.md §6b.3e): testing `status != "SUCCESS"` rejects
+    every healthy family-B response (family B has no `status` key at all);
+    defaulting the key to success admits every family-B error. Dispatching
+    on the endpoint's DECLARED family, rather than probing the body for a
+    `status` key, is what keeps the two checks from ever being swapped by
+    accident.
+
+    The expiry and 403 checks that used to open this function now live in
+    _classify_prologue, shared with classify_asset — same two checks, same
+    order, same kinds, so this function's behaviour is bit-for-bit what it
+    was.
+    """
+    prologue = _classify_prologue(raw)
+    if prologue is not None:
+        return prologue
 
     if endpoint.family == "A":
         return _classify_family_a(raw)
@@ -912,3 +1294,74 @@ def _classify_family_b(endpoint: Endpoint, raw: RawResponse) -> Verdict:
     if data.get("error"):
         return Verdict(False, kind="malformed", detail=str(data.get("error")))
     return Verdict(True, payload=_family_b_payload(shape, body, data))
+
+
+# ── The asset host's own classification ──────────────────────────────────
+
+def classify_asset(route: AssetRoute, raw: RawResponse) -> Verdict:
+    """Pure. Decide success or failure for one response from the file host.
+
+    The order below is fixed and the first match wins. Success carries
+    `{"format": <magic name>, "body_bytes": <bytes>}` — `format`, not
+    `content_type`, because on one of the two routes 104's declared
+    Content-Type was measured to be a lie 18 times out of 18.
+
+    Three orderings here are load-bearing:
+
+    1. _classify_prologue first, so an expiry signal (in the body OR in an
+       unfollowed redirect's Location) and a 403 are recognised on this path
+       exactly as they are on the JSON path, from the same code.
+    2. Any non-200 fails LOUDLY as `unrecognised_status`, before any branch
+       that reads the body. Without it a 404 carrying an HTML body would be
+       described as "not signed in", or have its first 8 bytes printed as a
+       "format signature". Note this deliberately DIVERGES from
+       _classify_family_b, which maps 401 to `expired`: that mapping is a
+       measured family-B authentication shape, and this host's 401 has never
+       been observed at all. Saying "104 returned a status we have not seen"
+       is better than confidently saying the wrong thing.
+    3. The size check precedes the magic check, so a 40 MB file whose first
+       bytes are a valid JPEG signature is reported as too large rather than
+       accepted and written to disk.
+
+    Everything outside the whitelist is refused and nothing is written.
+    Not "store it and mark the type unknown": the not-authenticated page is
+    an HTTP 200 too, so a store-first implementation would file it as a
+    candidate's attachment; without trustworthy magic there is no
+    trustworthy extension, and a file with no extension does not open for
+    the human it is handed to. Writing into the user's data directory is
+    this feature's one irreversible side effect.
+    """
+    prologue = _classify_prologue(raw)
+    if prologue is not None:
+        return prologue
+
+    if raw.status != 200:
+        return Verdict(False, kind="unrecognised_status", detail=f"HTTP {raw.status}")
+
+    body_bytes = raw.body_bytes
+    if len(body_bytes) > ASSET_MAX_BYTES:
+        return Verdict(False, kind="asset_too_large")
+    if len(body_bytes) == 0:
+        # No "first 8 bytes" is offered anywhere downstream for this kind:
+        # there are zero bytes to show.
+        return Verdict(False, kind="asset_empty_body")
+
+    magic = detect_magic(body_bytes)
+    if magic is not None and magic in route.accepted_magic:
+        return Verdict(True, payload={"format": magic, "body_bytes": body_bytes})
+
+    # The measured not-authenticated shape: HTTP 200, ~509-520 bytes of
+    # HTML holding a single <script> that sets location.href to
+    # vip.104.com.tw. No 403, no 404, no redirect. [M §8.23]
+    text = raw.body
+    if "<script" in text and "location.href" in text:
+        return Verdict(False, kind="asset_not_authenticated")
+
+    return Verdict(
+        False,
+        kind="asset_unknown_format",
+        # The first 8 bytes are a FORMAT SIGNATURE, not content — and they
+        # are what a report needs in order to turn "we refused this" into a
+        # measurement that can extend the whitelist.
+        detail=f"{body_bytes[:8].hex()}|{raw.content_type or ''}",
+    )

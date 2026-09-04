@@ -101,6 +101,7 @@ from mcp104.config import get_config
 from mcp104.db.database import Database
 from mcp104.tools.helpers import get_session_id
 import mcp104.tools.categories as categories
+import mcp104.tools.discovery as discovery_mod
 import mcp104.tools.filters as filters
 import mcp104.tools.helpers as helpers_mod
 import mcp104.tools.search as search_mod
@@ -117,7 +118,7 @@ def _load(name: str):
 
 def _raw(status: int, content_type: str, body: str, parsed_json, location: str | None = None) -> RawResponse:
     return RawResponse(status=status, location=location, content_type=content_type,
-                        body=body, parsed_json=parsed_json)
+                        body=body, body_bytes=body.encode("utf-8"), parsed_json=parsed_json)
 
 
 def _raw_from_wrapper(fixture_name: str) -> RawResponse:
@@ -1509,7 +1510,7 @@ def test_row_exp_job_entries_drop_empties_and_keep_every_word_as_plain_text(name
         assert len(entries) == len(raw_entries), "no job may be dropped"
         for raw_entry, entry in zip(raw_entries, entries):
             for raw_key, raw_value in raw_entry.items():
-                key = search_mod._snake_case(raw_key)
+                key = discovery_mod._snake_case(raw_key)
                 if raw_value is None or raw_value == "" or raw_value == []:
                     seen_empty = True
                     assert key not in entry, f"{name}: empty {raw_key} must be dropped"

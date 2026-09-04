@@ -200,7 +200,8 @@ def _fake_last_info_fetch(monkeypatch, user_email, calls):
         calls.append(endpoint.key)
         payload = {"data": {"emailCC": []}, "metadata": {"userEmail": user_email, "quota": 300}}
         return RawResponse(status=200, location=None, content_type="application/json",
-                           body=_json.dumps(payload), parsed_json=payload)
+                           body=_json.dumps(payload), body_bytes=b"",
+                           parsed_json=payload)
 
     monkeypatch.setattr(helpers, "fetch", fake_fetch)
 
@@ -246,7 +247,8 @@ async def test_identity_request_failure_blocks_the_tool_with_that_error(tmp_path
     app_ctx.session_pool.activate_direct("s1", SessionInfo(cookies=_cookie_jar(), account_label=None))
 
     async def expired_fetch(endpoint, *, cookie_header, params=None, body=None):
-        return RawResponse(status=401, location=None, content_type="application/json", body="{}", parsed_json={})
+        return RawResponse(status=401, location=None, content_type="application/json", body="{}",
+                           body_bytes=b"{}", parsed_json={})
 
     monkeypatch.setattr(helpers, "fetch", expired_fetch)
     ran = []

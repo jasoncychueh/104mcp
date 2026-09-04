@@ -11,9 +11,21 @@ from uuid import uuid4
 
 from mcp.server.fastmcp import Context
 
-from mcp104.browser.api_client import Endpoint, classify, fetch, hostname_for, select_cookies_for_host, ENDPOINTS
+from mcp104.browser.api_client import (
+    AssetRoute,
+    Endpoint,
+    classify,
+    classify_asset,
+    fetch,
+    fetch_asset,
+    hostname_for,
+    select_cookies_for_host,
+    validate_asset_url,
+    ENDPOINTS,
+)
 from mcp104.browser.session import SessionInfo, load_cookies, load_identity, matches_auth_host, save_identity
 from mcp104.browser.throttle import enforce_throttle, note_request
+from mcp104.tools.discovery import _snake_case
 
 log = logging.getLogger("104-mcp.helpers")
 
@@ -72,11 +84,72 @@ ERROR_BLOCKED_API_RESTORE_VERIFY = {
 }
 
 
-def _error_wrong_host(endpoint: Endpoint) -> dict:
+# ── The asset host's own Agent-facing payloads ───────────────────────────
+#
+# The asset host answers HTTP 200 whether it served a file or refused to
+# (docs/104-site-facts.md §8.23), so every one of these describes a 200.
+ERROR_ASSET_NOT_AUTHENTICATED = {
+    "error": (
+        "104 的資產主機回傳了轉址頁而不是檔案，代表這次請求沒有被當成已登入。"
+        "請重新呼叫 login() 之後再試。這不代表這位候選人沒有這個檔案，也不是「查無資料」"
+        "——重試同一個呼叫、或改抓另一個候選人都不會改變結果。"
+    )
+}
+ERROR_ASSET_TOO_LARGE = {
+    "error": (
+        "這個檔案超過本工具的 32 MB 上限。檔案已經傳輸了 32 MB 才被中止，這次呼叫已經"
+        "用掉一個節流名額，前面那次履歷詳情請求也已經送出；沒有寫入任何檔案。"
+        "重試會重複這些成本，而且結果會一樣。"
+    )
+}
+ERROR_ASSET_EMPTY_BODY = {"error": "104 回了一個空的回應（HTTP 200、零位元組），沒有寫入任何檔案。"}
+
+
+def _error_asset_unknown_format(detail: str) -> dict:
+    """`detail` is classify_asset's own "<前 8 位元組十六進位>|<Content-Type>".
+
+    The signature is in the message on purpose: this refusal is expected to
+    be hit by an ordinary user (a zip/OOXML attachment is very likely to
+    exist on 104 even though its bytes have never been measured), so the
+    message has to be actionable — those 8 bytes are exactly the
+    measurement that would let the whitelist grow. They are a format
+    signature, not content.
+    """
+    signature, _, content_type = detail.partition("|")
+    return {
+        "error": (
+            f"這個檔案的型別不在已知清單內（簽名 {signature or '未知'}，"
+            f"104 宣稱的 Content-Type {content_type or '未提供'}），沒有寫入任何檔案，請回報。"
+        )
+    }
+
+
+def _error_asset_url_wrong_host(route: AssetRoute, hostname: str | None) -> dict:
+    """A `link` that does not live on the measured asset host.
+
+    Deliberately NOT the generic "this is a program bug, please report it"
+    wording the other two URL checks use: scheme and path-prefix failures
+    really can only come from this project assembling something wrong, but
+    a link on another host would most likely mean 104 changed its own data
+    — and sending the operator off to audit our code for that is telling
+    them the wrong thing. Names the hostname only: no path, no query
+    string, because the query string is where the credential-bearing token
+    lives.
+    """
+    return {
+        "error": (
+            f"104 給的資產網址（{route.key}）不在已量測的資產主機上"
+            f"（{hostname or '無法解析主機名'}）。"
+            "本工具只抓 104 自己在已量測資產主機上交出來的檔案，不會去抓其他主機上的網址。"
+        )
+    }
+
+
+def _error_wrong_host(endpoint: Endpoint | AssetRoute) -> dict:
     return {"error": f"內部設定錯誤：{endpoint.key} 指向錯誤的主機（{endpoint.host}），這是程式問題，非站台狀況，請回報"}
 
 
-def _error_header_fault(endpoint: Endpoint) -> dict:
+def _error_header_fault(endpoint: Endpoint | AssetRoute) -> dict:
     return {"error": f"內部設定錯誤：{endpoint.key} 未送出必要標頭，這是程式問題，請回報"}
 
 
@@ -151,6 +224,117 @@ def _detect_cloudflare_challenge(body_text: str) -> tuple[bool, str | None]:
         or any(marker in body_text for marker in _CHALLENGE_MARKERS_EN_INFERRED)
     )
     return is_challenge, ray_id
+
+
+# ── Shared response shaping: key conversion + browse_limit ───────────────
+#
+# These three live here, not in tools/search.py, because more than one tool
+# module needs them and this project has already ruled once on the shape
+# that choice takes: MalformedResponseError's docstring below records that
+# "tools/messaging.py imports a leading-underscore helper out of
+# tools/search.py" was REJECTED in favour of moving the shared thing into
+# this module and having each tool module import it back. Same precedent
+# applied here — and it removes an existing duplicate on the way, since
+# search.py and messaging.py each carried their own copy of the key
+# conversion.
+
+
+def convert_keys(value, *, string_transform=None):
+    """Recursively convert every dict key at every depth via `_snake_case`;
+    list elements are walked one by one; every non-string value (int, bool,
+    None, ...) passes through completely unchanged.
+
+    `string_transform`, when given, is applied to every string VALUE (never
+    to a key). It exists because the two callers differ on exactly this one
+    point and on nothing else: the résumé tools pass
+    tools/search.py's `html_to_text` (candidates write several fields in
+    104's rich-text editor), the messaging tools pass nothing. The reason it
+    is a PARAMETER is that behavioural difference alone — the two callers
+    need different answers for the same input, so the choice belongs to the
+    caller and cannot be settled here. It is not a dependency-direction
+    device: this module already imports `_snake_case` from tools/discovery.py
+    two lines below, so a claim that helpers.py never imports a tool module
+    would be false as written.
+
+    `_snake_case` itself is imported from tools/discovery.py, never
+    redefined: describe_result_fields() has to key its payload on the SAME
+    delivered names this produces, and one shared function is the only way
+    that cannot drift.
+    """
+    if isinstance(value, dict):
+        return {_snake_case(k): convert_keys(v, string_transform=string_transform) for k, v in value.items()}
+    if isinstance(value, list):
+        return [convert_keys(v, string_transform=string_transform) for v in value]
+    if string_transform is not None and isinstance(value, str):
+        return string_transform(value)
+    return value
+
+
+# Warn at 90% of resumeMax (270 against the measured 300) — a specified figure, not an
+# [INF] guess. Kept as a ratio rather than a hardcoded 270 so it tracks whatever
+# resumeMax a given response actually carries, should it ever differ from the measured
+# 300. This is a heads-up only, never a boundary this module enforces: 104's own
+# enforcement at resumeMax, if any, has never been observed, and refusing on an
+# unobserved boundary would be this tool's guess overriding the site's — see
+# browse_limit_warning (reaching the maximum never refuses a call here).
+_BROWSE_LIMIT_WARNING_RATIO = 0.9
+
+
+def extract_browse_limit(container: dict) -> dict | None:
+    """container.browseLimit -> {resume_max, on_that_day_count}, mechanically converted,
+    or None when browseLimit is absent/not-a-dict — never a fabricated
+    {resume_max: None, ...} shell, so a caller can tell "104 didn't report a quota this
+    time" from "quota is unset" (104's own response carries no browseLimit key at all in
+    that case, rather than one with null sub-fields). Shared by every tool whose route
+    carries it: browseLimit sits at the same relative position (a sibling of the row
+    container / of `resume`) on every one of them.
+
+    The `convert_keys` walk here runs with NO `string_transform`, so quota
+    values arrive raw — deliberately, and the same way for every caller.
+    tools/search.py's own copy used to pass `html_to_text`, and for every
+    measured value the two are indistinguishable (both quota fields are
+    tagless, and the numeric-string coercion below then turns them into
+    ints), which is why the untouched tests could not tell the difference.
+    Raw is nonetheless the right answer rather than an accident: a quota is
+    a number 104 reports, never a rich-text field a candidate typed, so
+    running an HTML-to-text transform over it would be an unexplained
+    no-op that invites the next reader to believe markup is expected here.
+    Anything that IS rich text goes through the transform at the row/detail
+    conversion, which is where the caller-specific choice belongs.
+    """
+    browse_limit = container.get("browseLimit")
+    if not isinstance(browse_limit, dict):
+        return None
+    converted = convert_keys(browse_limit)
+    # 104 自己的型別不一致（量到：resumeMax 是整數 300、onThatDayCount 是字串 "0"），
+    # 純數字字串一律轉成 int，讓呼叫端拿到兩個同型別的數字。
+    for key in ("resume_max", "on_that_day_count"):
+        value = converted.get(key)
+        if isinstance(value, str) and value.strip().lstrip("-").isdigit():
+            converted[key] = int(value.strip())
+    return converted
+
+
+def browse_limit_warning(browse_limit: dict | None) -> str | None:
+    """A heads-up when today's browse count has reached the design-pinned 90% threshold
+    of resumeMax (270/300 as measured) — see _BROWSE_LIMIT_WARNING_RATIO. Never refuses:
+    104's own enforcement at the maximum has never been observed, so this tool does not
+    guess a boundary the site itself has not been seen to enforce.
+    """
+    if not browse_limit:
+        return None
+    try:
+        resume_max = int(browse_limit.get("resume_max"))
+        on_that_day = int(browse_limit.get("on_that_day_count"))
+    except (TypeError, ValueError):
+        return None
+    if resume_max <= 0 or on_that_day < resume_max * _BROWSE_LIMIT_WARNING_RATIO:
+        return None
+    return (
+        f"今日已瀏覽 {on_that_day}/{resume_max} 筆履歷，已達提醒門檻（上限的 90%，"
+        "依規格訂定，非猜測值）。本次呼叫不會因此被拒絕 —— 104 從未被觀察到在上限本身"
+        "拒絕請求，本工具不會替 104 猜測一個未經觀察的邊界。"
+    )
 
 
 def get_session_id(ctx: Context) -> str:
@@ -356,7 +540,7 @@ async def resolve_session(ctx: Context) -> SessionInfo | None:
 # response didn't satisfy. "blocked" is special-cased separately in
 # guarded_api itself because its payload depends on session history, not
 # just the kind.
-def _api_error_for_kind(kind: str, endpoint: Endpoint, detail: str) -> tuple[dict, type[GuardAbort]]:
+def _api_error_for_kind(kind: str, endpoint: Endpoint | AssetRoute, detail: str) -> tuple[dict, type[GuardAbort]]:
     if kind == "expired":
         return ERROR_EXPIRED, SessionUnavailable
     if kind == "wrong_host":
@@ -380,6 +564,39 @@ def _api_error_for_kind(kind: str, endpoint: Endpoint, detail: str) -> tuple[dic
     return {"error": f"未知的內部錯誤（{kind or 'empty'}）"}, ToolAbort
 
 
+def _asset_error_for_kind(kind: str, route: AssetRoute, detail: str) -> tuple[dict, type[GuardAbort]]:
+    """The asset path's counterpart to _api_error_for_kind, handling ONLY
+    the four kinds classify_asset alone can emit and DELEGATING every other
+    kind to that function.
+
+    Delegation, not a second list. `_issue_one`'s failure path has exactly
+    one dedicated branch of its own ("blocked"); every other kind — the
+    shared `expired` and `unrecognised_status` included — leaves through
+    whichever of these two tables the dispatch picked. A hand-written asset
+    table therefore has to restate them, and an earlier draft that tried
+    did lose `expired` — the one kind the whole redirect-policy/prologue
+    chain exists to deliver, which would have reached the Agent as "未知的
+    內部錯誤（expired）". Delegating instead gives the shared kinds a payload
+    and abort class bit-identical to the JSON path's, and leaves the "nobody
+    taught us this kind" last line living in exactly one place.
+
+    `asset_not_authenticated` is a SessionUnavailable — same family as
+    expired/challenge/blocked — but deliberately NOT `expired`: the vip
+    session may well still be alive and merely unrecognised by the file
+    host, and reporting "session 已過期" would send the next person reading
+    the log to investigate an expiry that never happened.
+    """
+    if kind == "asset_not_authenticated":
+        return ERROR_ASSET_NOT_AUTHENTICATED, SessionUnavailable
+    if kind == "asset_too_large":
+        return ERROR_ASSET_TOO_LARGE, ToolAbort
+    if kind == "asset_empty_body":
+        return ERROR_ASSET_EMPTY_BODY, ToolAbort
+    if kind == "asset_unknown_format":
+        return _error_asset_unknown_format(detail), ToolAbort
+    return _api_error_for_kind(kind, route, detail)
+
+
 def _error_internal_config(detail: str) -> dict:
     # Same "this is a code bug, not a site condition" wording family as
     # _error_wrong_host/_error_header_fault — raised ahead of fetch()'s own
@@ -392,14 +609,15 @@ def _error_internal_config(detail: str) -> dict:
 
 async def _issue_one(
     info: SessionInfo,
-    endpoint: Endpoint,
+    target: Endpoint | AssetRoute,
     params: Sequence[tuple[str, str]] | None,
     body: dict | None,
     *,
     session_id: str,
     throttle_state_path: Path,
+    asset_url: str | None = None,
 ) -> object:
-    """Issue exactly ONE HTTP request against `endpoint` and return its
+    """Issue exactly ONE HTTP request against `target` and return its
     payload, or raise a GuardAbort subclass. This is the one unit both
     guarded_api (one request per tool call) and guarded_sequence (N
     requests, one call each) run — an extra guard path ("多一條守衛路徑")
@@ -407,11 +625,27 @@ async def _issue_one(
     rather than two copies that happen to agree today, is the only
     mitigation that stays true after the next edit.
 
-    method/body check -> select cookie -> fetch (note_request in
+    call-shape check -> select cookie -> fetch (note_request in
     `finally`) -> Cloudflare challenge screen -> auth-host redirect check
     -> classify() -> info.has_succeeded_api_call = True -> return
     verdict.payload. Every step here is verbatim what guarded_api used to
     do inline; moving it here changes no observable behaviour.
+
+    `target` is EITHER a JSON Endpoint or an AssetRoute (104's file host),
+    and the two differ in exactly four places, all selected once at the top
+    of this function: the call-shape check, which fetch runs, which
+    classify runs, and which kind->payload table maps a failure. Everything
+    between those four — cookie selection via hostname_for, note_request in
+    `finally`, the broad except around the transport call, the Cloudflare
+    scan, the auth-host redirect check, the 403 wording split, the success
+    flag, the failure log line — is ONE piece of code serving both, not two
+    that agree today. That is the whole reason there is no second
+    per-request unit: the first attempt to enumerate those shared steps in
+    prose had already lost two of them before any code existed.
+
+    `asset_url` is 104's own URL and is required for (and only for) an
+    AssetRoute. It never reaches a log line or a return value: it carries a
+    credential-bearing token.
 
     Every failure-path log statement below names only the endpoint key,
     the HTTP status code (once a response exists to have one), and 104's
@@ -424,34 +658,75 @@ async def _issue_one(
     request through here, so a log line written once, here, is the whole
     guarantee.
 
-    `body` is forwarded to fetch() unchanged. The method/body mismatch
-    check below (a body handed to a GET endpoint, or a POST endpoint
-    called with body=None) is deliberately a CALL-TIME check, not a
-    construction-time one on Endpoint: the body does not exist until a
-    caller supplies it. It is also deliberately placed ahead of the `try`
-    that wraps fetch() below: fetch() runs inside this function's own
-    broad `except Exception`, which converts anything raised there into
-    ERROR_API_REQUEST_FAILED ("可能是逾時或網路問題，請稍後再試") — reporting
-    a caller's own bug as a transient network blip to an Agent whose
-    reasonable next move is to retry.
+    `body` is forwarded to fetch() unchanged. The call-shape checks below
+    (a body handed to a GET endpoint, a POST endpoint called with
+    body=None, an AssetRoute without its URL or carrying params/body, a URL
+    that is not on the measured asset host) are deliberately CALL-TIME
+    checks, not construction-time ones: none of those values exists until a
+    caller supplies them. They are also deliberately placed ahead of the
+    `try` that wraps the transport call below, which converts anything
+    raised inside it into ERROR_API_REQUEST_FAILED ("可能是逾時或網路問題，
+    請稍後再試") — reporting a caller's own bug as a transient network blip
+    to an Agent whose reasonable next move is to retry.
 
     Cookies are read from `info.cookies` on every call — not from a
     browser object, because there is no browser object to read from after
     login completes (SessionInfo is the sole holder of credentials
-    post-login; see browser/session.py).
+    post-login; see browser/session.py). They are selected for the asset
+    host the same way, through hostname_for, and they are sent on the asset
+    routes regardless of what each route's measurement says it needs — see
+    AssetRoute.cookie_required.
     """
-    if endpoint.method == "POST" and body is None:
-        raise ToolAbort(
-            _error_internal_config(f"{endpoint.key} 是 POST 端點但未帶 body"),
-            kind="internal_config",
-        )
-    if endpoint.method != "POST" and body is not None:
-        raise ToolAbort(
-            _error_internal_config(f"{endpoint.key} 不是 POST 端點卻帶了 body"),
-            kind="internal_config",
-        )
+    is_asset = isinstance(target, AssetRoute)
 
-    cookie_header = select_cookies_for_host(info.cookies, hostname_for(endpoint))
+    # ── Dispatch point 1 of 4: the call-shape check ──────────────────────
+    if is_asset:
+        if asset_url is None:
+            raise ToolAbort(
+                _error_internal_config(f"{target.key} 是資產路由但未帶 asset_url"),
+                kind="internal_config",
+            )
+        if params is not None or body is not None:
+            raise ToolAbort(
+                _error_internal_config(f"{target.key} 是資產路由，不接受 params 或 body"),
+                kind="internal_config",
+            )
+        problem = validate_asset_url(target, asset_url)
+        if problem is not None:
+            # Neither the payload nor this log line may carry the URL, the
+            # path or the query string: `?v=` is the token. Only the route
+            # key, which check failed, and (host check only) the hostname.
+            log.warning(
+                "_issue_one: refused an asset URL for %s (failed check: %s)",
+                target.key, problem.check,
+            )
+            if problem.check == "host":
+                raise ToolAbort(
+                    _error_asset_url_wrong_host(target, problem.hostname),
+                    kind="internal_config",
+                )
+            raise ToolAbort(
+                _error_internal_config(f"{target.key} 的資產網址未通過 {problem.check} 檢查"),
+                kind="internal_config",
+            )
+    else:
+        if asset_url is not None:
+            raise ToolAbort(
+                _error_internal_config(f"{target.key} 不是資產路由卻帶了 asset_url"),
+                kind="internal_config",
+            )
+        if target.method == "POST" and body is None:
+            raise ToolAbort(
+                _error_internal_config(f"{target.key} 是 POST 端點但未帶 body"),
+                kind="internal_config",
+            )
+        if target.method != "POST" and body is not None:
+            raise ToolAbort(
+                _error_internal_config(f"{target.key} 不是 POST 端點卻帶了 body"),
+                kind="internal_config",
+            )
+
+    cookie_header = select_cookies_for_host(info.cookies, hostname_for(target))
 
     # note_request runs in `finally`, not after a bare `await fetch(...)`
     # line: a timeout or connection error raises out of the `try` below
@@ -467,9 +742,13 @@ async def _issue_one(
     # and the inter-call pacing anchor. Called once per sub-request in a
     # guarded_sequence burst, not once per tool call.
     try:
-        raw = await fetch(endpoint, cookie_header=cookie_header, params=params, body=body)
+        # ── Dispatch point 2 of 4: which fetch ───────────────────────────
+        if is_asset:
+            raw = await fetch_asset(target, asset_url, cookie_header=cookie_header)
+        else:
+            raw = await fetch(target, cookie_header=cookie_header, params=params, body=body)
     except Exception as exc:
-        log.error("_issue_one: request to %s failed: %s", endpoint.key, exc)
+        log.error("_issue_one: request to %s failed: %s", target.key, exc)
         # A timeout/connection error says nothing about whether the
         # session itself is usable — the next call may succeed outright
         # — so this is ToolAbort, not SessionUnavailable: the design
@@ -490,7 +769,7 @@ async def _issue_one(
     if is_challenge:
         log.warning(
             "_issue_one: Cloudflare challenge detected for session %s calling %s (status=%s, Ray ID: %s)",
-            session_id, endpoint.key, raw.status, ray_id or "unknown",
+            session_id, target.key, raw.status, ray_id or "unknown",
         )
         raise SessionUnavailable(ERROR_CHALLENGE, kind="challenge")
 
@@ -514,13 +793,14 @@ async def _issue_one(
         if matches_auth_host(hostname):
             log.warning(
                 "_issue_one: session %s redirected to auth host at %s (status=%s)",
-                session_id, endpoint.key, raw.status,
+                session_id, target.key, raw.status,
             )
             # An expiry signal, not a transport failure — must declare
             # "expired", not fall in with the transport kind above.
             raise SessionUnavailable(ERROR_EXPIRED, kind="expired")
 
-    verdict = classify(endpoint, raw)
+    # ── Dispatch point 3 of 4: which classify ────────────────────────────
+    verdict = classify_asset(target, raw) if is_asset else classify(target, raw)
     if not verdict.ok:
         if verdict.kind == "blocked":
             payload = (
@@ -529,13 +809,22 @@ async def _issue_one(
             )
             log.warning(
                 "_issue_one: request blocked (403) for session %s calling %s (status=%s)",
-                session_id, endpoint.key, raw.status,
+                session_id, target.key, raw.status,
             )
             raise SessionUnavailable(payload, kind="blocked")
-        error_payload, abort_cls = _api_error_for_kind(verdict.kind, endpoint, verdict.detail)
+        # ── Dispatch point 4 of 4: which kind -> payload + abort class ───
+        # The asset table handles only its own four kinds and delegates
+        # every other one back to _api_error_for_kind, so a shared kind
+        # (expired, unrecognised_status, and whatever is added next) gets
+        # a bit-identical payload on both paths and the "unknown kind"
+        # last line stays single.
+        error_payload, abort_cls = (
+            _asset_error_for_kind(verdict.kind, target, verdict.detail) if is_asset
+            else _api_error_for_kind(verdict.kind, target, verdict.detail)
+        )
         log.warning(
             "_issue_one: %s failed status=%s kind=%s detail=%s",
-            endpoint.key, raw.status, verdict.kind, verdict.detail,
+            target.key, raw.status, verdict.kind, verdict.detail,
         )
         # The classifier's own kind, passed through verbatim — never
         # re-mapped here, so a kind classify() has never been taught
@@ -644,6 +933,26 @@ async def guarded_api(
     changes no observable behaviour of any of the existing call sites —
     signature and yield shape are unchanged).
     """
+    # THE function's first statement, ahead of resolve_session: an
+    # AssetRoute reaching here is a program bug, and it must be reported as
+    # one. Two things would otherwise go wrong. Without the check at all it
+    # would fall through to `endpoint.throttle_gated` below — an attribute
+    # AssetRoute deliberately does not have (see its docstring) — raising
+    # AttributeError, which is NOT a GuardAbort and so escapes every tool's
+    # `except GuardAbort` as an unhandled exception. And placing the check
+    # merely "before the lock" would still put it after resolve_session, so
+    # a caller with no session would be told ERROR_NOT_LOGGED_IN instead —
+    # a program bug disguised as a login problem, the same masking
+    # _issue_one's call-shape checks are positioned to avoid.
+    if isinstance(endpoint, AssetRoute):
+        raise ToolAbort(
+            _error_internal_config(
+                f"{endpoint.key} 是資產路由，不能走 guarded_api——一次資產抓取一定是兩個"
+                "請求（先讀履歷詳情取網址，再抓檔案），請改用 guarded_sequence"
+            ),
+            kind="internal_config",
+        )
+
     app = ctx.request_context.lifespan_context
     info = await resolve_session(ctx)
     if not info:
@@ -707,14 +1016,32 @@ async def guarded_sequence(
     """The multi-request counterpart to guarded_api — same lock, same
     throttle gate, same `_issue_one` per sub-request, but ONE lock hold
     and ONE throttle-gate check for the whole sequence rather than one
-    each per sub-request. Used today by exactly one caller
-    (tools/messaging.py's send_inquiry, three sub-requests), but nothing
-    here is send_inquiry-specific — the sequence length is entirely the
-    caller's business (see `slots_needed` below).
+    each per sub-request. Used today by three callers
+    (tools/messaging.py's send_inquiry, three sub-requests; and
+    tools/resume_files.py's two asset tools, two sub-requests each), but
+    nothing here is specific to any of them — the sequence length is
+    entirely the caller's business (see `slots_needed` below).
 
         async with guarded_sequence(ctx, slots_needed=3) as (request, info):
             idno_payload = await request(ENDPOINTS["resolve_candidate_idno"], params=..., pick_data=("idNo",), pick_metadata=())
             ...
+
+    `request()`'s first positional parameter takes EITHER an Endpoint or an
+    AssetRoute; for an AssetRoute the URL 104 itself supplied is passed as
+    the `asset_url=` keyword, and `params`/`body`/`pick_*` must all be
+    omitted. Widening this parameter, rather than yielding a second
+    request-like callable, is what keeps the yield shape — and therefore
+    every existing call site and the worked example above — unchanged. The
+    cost is that `request()` now has two mutually exclusive argument
+    groups, ruled out by call-time checks rather than by the type system:
+    an AssetRoute without `asset_url`, an Endpoint with one, an AssetRoute
+    carrying params/body, and an AssetRoute carrying pick_* are all
+    ToolAbort(kind="internal_config"). Handing an AssetRoute to guarded_api
+    is a fifth, refused there.
+
+        async with guarded_sequence(ctx, slots_needed=2) as (request, info):
+            envelope = await request(ENDPOINTS["get_resume_detail"], params=[("idno", candidate_id)])
+            asset = await request(ASSET_ROUTES["candidate_photo"], asset_url=url_from_104)
 
     `slots_needed` is forwarded to `enforce_throttle` VERBATIM — this
     function never inspects, rewrites, or defaults it beyond the type
@@ -787,15 +1114,28 @@ async def guarded_sequence(
             await before_first(info)
 
         async def request(
-            endpoint: Endpoint,
+            endpoint: Endpoint | AssetRoute,
             *,
             params: Sequence[tuple[str, str]] | None = None,
             body: dict | None = None,
+            asset_url: str | None = None,
             before_request: Callable[[SessionInfo], Awaitable[None]] | None = None,
             pick_data: tuple[str, ...] | None = None,
             pick_metadata: tuple[str, ...] | None = None,
         ) -> object:
             if pick_data is not None or pick_metadata is not None:
+                if isinstance(endpoint, AssetRoute):
+                    # Checked here rather than in _issue_one (which never
+                    # sees pick_*), and ahead of the family_b_shape lookup
+                    # below, which an AssetRoute has no attribute for. An
+                    # asset response is bytes, not an envelope with halves
+                    # to project.
+                    raise ToolAbort(
+                        _error_internal_config(
+                            f"{endpoint.key} 是資產路由，不支援欄位投影（pick_data/pick_metadata）"
+                        ),
+                        kind="internal_config",
+                    )
                 shape = endpoint.family_b_shape
                 if shape is None or shape.is_list:
                     raise ToolAbort(
@@ -813,6 +1153,7 @@ async def guarded_sequence(
                 info, endpoint, params, body,
                 session_id=session_id,
                 throttle_state_path=app.config.throttle_state_path,
+                asset_url=asset_url,
             )
             if pick_data is None and pick_metadata is None:
                 return payload

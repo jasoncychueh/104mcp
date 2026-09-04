@@ -45,6 +45,7 @@ def make_config(tmp_path: Path, **overrides) -> Config:
         rest_duration_minutes=3,
         min_call_interval_seconds=5,
         throttle_state_path=data_dir / "throttle.json",
+        resume_files_dir=data_dir / "resume-files",
         logout_unconfirmed_path=data_dir / "logout_unconfirmed",
         auth_bind_port=None,
         auth_base_url=None,

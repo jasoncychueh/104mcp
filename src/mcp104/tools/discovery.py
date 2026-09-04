@@ -40,10 +40,13 @@ import mcp104.tools.filters as filters_mod
 # below must key its payload on the SAME delivered names `_convert_resume_row` actually
 # produces — a gloss keyed on 104's raw camelCase names describes fields an Agent holding
 # a converted row can never look up (measured once: the intersection was 4 of 35).
-# `tools/search.py` imports this back (`from mcp104.tools.discovery import _snake_case`)
-# rather than keeping its own copy, so the two can never independently drift on what
+# `tools/helpers.py` imports this back (`from mcp104.tools.discovery import
+# _snake_case`) for the recursive walk `convert_keys`, which is what
+# `tools/search.py` and `tools/messaging.py` both apply — so no module keeps
+# its own copy and none of them can independently drift on what
 # "the delivered name" means for a given raw field. No cycle: this module has no
-# dependency on `tools/search.py`, so the import direction stays one-way, same as
+# dependency on `tools/search.py` or `tools/helpers.py`, so the import direction
+# stays one-way, same as
 # `RESUME_ROW_FIELD_GLOSS`/`SECOND_IDENTIFIER_NOTE` below.
 _CAMEL_BOUNDARY_RE = re.compile(r"(?<!^)(?=[A-Z])")
 
