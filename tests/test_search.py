@@ -364,7 +364,7 @@ async def test_keyword_search_returns_documented_success_shape(tmp_path, monkeyp
 
     assert "error" not in result
     assert result["pagination"] == {"page": 1, "total_pages": 30, "total": 300063}
-    assert result["browse_limit"] == {"resume_max": 300, "on_that_day_count": "11"}
+    assert result["browse_limit"] == {"resume_max": 300, "on_that_day_count": 11}
     assert isinstance(result["warnings"], list)
     assert "applied_filters" in result
 
@@ -454,7 +454,7 @@ async def test_recommend_with_job_id_returns_documented_shape(tmp_path, monkeypa
 
     assert "error" not in result
     assert result["pagination"] == {"page": 1, "total_pages": 10, "total": 499}
-    assert result["browse_limit"] == {"resume_max": 300, "on_that_day_count": "14"}
+    assert result["browse_limit"] == {"resume_max": 300, "on_that_day_count": 14}
     fixture_rows = fixture["result"]["data"]
     assert len(result["results"]) == len(fixture_rows) == 50
     assert result["results"][0]["candidate_id"] == fixture_rows[0]["idNo"]
@@ -516,7 +516,7 @@ async def test_match_with_job_id_returns_documented_shape(tmp_path, monkeypatch)
     assert "error" not in result
     fixture_rows = fixture["result"]["resumes"]
     assert len(result["results"]) == len(fixture_rows) == 3
-    assert result["browse_limit"] == {"resume_max": 300, "on_that_day_count": "14"}
+    assert result["browse_limit"] == {"resume_max": 300, "on_that_day_count": 14}
     assert result["results"][0]["candidate_id"] == fixture_rows[0]["idNo"] == "20000001239202"
 
 
@@ -854,7 +854,7 @@ async def test_quota_key_present_and_populated_on_success(tmp_path, monkeypatch)
     result = await search_resumes(keyword="應用工程師", ctx=ctx)
 
     assert "error" not in result
-    assert result["browse_limit"] == {"resume_max": 300, "on_that_day_count": "11"}
+    assert result["browse_limit"] == {"resume_max": 300, "on_that_day_count": 11}
 
 
 @pytest.mark.asyncio

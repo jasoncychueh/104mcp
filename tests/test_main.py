@@ -609,6 +609,7 @@ class _T121App:
         self.config = _T121Config()
         self.auth_site = _T121AuthSite(calls)
         self.db = _T121Db(calls)
+        self._browser_install = None
 
 
 async def _t121_never_finishes():

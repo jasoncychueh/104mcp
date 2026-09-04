@@ -166,6 +166,12 @@ def _extract_match_rows(result) -> tuple[list[dict], dict]:
     if not isinstance(result.get("resumes"), list):
         raise MalformedResponseError("result.resumes 缺失或非陣列")
     page_info = result.get("pageInfo")
+    if page_info is None and "pageInfo" in result and result["resumes"] == []:
+        # 量到的零筆形狀（2026-09-04，updateDateType=2 當日零筆，§8.22）：resumes 是
+        # 空陣列、pageInfo 這個鍵在、值是 null。這是合法的空結果，不是結構異常——
+        # 判成異常會讓「今天沒有配對」看起來像故障。page 由呼叫端補上（見
+        # _build_match_response）。
+        return [], {"page": None, "total_pages": 0, "total": 0}
     if not isinstance(page_info, dict):
         raise MalformedResponseError("result.pageInfo 缺失或非物件")
     return result["resumes"], {
@@ -199,7 +205,14 @@ def _extract_browse_limit(container: dict) -> dict | None:
     browse_limit = container.get("browseLimit")
     if not isinstance(browse_limit, dict):
         return None
-    return _convert(browse_limit)
+    converted = _convert(browse_limit)
+    # 104 自己的型別不一致（量到：resumeMax 是整數 300、onThatDayCount 是字串 "0"），
+    # 純數字字串一律轉成 int，讓呼叫端拿到兩個同型別的數字。
+    for key in ("resume_max", "on_that_day_count"):
+        value = converted.get(key)
+        if isinstance(value, str) and value.strip().lstrip("-").isdigit():
+            converted[key] = int(value.strip())
+    return converted
 
 
 def _browse_limit_warning(browse_limit: dict | None) -> str | None:
@@ -432,8 +445,10 @@ def _build_recommend_response(result: dict) -> dict:
     }
 
 
-def _build_match_response(result: dict) -> dict:
+def _build_match_response(result: dict, requested_page: int | None = None) -> dict:
     raw_rows, pagination = _extract_match_rows(result)
+    if pagination.get("page") is None and requested_page is not None:
+        pagination["page"] = requested_page
     browse_limit = _extract_browse_limit(result)
     warnings = []
     quota_warning = _browse_limit_warning(browse_limit)
@@ -810,7 +825,7 @@ def register_search_tools(mcp: FastMCP):
             params.append(("updateDateType", update_date_type))
         try:
             async with guarded_api(ctx, ENDPOINTS["list_matched_resumes"], params=params) as (result, _info):
-                return _build_match_response(result)
+                return _build_match_response(result, requested_page=page)
         except GuardAbort as e:
             return e.payload
         except MalformedResponseError as exc:

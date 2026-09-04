@@ -69,6 +69,7 @@ def make_app_ctx(tmp_path: Path, pool: SessionPool | None = None, **overrides):
         _watcher_tasks={},
         auth_site=None,
         logout_epoch=0,
+        _browser_install=None,
     )
     for k, v in overrides.items():
         setattr(base, k, v)
