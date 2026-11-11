@@ -200,10 +200,13 @@ _REFERENCE_ENDPOINTS = [
     ("/api/recommend/resumeListAll", "vip", "A", False, True),
     ("/api/match/matchResult", "vip", "A", True, True),
     ("/vipapi/resume/search", "auth", "B", None, False),
-    # docs/104-site-facts.md line 921: "/job-api/jobs/recommend 才是公司職缺清單"
-    # (this is the endpoint for the company job list, despite the "recommend"
-    # in its path — the sibling /job-api/jobs/match returns a strict subset).
-    ("/job-api/jobs/recommend", "auth", "B", None, False),
+    # The company job list (list_jobs) moved to the apply route in applicants-and-job-reads;
+    # /job-api/jobs/apply carries applyCount60 and the same 21-job set in the same order.
+    ("/job-api/jobs/apply", "auth", "B", None, False),
+    # applicants-and-job-reads: three more auth-host routes, none measured for Referer.
+    ("/api/apply/applyDetail", "auth", "A", None, False),
+    ("/vipapi/search/match-number", "auth", "B", None, False),
+    ("/vipapi/job/over-seven-day-job", "auth", "B", None, False),
 ]
 
 
@@ -237,6 +240,26 @@ def test_declared_endpoints_match_recorded_host_family_and_referer_declaration()
             f"(§6b.3h measured requires_referer={measured!r} for this route), "
             f"but extra_headers say {has_referer!r} ({ep.extra_headers!r})"
         )
+
+
+# ── T-61 (interface): the three applicants-and-job-reads routes, by their ENDPOINTS keys ──
+#
+# The reference table above carries host, family and the Referer declaration only; method
+# and throttle_gated are what T-61 also states, so they are checked here, by key.
+
+def test_list_applicants_match_number_and_refreshable_jobs_are_get_auth_and_throttle_gated():
+    expected = {
+        "list_applicants": ("/api/apply/applyDetail", "A"),
+        "match_number": ("/vipapi/search/match-number", "B"),
+        "list_refreshable_jobs": ("/vipapi/job/over-seven-day-job", "B"),
+    }
+    for key, (path, family) in expected.items():
+        ep = ENDPOINTS[key]
+        assert ep.path == path, f"{key}: expected path {path!r}, got {ep.path!r}"
+        assert ep.host == "auth", f"{key}: expected host 'auth', got {ep.host!r}"
+        assert ep.family == family, f"{key}: expected family {family!r}, got {ep.family!r}"
+        assert ep.method == "GET", f"{key}: expected method GET, got {ep.method!r}"
+        assert ep.throttle_gated is True, f"{key}: expected throttle_gated=True"
 
 
 # ── T-45 (interface): select_cookies_for_host ────────────────────────────
@@ -686,9 +709,8 @@ async def test_logged_out_session_on_list_tool_returns_expired_error_never_empty
     raw = _raw_from_wrapper("failure_family_b_unauthenticated.json")
     _install_fake_fetch(monkeypatch, raw)
 
-    # docs/104-site-facts.md line 921: /job-api/jobs/recommend is the company
-    # job list endpoint — the "list tool" this case names.
-    _job_list_key, job_list_ep = _endpoints_matching(path_contains="/job-api/jobs/recommend")[0]
+    # /job-api/jobs/apply is the company job list endpoint — the "list tool" this case names.
+    _job_list_key, job_list_ep = _endpoints_matching(path_contains="/job-api/jobs/apply")[0]
 
     with pytest.raises(GuardAbort) as exc_info:
         async with guarded_api(ctx, job_list_ep, params=[]):
@@ -765,7 +787,7 @@ async def test_fetch_dispatches_get_or_post_per_endpoint_method(monkeypatch):
     from mcp104.browser import api_client as api_client_mod
     monkeypatch.setattr(api_client_mod.aiohttp, "ClientSession", _FakeAiohttpSession)
 
-    _key, get_ep = _endpoints_matching(path_contains="/job-api/jobs/recommend")[0]
+    _key, get_ep = _endpoints_matching(path_contains="/job-api/jobs/apply")[0]
     await api_client_mod.fetch(get_ep, cookie_header="c=1", params=[])
 
     _key, post_ep = _endpoints_matching(path_contains="/bc-comm/message/all-stream")[0]
@@ -863,7 +885,9 @@ def test_all_declared_endpoints_construct_without_error():
     # pins it as an intentional omission.
     # The four event-route endpoints (send_interview_event, send_thank_event,
     # send_inquire_event, send_exam_event) raise the count to eighteen.
-    assert len(ENDPOINTS) == 18
+    # applicants-and-job-reads adds three more routes (list_applicants, match_number,
+    # list_refreshable_jobs); list_jobs keeps its key and changes only its path.
+    assert len(ENDPOINTS) == 21
 
 
 # =========================================================================
@@ -1330,3 +1354,80 @@ def test_event_route_failed_is_present_empty_or_absent_on_the_ok_payload(key):
     absent = _verdict(dict(base))
     assert absent.ok is True
     assert "failed" not in absent.payload
+
+
+# ── applicants-and-job-reads (Phase 1 task 11): T-56, T-57, T-58 ──────────────────
+#
+# The company-switch envelope and the family-A non-SUCCESS shapes, through the real
+# classify() with nothing mocked. Named by behaviour; the case IDs sit in the comments
+# only, because this file already carries T-nn names from an earlier cycle.
+
+_COMPANY_SWITCH_FIXTURE = "failure_applicants_company_switch.json"
+_BACKSLASH_SLASH = chr(92) + "/"  # the JSON escape for "/", as it sits in a raw body
+_COMPANY_SWITCH_ENDPOINTS = ("list_applicants", "search_resumes")
+
+
+def test_company_switch_envelope_with_json_escaped_url_is_expired_on_both_family_a_endpoints():
+    # T-56
+    d = _load(_COMPANY_SWITCH_FIXTURE)
+    # Precondition: the fixture must really carry the JSON-escaped slashes. Without them
+    # this test would pass without exercising the escape at all.
+    assert d["http_status"] == 200
+    assert d["content_type"].startswith("text/html")
+    assert "COMPANY_SWITCH" in d["body_text"]
+    assert (_BACKSLASH_SLASH + "company" + _BACKSLASH_SLASH + "status") in d["body_text"]
+
+    raw = _raw_from_wrapper(_COMPANY_SWITCH_FIXTURE)
+    for key in _COMPANY_SWITCH_ENDPOINTS:
+        verdict = classify(ENDPOINTS[key], raw)
+        assert verdict.ok is False, f"{key}: a logged-out COMPANY_SWITCH envelope must be an error"
+        assert verdict.kind == "expired", (
+            f"{key}: a logged-out COMPANY_SWITCH envelope must read as an expired session, "
+            f"got kind={verdict.kind!r}"
+        )
+
+
+def test_company_switch_envelope_with_unescaped_url_is_expired_and_success_bodies_stay_success():
+    # T-57
+    d = _load(_COMPANY_SWITCH_FIXTURE)
+    body_json = d["body_json"]
+    assert body_json["status"] == "COMPANY_SWITCH"
+    # The same envelope, serialised without the JSON escape on "/".
+    unescaped_text = json.dumps(body_json, ensure_ascii=False)
+    assert "/company/status/switchCompany" in unescaped_text
+    assert _BACKSLASH_SLASH not in unescaped_text
+    raw = _raw(d["http_status"], d["content_type"], unescaped_text, body_json)
+    for key in _COMPANY_SWITCH_ENDPOINTS:
+        verdict = classify(ENDPOINTS[key], raw)
+        assert verdict.kind == "expired", (
+            f"{key}: an unescaped COMPANY_SWITCH envelope must read as expired, "
+            f"got kind={verdict.kind!r}"
+        )
+
+    # The other half of the same invariant: a real status=SUCCESS body is still a success
+    # on both endpoints, so the widened expiry check does not swallow good responses.
+    for key, fixture in (
+        ("list_applicants", "rows_applicants.json"),
+        ("search_resumes", "rows_search.json"),
+    ):
+        assert _load(fixture)["status"] == "SUCCESS"  # precondition: the body is a success envelope
+        verdict = classify(ENDPOINTS[key], _raw_from_bare_json(fixture))
+        assert verdict.ok is True, (
+            f"{key}: a status=SUCCESS body must remain a success, got kind={verdict.kind!r}"
+        )
+
+
+@pytest.mark.parametrize("key", _COMPANY_SWITCH_ENDPOINTS)
+def test_family_a_401_without_a_status_key_is_unrecognised_and_its_detail_names_the_http_code(key):
+    # T-58
+    assert ENDPOINTS[key].family == "A"  # precondition: the endpoint under test is family A
+    body = {"error": "unauthenticated"}
+    raw = _raw(401, "application/json; charset=utf-8", json.dumps(body), body)
+    verdict = classify(ENDPOINTS[key], raw)
+    assert verdict.ok is False
+    assert verdict.kind == "unrecognised_status", (
+        f"{key}: a family-A body with no status key must be unrecognised_status, "
+        f"got kind={verdict.kind!r}"
+    )
+    assert "401" in verdict.detail, f"{key}: detail must carry the HTTP code: {verdict.detail!r}"
+    assert "None" not in verdict.detail, f"{key}: detail must not fall back to a literal None"

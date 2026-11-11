@@ -21,7 +21,9 @@ treating any single field as evidence of what 104 actually sent.
 python research/probes/redact_fixtures.py
 ```
 
-Requires `research/captures/` to be present locally. Re-run whenever a capture under
+Requires `research/captures/` to be present locally (it exists only in the main working tree;
+from a feature worktree, run the main tree's copy of the script with `--out <worktree>/tests/fixtures`,
+which writes there instead). Re-run whenever a capture under
 `research/captures/` is corrected — that is the entire reason the derivation is scripted rather
 than hand-maintained: a hand-edited fixture silently stops tracking its source the next time a
 measurement is corrected.
@@ -65,12 +67,70 @@ archived to `research/captures/` and this script extended with `build_inbox_page
 | `rows_match.json` | `research/captures/reco_match_rows.json`, key `/api/match/matchResult` (3 rows, container key `resumes` — deliberately different from the other two routes, see design.md Components §9 / T-11) | same | redacted per row |
 | `resume_unrestricted.json` | `research/captures/resume_correct_host.json` (`contactPrivacy: "public"`) | name, contact fields, attachments, operator identity | redacted |
 | `resume_restricted.json` | `research/captures/resume_private.json` (`contactPrivacy: "private"`) | name, attachments, operator identity | redacted — **except** the masked contact fields, preserved byte-for-byte (see below) |
-| `failure_family_a_logged_out.json` | `research/captures/failure_family_a_logged_out.json` | none | copied verbatim |
+| `failure_family_a_logged_out.json` | `research/captures/failure_family_a_logged_out.json` | none | body copied verbatim; **`note` corrected** — the capture's own note says the body is a JSON envelope carrying `COMPANY_SWITCH`, but the body is an HTML/JavaScript redirect page (see "The `COMPANY_SWITCH` envelope did not reproduce" below). The JSON `COMPANY_SWITCH` shape is `failure_applicants_company_switch.json` |
 | `failure_family_a_expired.json` | `research/captures/failure_family_a_expired.json` | none in the body; the wrapper's `request_headers_sent.Cookie` was a live session credential | body copied verbatim; `Cookie` header value replaced with a redaction placeholder |
 | `failure_family_b_unauthenticated.json` | `research/captures/failure_family_b_unauthenticated.json` | same | same |
 | `failure_access_denied.json` | `research/captures/failure_access_denied.json` | same | same |
 | `failure_data_not_found.json` | `research/captures/failure_data_not_found.json` | same | same |
 | `failure_send_validation.json` | `research/results/send_validation.json` (the `"both_bogus:empty"` entry, `research/probes/probe_send_validation.py`'s reject-and-read output) | none — every target thread used `pId=0` (non-existent), no probed body ever carried text | **partially synthesised, not "copied verbatim"** — `http_status` and `body_json` are the probe's own measured `status`/`body`, copied through unchanged; `content_type` was never recorded by the probe on this route (assumed, matched to the one auth-host route that IS measured — `failure_family_b_unauthenticated.json`'s `application/json;charset=utf-8`, no space after the semicolon; the vip-host family-A fixtures write it with a space, which is a different host, not evidence for this one) and `body_text` is `body_json` re-serialised by the script, not captured bytes. The fixture's own `not_measured` field states both gaps; see `build_failure_send_validation`'s docstring in `redact_fixtures.py` for the full account |
+
+### `list_applicants` and job-read fixtures (`applicants_prework_*` captures, 2026-11-12)
+
+Sources are the raw bodies archived by the `list_applicants` pre-work probes
+(`research/probes/probe_applicants_prework.py` and two one-off follow-ups; results in
+`research/results/applicants_prework.md`). All are GETs against a real enterprise session; the
+script writes them with the same `build_*` machinery as the rest of this directory.
+
+| Fixture | Source | Personal data | Treatment |
+|---|---|---|---|
+| `rows_applicants.json` | `applicants_prework_applyDetail_11706763_ec4.json` (`GET /api/apply/applyDetail`, 12 applicants over 11 day-groups, one group holds two; `resumeGroups.today` is empty — **no capture has a non-empty `today` group**, so that shape is unmeasured) | every candidate-supplied string, see below | redacted per row |
+| `zero_row_applicants.json` | `applicants_prework_applyDetail_12007405_r1.json` (open job, no applicants: `pageInfo: null`, both groups empty, `resumeNumber` all `"0"`) | none | verbatim except the business-account ids |
+| `applicants_out_of_range_page.json` | `applicants_prework_applyDetail_11706763_p2.json` (`page=2` on a one-page job: both groups empty, `pageInfo` `{total: 12, start: 50, end: 12, thisPage: 2, nextPage: 100 ...}` — `start`/`end`/`nextPage` are meaningless there) | none | verbatim except the business-account ids |
+| `failure_applicants_company_switch.json` | `applicants_prework_fail_nocookie.txt` (no cookies at all) | none | wrapper `{http_status 200, content_type "text/html; charset=UTF-8", body_text, body_json}`; `body_text` is the archived text byte for byte (escaped slashes in `url` kept), `body_json` its parse. The request's query string was not archived, so `request_url` (auth host) carries no query string |
+| `failure_applicants_not_found.json` | `applicants_prework_fail_b_nonexistent.json` (job `99999999`; a 13-digit job number measured the same) | none | wrapper, HTTP 404 `DATA_NOT_FOUND` / `此職務不存在`. `body_text` is the archived file's text (pretty-printed, CRLF); the probe logged 130 wire bytes for this request, the archived 148 is the stored text — `body_bytes` is the stored length |
+| `jobs_apply.json` | `applicants_prework_jobs_apply.json` (`GET /job-api/jobs/apply?page=1`, 21 jobs, `applyCount` 0 on all, `applyCount60` meaningful) | none — our own company's job numbers, titles, department names | verbatim (re-indented) |
+| `match_number.json` | `applicants_prework_match_number_5.json` (`GET /vipapi/search/match-number`, 5 `jobNos[]` deliberately not in `jobs/apply` order; returned order equals request order; all three values strings) | none | verbatim (re-indented) |
+| `refreshable_jobs.json` | `applicants_prework_over_seven_day_job.json` (`GET /vipapi/job/over-seven-day-job`, 12 jobs, `userPermit: true`) | none | verbatim (re-indented) |
+| `match_number_missing_row.json` | **derived, not measured** from `match_number.json` | none | one row deleted (the third of five); wrapper carries `derived_unmeasured: true`, `derived_from`, `derivation`, `request_jobnos` (the five asked for), `not_measured` |
+| `refreshable_jobs_no_permit.json` | **derived, not measured** from `refreshable_jobs.json` | none | `data.userPermit` flipped to `false`; same wrapper keys |
+
+**The two derived fixtures are not 104 responses.** Neither variant was ever observed (104 was never
+seen dropping a `match-number` row; this account only ever had `userPermit: true`). Each is the
+measured body with one stated edit, labelled so inside the file; the measured body sits unchanged in
+`body_json` so a test can hand it to the transport exactly as it would a real response, and
+`body_text` is `body_json` re-serialised by the script, not captured bytes — the same precedent as
+`failure_send_validation.json`. Use them to exercise how the code copes with that shape, never as
+evidence of what 104 sends. `content_type` on both is the one measured for their *source* route
+(`application/json`); it is not a measurement of the derived case.
+
+**Applicant rows get the strict redaction, not the "names, ages, areas" scope of the `rows_*`
+fixtures above.** Every applicant row is real people's data, and these fixtures cover the whole
+row, so everything the candidate supplied is replaced with a synthetic value of the same shape —
+keys, value types, list lengths, nesting and the day-group layout are unchanged:
+
+- replaced: `userName`, `age`, `areaDesc`, `personalPic`; `idNo` (kept ≥ 12 digits), `pId` (7–8
+  digits), `autoNo`, `snapshotId`; `eduDesc` (degree word kept, school and department replaced);
+  `titleCatDesc`; `skills` (and the same strings inside `fitness`); per `expJobArr` entry the
+  employer name, job title, free-text note (`<p>` wrapping kept), skill list and any wage; the
+  `otherCourse` description and credential link; `latestMemo` if present;
+- in `remark`/`remarkWithoutHtml`: the staff name recorded as the actor, the ids inside the message
+  anchor (`id_no`, `pid`, the `msgMaster/<jobno>/<pid>` path, `bc_msg_id_*`) and the template title in
+  `【…】` are replaced; timestamps, action words and our own company's department and job-title
+  segments are kept;
+- kept as measured: dates and durations, 104's fixed-vocabulary descriptions (`expJobDesc`,
+  `expIndDesc`, `expManagementDesc`, `coSizeDesc`, `expPeriodDesc`, `sexDesc`), the flags and
+  versions, the placeholder `公司名暫不公開` (104's own masking text), and our own company's job number,
+  job title and department names (the same treatment `rows_recommend.json` gives `jobName`).
+- `nccLogBaseData` (`custno`, `Buserid`, `pid`) carries the same synthetic business-account values
+  as every other fixture; the script now applies that substitution to every file it writes (it
+  previously relied on a manual pre-publish pass, so regenerating would have restored the real ids).
+
+After writing, the script asserts that none of the original names, ids, photo URLs, employer names or
+staff names appears anywhere in `rows_applicants.json`, and the widened sweep below also checks the
+applicant names and staff names against every file in this directory. The sweep's e-mail/phone-shape
+checks found nothing. As with the earlier rows, a candidate-supplied string no rule anticipated would
+only be caught by reading; the non-ASCII strings left in `rows_applicants.json` were listed and read
+(all are replaced values, 104's fixed vocabulary, or our own job and department names).
 
 `access_denied.json`'s source filename is misleading: `zero_row_match.json` does not actually
 hold an empty-result match body — it holds the same `ACCESS_DENIED` shape that
@@ -279,8 +339,11 @@ body" — as measured today, neither is one.** The redirect-body classification 
 (Error Handling scenario 4) still applies to both: they carry the same
 `/company/status/switchCompany` signal in the `location.href` value, just not the alternate
 JSON-envelope shape the design document also describes. If a test specifically needs a
-`COMPANY_SWITCH`-carrying envelope, that shape currently has no fixture and no confirmed
-reproduction method.
+`COMPANY_SWITCH`-carrying envelope, use `failure_applicants_company_switch.json`: the JSON envelope
+(`{"status": "COMPANY_SWITCH", ..., "url": "\/company\/status\/switchCompany?target_link_uri="}`) was
+later measured on `GET /api/apply/applyDetail` with no cookies, HTTP 200 and `text/html; charset=UTF-8`.
+It was not measured on the search route these two fixtures come from, so it stays a distinct fixture
+with its own request path.
 
 ### Credentials found in the wrapper, stripped before committing
 
@@ -305,7 +368,7 @@ carries a `request_headers_sent` block, regardless of what the response body con
 
 ## Committability
 
-`git add tests/fixtures/` stages all thirteen JSON fixtures plus this README cleanly (verified).
+`git add tests/fixtures/` stages every JSON fixture plus this README cleanly (verified).
 Note:
 `git check-ignore -v tests/fixtures/` (directory path, trailing slash) prints a spurious match
 (`.gitignore:9: tests/fixtures/`, pointing at a *blank* line in `.gitignore`) — this is a git

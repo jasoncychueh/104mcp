@@ -522,6 +522,35 @@ class MalformedResponseError(Exception):
         super().__init__(detail)
 
 
+# A job number is a run of ASCII digits. `[0-9]` rather than `str.isdigit`:
+# isdigit also accepts superscripts and non-ASCII digits that 104 never issues.
+_JOBNO_RE = re.compile(r"[0-9]+")
+
+
+def normalise_jobno(value: object) -> str:
+    """A job number as 104 gives it (int or all-digit string) -> its string
+    form. Anything else — including bool, which is an int subclass — raises
+    MalformedResponseError: 104 handed back something that is not a job
+    number."""
+    if isinstance(value, bool):
+        raise MalformedResponseError(f"職缺編號不是整數或全數字字串：{value!r}")
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, str) and _JOBNO_RE.fullmatch(value):
+        return value
+    raise MalformedResponseError(f"職缺編號不是整數或全數字字串：{value!r}")
+
+
+def jobno_error(jobno: object) -> dict | None:
+    """Check a job number the CALLER supplied: a non-empty all-digit string
+    -> None; anything else -> an error payload naming where job numbers come
+    from. Stricter than normalise_jobno on purpose — an int is accepted from
+    104's own responses but not from a tool argument, which is declared str."""
+    if isinstance(jobno, str) and _JOBNO_RE.fullmatch(jobno):
+        return None
+    return {"error": f"jobno 必須是全數字的職缺編號字串（例如 \"11706763\"），收到 {jobno!r}。職缺編號請取自 list_jobs 回傳的 jobno。"}
+
+
 async def resolve_session(ctx: Context) -> SessionInfo | None:
     """Resolve the caller's SessionInfo without navigating.
 

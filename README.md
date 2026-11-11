@@ -6,7 +6,7 @@
 [![GitHub](https://img.shields.io/github/stars/jasoncychueh/104mcp?style=social)](https://github.com/jasoncychueh/104mcp)
 
 讓 AI Agent（Claude Code 或任何 MCP client）操作 **104 人力銀行企業徵才帳號**
-的 MCP server：搜尋履歷、列出職缺、讀取與發送站內信、送出「詢問意願」邀約、
+的 MCP server：搜尋履歷、列出職缺與應徵者、讀取與發送站內信、送出「詢問意願」邀約、
 記錄候選人聯繫狀態。
 
 帳號密碼**不會經過 AI 的對話內容**。登入時 Agent 只拿到一個網址，由你本人在
@@ -103,7 +103,9 @@
 - `list_recommended_resumes(jobno, page)` — 列出 104 推薦給某職缺的履歷
 - `list_matched_resumes(jobno, page, update_date_type)` — 列出配對到某職缺的履歷；`update_date_type="2"` 只看當日配對
 - `get_resume_detail(candidate_id)` — 取得單一候選人的完整履歷
-- `list_jobs(page)` — 列出這個帳號底下的職缺
+- `list_applicants(jobno, page)` — 列出某個職缺近 60 天的應徵者；每列的 `p_id` 可直接拿去發訊息，`candidate_id` 用來讀完整履歷。讀清單不扣 104 的每日履歷瀏覽配額
+- `list_jobs(page)` — 列出這個帳號底下的職缺，每個職缺附近 60 天應徵人數，以及今日與目前的配對人數（查不到時為 `null`，不是 0）
+- `list_refreshable_jobs()` — 列出 104 目前標示為可更新的職缺（只讀，不會真的更新職缺）
 - `get_candidate_photo(candidate_id)` — 把候選人的大頭照下載到本機並回傳路徑（沒放照片時回 `photo: null`，那是正常狀態）
 - `get_resume_attachment(candidate_id, sort)` — 把履歷附件（作品集、證照掃描檔、另一版履歷 PDF……）下載到本機並回傳路徑
 

@@ -644,20 +644,134 @@ def _describe_template_fields() -> dict:
     return {"fields": dict(TEMPLATE_ROW_FIELD_GLOSS)}
 
 
+# ── Applicant rows (list_applicants) and job rows (list_jobs) ────────────────────────
+#
+# Same arrangement as RESUME_ROW_FIELD_GLOSS: keyed on 104's raw camelCase names, which
+# is what the row builders filter the raw dict against; `describe_result_fields` re-keys
+# to the delivered names. A field the résumé row also carries reuses that row's gloss
+# object verbatim, so the same field cannot be described two ways.
+
+# The wording for a field whose meaning nobody measured — the same sentence the résumé
+# row writes out by hand, generated here for the fields this module adds.
+_UNMEASURED_GLOSS_TEMPLATE = "未量測，104 自己的欄位名稱（{name}）照登"
+
+
+def _unmeasured_gloss(raw_name: str) -> str:
+    return _UNMEASURED_GLOSS_TEMPLATE.format(name=raw_name)
+
+
+# New applicant-row fields whose meaning is unmeasured (104 raw names). Fields shared with
+# the résumé row take that row's gloss, which already states its own measured status.
+APPLICANT_UNMEASURED_FIELDS: frozenset[str] = frozenset(
+    {"isDuplicateApply", "currentJobProcess", "skills"}
+)
+
+# Fields the résumé row also carries but whose meaning differs on an applicant row, so
+# they are described here instead of borrowing the résumé row's gloss.
+APPLICANT_OWN_GLOSS_FIELDS: frozenset[str] = frozenset({"expJobArr"})
+
+_APPLICANT_ROW_OWN_GLOSS: dict[str, str] = {
+    "expJobArr": "工作經歷陣列，每筆一份工作，只有 exp_firm（公司）、exp_title（職稱）、"
+                 "exp_start／exp_end（起訖）四個欄位；要看完整經歷請用 get_resume_detail",
+}
+
+_APPLICANT_ROW_SHARED_WITH_RESUME: tuple[str, ...] = (
+    "idNo", "pId", "userName", "age", "sex", "sexDesc", "eduDesc", "titleCatDesc",
+    "areaDesc", "expPeriodDesc", "readStatus", "isContact", "isSave",
+    "hasInRecruitFlow", "latestMemo", "switchStatusView", "isTalent50",
+    "resumeVersion", "resumeType",
+)
+
+APPLICANT_ROW_FIELD_GLOSS: dict[str, str] = {
+    **{k: RESUME_ROW_FIELD_GLOSS[k] for k in _APPLICANT_ROW_SHARED_WITH_RESUME},
+    **{k: _APPLICANT_ROW_OWN_GLOSS[k] for k in sorted(APPLICANT_OWN_GLOSS_FIELDS)},
+    **{k: _unmeasured_gloss(k) for k in sorted(APPLICANT_UNMEASURED_FIELDS)},
+}
+
+# `input_date` is added by the row builder, not read from the raw row, so it is not a
+# key of the allow-list above; describe_result_fields publishes it under its own name.
+APPLICANT_INPUT_DATE_GLOSS = (
+    "應徵日期（104 的 inputDate，\"YYYY/MM/DD\"，所在日期組的日期）。null 表示這位應徵者"
+    "在 104 的「今天」組——104 不給這一組日期，今天以哪個時刻切換未量測，所以不由本機"
+    "時鐘補一個可能差一天的日期"
+)
+
+# Never delivered under any name; raw 104 name -> why. Published by
+# describe_result_fields so a caller can see the row carries them and that the omission
+# is deliberate.
+APPLICANT_ROW_EXCLUDED_FIELDS: dict[str, str] = {
+    "personalPic": "104 的照片網址，Agent 打不開；要大頭照請用 get_candidate_photo，本工具不發布",
+    "remark": "詳情層級的富文字備註，get_resume_detail 有；本工具不發布",
+    "remarkWithoutHtml": "同 remark 的去除 HTML 版本，詳情層級內容，get_resume_detail 有；"
+                         "本工具不發布",
+    "otherCourse": "詳情層級的富文字，get_resume_detail 有；本工具不發布",
+    "fitness": "巢狀的適配評分，值域與含義未量測；本工具不發布",
+    "autoNo": "104 內部識別碼，沒有任何工具吃它；本工具不發布",
+    "snapshotId": "104 內部識別碼，沒有任何工具吃它；本工具不發布",
+    "documentSnapshotId": "104 內部識別碼，沒有任何工具吃它；本工具不發布",
+    "jobNo": "與回應頂層 job 的 jobno 重複；本工具不發布在列上",
+    "jobName": "與回應頂層 job 的 job 重複；本工具不發布在列上",
+}
+
+JOB_UNMEASURED_FIELDS: frozenset[str] = frozenset({"role"})
+
+_JOB_ROW_OWN_GLOSS: dict[str, str] = {
+    "jobno": "職缺編號（字串）；就是 list_applicants、list_recommended_resumes、"
+             "list_matched_resumes 要的 jobno，也是訊息工具的 job_id",
+    "job": "職缺名稱",
+    "switch": "\"on\"=開放中、\"off\"=已關閉，兩種都會回傳",
+    "department": "部門物件 {id, code, name}",
+    "applyCount60": "近 60 天的應徵人數（整數）",
+    "todayMatchCount": "今日配對人數（整數）；null 表示沒有取得——配對數查詢失敗、104 沒有回這一"
+                       "筆、或這個職缺排在前 80 個之後（本工具只查前 80 個），原因見回應的 "
+                       "warnings，null 不是 0",
+    "totalMatchCount": "目前配對人數（整數）；null 的含義同 today_match_count",
+}
+
+JOB_ROW_FIELD_GLOSS: dict[str, str] = {
+    **_JOB_ROW_OWN_GLOSS,
+    **{k: _unmeasured_gloss(k) for k in sorted(JOB_UNMEASURED_FIELDS)},
+}
+
+JOB_ROW_EXCLUDED_FIELDS: dict[str, str] = {
+    "applyCount": "全期應徵數：量到的每個職缺都是 0，包括近 60 天有應徵者的職缺，與名稱矛盾，"
+                  "發布出去會讓人以為職缺從來沒有人應徵；本工具不發布，請看 apply_count60",
+}
+
+
+def _describe_applicant_fields() -> dict:
+    """Allowed fields under their delivered names (`idNo` -> `candidate_id` via
+    `_row_facing_key`, `pId` -> `p_id`), plus the builder-added `input_date`; excluded
+    fields under their own raw 104 name, as for inbox/message rows."""
+    fields = {_row_facing_key(k): v for k, v in APPLICANT_ROW_FIELD_GLOSS.items()}
+    fields["input_date"] = APPLICANT_INPUT_DATE_GLOSS
+    fields.update(APPLICANT_ROW_EXCLUDED_FIELDS)
+    return {"fields": fields}
+
+
+def _describe_job_fields() -> dict:
+    fields = {_snake_case(k): v for k, v in JOB_ROW_FIELD_GLOSS.items()}
+    fields.update(JOB_ROW_EXCLUDED_FIELDS)
+    return {"fields": fields}
+
+
 _ROW_TYPE_DESCRIBERS = {
     "resume": _describe_resume_fields,
     "inbox": _describe_inbox_fields,
     "message": _describe_message_fields,
     "template": _describe_template_fields,
+    "applicant": _describe_applicant_fields,
+    "job": _describe_job_fields,
 }
 
 
 def _describe_result_fields(row_type: str = "resume") -> dict:
     """Dispatches on `row_type` — `"resume"` (default, preserves today's behaviour
     byte for byte), `"inbox"` (read_messages' rows), `"message"` (get_conversation's
-    rows), or `"template"` (list_templates' rows). An unknown value is an error naming
-    the four legal ones — generated from `_ROW_TYPE_DESCRIBERS`'s own keys, never a
-    silent fallback to `"resume"`."""
+    rows), `"template"` (list_templates' rows), `"applicant"` (list_applicants' rows) or
+    `"job"` (list_jobs' rows). An unknown value is an error naming the legal ones —
+    generated from `_ROW_TYPE_DESCRIBERS`'s own keys, never a silent fallback to
+    `"resume"`."""
     describer = _ROW_TYPE_DESCRIBERS.get(row_type)
     if describer is None:
         return {
@@ -708,20 +822,20 @@ def _describe_result_fields_description() -> str:
 Args:
     row_type: "resume"（預設，search_resumes / list_recommended_resumes /
         list_matched_resumes 的列）｜"inbox"（read_messages 的列）｜"message"
-        （get_conversation 的列）｜"template"（list_templates 的列）。未帶時等同
-        "resume"，與這個參數新增前的行為逐位元相同。不合法的值回傳
-        {{"error": str}}，附上四個合法值。
+        （get_conversation 的列）｜"template"（list_templates 的列）｜"applicant"
+        （list_applicants 的列）｜"job"（list_jobs 的列）。未帶時等同 "resume"。
+        不合法的值回傳 {{"error": str}}，附上合法值。
 
 回傳固定為 {{"fields": {{列上實際的欄位名: 繁體中文說明}}}}——鍵是列（row）轉換後
 真正看到的名稱（snake_case；resume 的 idNo 顯示為 candidate_id，inbox 的 jobNo/pId
-顯示為 job_id/candidate_id，template 本身已是發布用的名稱 type_id/type_desc），不是
-104 未轉換的原始名稱，四種 row_type 都是從各自的欄位允許清單依同一套規則產生（單一
-定義來源，不是另一份手寫清單）。含義尚未量測的欄位會照 104 自己的欄位名稱標註
+顯示為 job_id/candidate_id，template 本身已是發布用的名稱 type_id/type_desc；applicant
+另有 input_date），不是 104 未轉換的原始名稱，各 row_type 都是從各自的欄位允許清單依同一
+套規則產生（單一定義來源，不是另一份手寫清單）。含義尚未量測的欄位會照 104 自己的欄位名稱標註
 「未量測」，不猜測意義。template 的 type_desc 是帳號自己的歸檔分類，不是 104 的
 事件路由——帶哪個類別的範本送出，104 記成哪一種事件未量測。
 
-⚠ inbox/message 兩種 row_type 額外會有「本工具不發布這個欄位」的條目：這些欄位（如
-idNo、hid、snapshotId、source）的 key space 未量測或本身是個資，delivered 的列上
+⚠ inbox/message/applicant/job 額外會有「本工具不發布這個欄位」的條目：這些欄位（如
+idNo、hid、snapshotId、source、personalPic、applyCount）的 key space 未量測或本身是個資，delivered 的列上
 完全不會出現它們（不論原名或轉換後的名稱）——列在這裡是為了誠實說明「列曾經帶有它，
 但被拿掉了、以及為什麼」，不是可以查到的欄位名。inbox 的 event_progress/
 event_polarity 會列出目前已知的 (event_type, event_status) 配對與對應標籤。

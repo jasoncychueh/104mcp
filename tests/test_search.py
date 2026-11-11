@@ -57,14 +57,6 @@ invariant under any reasonable snake_case conversion (`candidate_id` per the one
 documented `idNo` exception; `age`, `sex` — already lowercase, single-word) rather than
 asserting a specific multi-word mapping (e.g. `userName` → `user_name`) as fact.
 
-**Fixture gap disclosed, matching the precedent already set in tests/fixtures/README.md
-and tests/test_api_client.py for other unmeasured shapes:** no committed fixture exists
-for `list_jobs`' success body (unlike the other four tools). T-17/T-18 use a body
-synthesised from the field names docs/104-site-facts.md §6b.3b records for
-`/job-api/jobs/recommend` (`jobno`, `job`, `switch`, `role`, `department`) — the
-BEHAVIOUR (all jobs returned, the flag passed through unfiltered) is covered, but the
-exact body shape is not measured to the byte.
-
 **T-8's HTTP 400 body is likewise synthesised**, not captured: docs/104-site-facts.md
 line 711 only records "未帶 `jobno` 時推薦與配對回 HTTP 400 + JSON（不是 404，也不是空
 結果）" with no example body. `classify()`'s family-A branch dispatches on `raw.status ==
@@ -233,7 +225,6 @@ search_resumes = TOOLS["search_resumes"]
 list_recommended_resumes = TOOLS["list_recommended_resumes"]
 list_matched_resumes = TOOLS["list_matched_resumes"]
 get_resume_detail = TOOLS["get_resume_detail"]
-list_jobs = TOOLS["list_jobs"]
 
 
 # Every Database _new_session() opens is tracked here and closed by
@@ -720,48 +711,6 @@ async def test_get_resume_detail_restricted_contact_fields_byte_identical_no_der
     _assert_mechanical_conversion(source_resume, response_resume, path="$data.resume")
 
 
-# ── T-17 (R5.1) / T-18 (R5.2): job list — every job including closed, flag passthrough
-
-# No committed fixture exists for list_jobs' success body (unlike the other four
-# tools) — see module docstring. Field names per docs/104-site-facts.md §6b.3b:
-# jobno, job, switch, role, department{id, code, name}.
-_SYNTHETIC_JOB_LIST_BODY = {
-    "data": [
-        {"jobno": "12355016", "job": "應用工程師", "switch": True, "role": "1",
-         "department": {"id": "1001", "code": "D001", "name": "應用工程部"}},
-        {"jobno": "99999999", "job": "已關閉的測試職缺", "switch": False, "role": "1",
-         "department": {"id": "1002", "code": "D002", "name": "測試部"}},
-    ],
-    "metadata": {},
-}
-
-
-@pytest.mark.asyncio
-async def test_list_jobs_returns_every_job_including_closed(tmp_path, monkeypatch):
-    ctx, _info, _db = await _new_session(tmp_path)
-    _install_fake_fetch(monkeypatch, _raw_from_body(copy.deepcopy(_SYNTHETIC_JOB_LIST_BODY)))
-
-    result = await list_jobs(ctx=ctx)
-
-    assert "error" not in result
-    assert len(result["results"]) == 2, "list_jobs must return every job, including closed ones (R5.1)"
-
-
-@pytest.mark.asyncio
-async def test_list_jobs_open_closed_flag_passed_through_unfiltered(tmp_path, monkeypatch):
-    ctx, _info, _db = await _new_session(tmp_path)
-    _install_fake_fetch(monkeypatch, _raw_from_body(copy.deepcopy(_SYNTHETIC_JOB_LIST_BODY)))
-
-    result = await list_jobs(ctx=ctx)
-
-    assert "error" not in result
-    assert len(result["results"]) == 2
-    # Passed through verbatim, not normalised/filtered away — a value-search avoids
-    # needing to know the flag's converted key name.
-    assert _contains_value(result["results"][0], True), "open job's flag must survive"
-    assert _contains_value(result["results"][1], False), "closed job's flag must survive, not be filtered out"
-
-
 # ── MalformedResponseError moved to tools/helpers.py (messaging migration, ARB-2) ───
 #
 # search.py's behaviour is pinned as UNCHANGED across the move: the class the five
@@ -782,19 +731,6 @@ async def test_search_resumes_missing_page_info_is_malformed_not_empty_result(tm
     _install_fake_fetch(monkeypatch, _raw_from_body(body))
 
     result = await search_resumes(keyword="應用工程師", ctx=ctx)
-
-    assert "error" in result
-    assert "results" not in result
-    assert "104 回應結構異常" in result["error"]
-
-
-@pytest.mark.asyncio
-async def test_list_jobs_missing_data_is_malformed_not_empty_result(tmp_path, monkeypatch):
-    ctx, _info, _db = await _new_session(tmp_path)
-    body = {"metadata": {"page": 1, "total": 0}}  # no "data" key at all
-    _install_fake_fetch(monkeypatch, _raw_from_body(body))
-
-    result = await list_jobs(ctx=ctx)
 
     assert "error" in result
     assert "results" not in result
@@ -1159,15 +1095,6 @@ def test_tool_docstrings_state_required_contract_details():
     # module-level constant passed as `@mcp.tool(description=...)`, confirming real
     # FastMCP's `description=` kwarg (verified via `inspect.signature` on the
     # installed third-party library) is genuinely in use here, not merely possible.
-    jobs_doc = TOOL_DESCRIPTIONS.get("list_jobs", "")
-    # R5.3: list_jobs' docstring states what a closed job means for the match route —
-    # list_jobs is the authoritative job_id source for list_matched_resumes, so a
-    # caller reading only THIS tool's docstring needs to know that consequence.
-    assert "配對" in jobs_doc or "match" in jobs_doc.lower(), (
-        "list_jobs' docstring must state the closed-job consequence for the match route (R5.3)"
-    )
-    assert "關閉" in jobs_doc or "closed" in jobs_doc.lower()
-
     search_doc = TOOL_DESCRIPTIONS.get("search_resumes", "")
     # R7.5: expect_pay's semantically-inert "up" mode's actual meaning must be stated
     # (tools/filters.py's own docstring explicitly defers this to tools/search.py).
@@ -1190,7 +1117,7 @@ def test_tool_docstrings_state_required_contract_details():
     # documented rather than omitted... a documented one carries the warning that its
     # key space is unknown and must not be bridged to the messaging id space."
     all_list_docs = " ".join([
-        search_doc, jobs_doc,
+        search_doc,
         TOOL_DESCRIPTIONS.get("list_recommended_resumes", ""),
         TOOL_DESCRIPTIONS.get("list_matched_resumes", ""),
     ])

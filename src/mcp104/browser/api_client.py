@@ -148,6 +148,7 @@ _REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 # JSON envelope's `url` field or inside an HTML <script> redirect — the two
 # measured expiry shapes share only this string. [M §6b.3e, §6b.3i]
 EXPIRY_MARKER = "/company/status/switchCompany"
+_EXPIRY_MARKER_JSON_ESCAPED = EXPIRY_MARKER.replace("/", "\\/")
 
 
 @dataclass(frozen=True)
@@ -331,11 +332,45 @@ ENDPOINTS: dict[str, Endpoint] = {
     "list_jobs": Endpoint(
         key="list_jobs",
         host="auth",
-        path="/job-api/jobs/recommend",
+        path="/job-api/jobs/apply",
         method="GET",
         family="B",
         extra_headers=(),
         family_b_shape=FamilyBShape(is_list=True, inner_key=None, sibling_keys=()),
+        throttle_gated=True,
+    ),
+    # ── Applicant and job reads (§8.28–§8.30). extra_headers=() is "not
+    # measured" for the same reason as the other auth-host routes above.
+    # match_number and list_refreshable_jobs have an object-valued `data`
+    # whose inner structure is checked by the tool layer, not here.
+    "list_applicants": Endpoint(
+        key="list_applicants",
+        host="auth",
+        path="/api/apply/applyDetail",
+        method="GET",
+        family="A",
+        extra_headers=(),
+        family_b_shape=None,
+        throttle_gated=True,
+    ),
+    "match_number": Endpoint(
+        key="match_number",
+        host="auth",
+        path="/vipapi/search/match-number",
+        method="GET",
+        family="B",
+        extra_headers=(),
+        family_b_shape=FamilyBShape(is_list=False, inner_key=None, sibling_keys=()),
+        throttle_gated=True,
+    ),
+    "list_refreshable_jobs": Endpoint(
+        key="list_refreshable_jobs",
+        host="auth",
+        path="/vipapi/job/over-seven-day-job",
+        method="GET",
+        family="B",
+        extra_headers=(),
+        family_b_shape=FamilyBShape(is_list=False, inner_key=None, sibling_keys=()),
         throttle_gated=True,
     ),
     # ── Messaging (§6b.7-§6b.9): all three on auth.vip.104.com.tw, all
@@ -1130,7 +1165,16 @@ def _classify_prologue(raw: RawResponse) -> Verdict | None:
     # catch this shape. Keying on the string rather than the carrying
     # format means a fourth shape in any format is still recognised.
     # [M §6b.3e, §6b.3i]
-    if EXPIRY_MARKER in raw.body or (raw.location is not None and EXPIRY_MARKER in raw.location):
+    #
+    # The marker is matched in both its literal and its JSON-escaped form
+    # (`\/company\/status\/switchCompany`): a JSON envelope's `url` field
+    # escapes the slashes, so the literal string is absent from the raw
+    # body even though the same redirect target is there. [M §8.30]
+    if (
+        EXPIRY_MARKER in raw.body
+        or _EXPIRY_MARKER_JSON_ESCAPED in raw.body
+        or (raw.location is not None and EXPIRY_MARKER in raw.location)
+    ):
         return Verdict(False, kind="expired")
 
     # A bot block (measured cause: expired clearance cookie OR active bot
@@ -1223,6 +1267,12 @@ def _classify_family_a(raw: RawResponse) -> Verdict:
         # requires (currently only Referer) was not sent — a client
         # configuration fault, not a site condition. [M §6b.3h]
         return Verdict(False, kind="header_fault", detail=message)
+
+    if "status" not in body:
+        # A family-B-shaped error envelope (no `status` key) arriving on a
+        # family-A route: name the HTTP status so the message says which
+        # kind of response this was. No status code is read as "expired".
+        return Verdict(False, kind="unrecognised_status", detail=f"HTTP {raw.status}: {message}".rstrip(": "))
 
     return Verdict(False, kind="unrecognised_status", detail=f"{status}: {message}".strip(": "))
 

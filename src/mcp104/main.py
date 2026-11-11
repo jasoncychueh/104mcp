@@ -22,6 +22,7 @@ from mcp104.tools.auth import (
 )
 from mcp104.tools.discovery import register_discovery_tools
 from mcp104.tools.events import register_event_tools
+from mcp104.tools.jobs import register_job_tools
 from mcp104.tools.messaging import register_messaging_tools
 from mcp104.tools.resume_files import register_resume_file_tools, sweep_expired_files
 from mcp104.tools.search import register_search_tools
@@ -224,6 +225,7 @@ def register_all_tools(mcp: FastMCP) -> None:
     that scan the registered tools both go through it."""
     register_auth_tools(mcp)
     register_search_tools(mcp)
+    register_job_tools(mcp)
     register_resume_file_tools(mcp)
     register_messaging_tools(mcp)
     register_event_tools(mcp)

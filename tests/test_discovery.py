@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -837,3 +838,162 @@ def test_unmeasured_event_route_note_says_unmeasured_unconfirmed_and_do_not_rese
     assert "未實測" in note
     assert "unconfirmed" in note
     assert "重送" in note
+
+
+# ── applicants-and-job-reads (Phase 1 task 11): describe_result_fields' two new row types
+#
+# T-27, T-28, T-29, T-49, T-59. The expected published keys are derived here, not read
+# back from the module: the design's own rename (idNo -> candidate_id, pId -> p_id, and
+# jobNo -> jobno for the job list) plus a plain camelCase -> snake_case step. Using the
+# module's own key transform would make these checks agree with whatever it does.
+
+_RENAMED_ROW_KEYS = {"idNo": "candidate_id", "pId": "p_id", "jobNo": "jobno"}
+
+# The ten fields design.md C4 says a applicant row must not publish, by 104 name.
+_APPLICANT_EXCLUDED = (
+    "personalPic", "remark", "remarkWithoutHtml", "otherCourse", "fitness",
+    "autoNo", "snapshotId", "documentSnapshotId", "jobNo", "jobName",
+)
+
+
+def _row_key(name: str) -> str:
+    if name in _RENAMED_ROW_KEYS:
+        return _RENAMED_ROW_KEYS[name]
+    return re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower()
+
+
+def test_applicant_and_resume_describers_give_shared_fields_word_for_word_identical_glosses():
+    # T-27
+    applicant = _describe_result_fields("applicant")["fields"]
+    resume = _describe_result_fields("resume")["fields"]
+    shared = set(discovery_mod.APPLICANT_ROW_FIELD_GLOSS) & set(RESUME_ROW_FIELD_GLOSS)
+    compared = shared - discovery_mod.APPLICANT_OWN_GLOSS_FIELDS
+    assert compared, "sanity: the applicant and resume allow-lists share no 104 field name outside the own-gloss set"
+    for name in sorted(compared):
+        key = _row_key(name)
+        assert key in applicant, f"{name}: shared field is not published by the applicant describer as {key!r}"
+        assert key in resume, f"{name}: shared field is not published by the resume describer as {key!r}"
+        assert applicant[key] == resume[key], (
+            f"{name}: the applicant gloss must be the resume gloss, word for word"
+        )
+
+
+def test_job_apply_count_is_excluded_under_its_104_name_with_a_reason_about_zero_and_the_name():
+    # T-28
+    job = _describe_result_fields("job")["fields"]
+    assert "applyCount" in job, "applyCount must be documented once, under its 104 name, as excluded"
+    reason = job["applyCount"]
+    assert "0" in reason, f"the reason must say the all-period count is 0: {reason!r}"
+    assert "矛盾" in reason, f"the reason must say the 0 contradicts the name: {reason!r}"
+
+
+def test_every_applicant_excluded_field_is_documented_under_its_104_name_with_a_reason():
+    # T-28
+    applicant = _describe_result_fields("applicant")["fields"]
+    for name in _APPLICANT_EXCLUDED:
+        assert name in applicant, f"{name}: excluded applicant field has no published entry"
+        assert applicant[name].strip(), f"{name}: excluded applicant field has an empty reason"
+
+
+def test_applicant_unmeasured_set_is_not_vacuous():
+    # T-29 (sanity for the sweep below: design C4 names isDuplicateApply and currentJobProcess)
+    unmeasured = discovery_mod.APPLICANT_UNMEASURED_FIELDS
+    assert isinstance(unmeasured, frozenset)
+    assert unmeasured, "sanity: no applicant field is marked unmeasured at all"
+
+
+@pytest.mark.parametrize(
+    "row_type,unmeasured_attr",
+    [("applicant", "APPLICANT_UNMEASURED_FIELDS"), ("job", "JOB_UNMEASURED_FIELDS")],
+)
+def test_every_unmeasured_field_says_so_and_carries_its_104_name(row_type, unmeasured_attr):
+    # T-29
+    unmeasured = getattr(discovery_mod, unmeasured_attr)
+    assert isinstance(unmeasured, frozenset), f"{unmeasured_attr} must be a frozenset of 104 names"
+    fields = _describe_result_fields(row_type)["fields"]
+    for name in sorted(unmeasured):
+        key = _row_key(name)
+        assert key in fields, f"{row_type}: unmeasured {name!r} is not published as {key!r}"
+        assert "未量測" in fields[key], f"{row_type}: {key!r} does not say it is unmeasured: {fields[key]!r}"
+        assert name in fields[key], f"{row_type}: {key!r} does not carry its 104 name {name!r}"
+
+
+def test_unknown_row_type_error_lists_applicant_and_job_among_the_legal_values():
+    # T-49
+    result = _describe_result_fields("not-a-real-row-type")
+    assert "error" in result
+    assert "fields" not in result
+    assert "applicant" in result["error"], f"legal values must include applicant: {result['error']!r}"
+    assert "job" in result["error"], f"legal values must include job: {result['error']!r}"
+
+
+def test_resume_describer_still_succeeds_and_publishes_candidate_id():
+    # T-49
+    result = _describe_result_fields("resume")
+    assert "error" not in result
+    assert "candidate_id" in result["fields"]
+
+
+def test_resume_describe_output_is_identical_to_the_pre_cycle_baseline_fixture():
+    # T-49 clause: the "resume" output is unchanged, byte for byte, from before this round.
+    # The baseline is a committed fixture captured from the pre-cycle tree; this test fails
+    # with FileNotFoundError until that fixture exists.
+    baseline = json.loads(
+        (FIXTURES_DIR / "describe_result_fields_resume_baseline.json").read_text(encoding="utf-8")
+    )
+    current = _describe_result_fields("resume")
+    assert "error" not in current
+    assert json.dumps(current, sort_keys=True, ensure_ascii=False) == json.dumps(
+        baseline, sort_keys=True, ensure_ascii=False
+    )
+
+
+def test_applicant_describer_covers_every_allow_listed_field_under_its_row_name_and_input_date():
+    # T-59
+    fields = _describe_result_fields("applicant")["fields"]
+    expected = {_row_key(n) for n in discovery_mod.APPLICANT_ROW_FIELD_GLOSS} | {"input_date"}
+    missing = expected - set(fields)
+    assert not missing, f"applicant describer does not publish: {sorted(missing)}"
+
+
+def test_job_describer_covers_every_allow_listed_field_under_its_row_name():
+    # T-59
+    fields = _describe_result_fields("job")["fields"]
+    expected = {_row_key(n) for n in discovery_mod.JOB_ROW_FIELD_GLOSS}
+    missing = expected - set(fields)
+    assert not missing, f"job describer does not publish: {sorted(missing)}"
+
+
+# ── T-26 (R6.1): describe_result_fields covers every key a real list row carries ──────
+# applicants-and-job-reads Phase 2 task 7. The harness (session, fetch spy, fixtures) is
+# tests/test_jobs.py's; the rows come from the tools, not from a hand-written key list.
+
+from tests.test_jobs import (  # noqa: E402,F401
+    _close_opened_databases,
+    deterministic_throttle,
+)
+import tests.test_jobs as _tj  # noqa: E402
+
+
+@pytest.mark.asyncio
+async def test_applicant_fields_cover_every_key_a_list_applicants_row_carries(tmp_path, monkeypatch):
+    ctx, _info = await _tj._new_session(tmp_path)
+    _tj._install(monkeypatch, [_tj._raw_from_body(_tj._load("rows_applicants.json"))])
+
+    rows = (await _tj._tool("list_applicants")(_tj.JOBNO, ctx=ctx))["results"]
+
+    assert rows, "the measured applicant fixture must yield rows for this check to mean anything"
+    covered = set(discovery_mod._describe_result_fields("applicant")["fields"])
+    for row in rows:
+        assert set(row) <= covered, f"fields with no description: {sorted(set(row) - covered)}"
+
+
+@pytest.mark.asyncio
+async def test_job_fields_cover_every_key_a_list_jobs_row_carries(tmp_path, monkeypatch):
+    body = _tj._load("jobs_apply.json")
+    result, _spy, _info = await _tj._run_list_jobs(tmp_path, monkeypatch, body)
+
+    assert result["results"], "the measured jobs fixture must yield rows for this check to mean anything"
+    covered = set(discovery_mod._describe_result_fields("job")["fields"])
+    for row in result["results"]:
+        assert set(row) <= covered, f"fields with no description: {sorted(set(row) - covered)}"

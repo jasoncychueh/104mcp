@@ -1,4 +1,4 @@
-"""The five résumé/job read tools, backed by 104's JSON API (no browser navigation).
+"""The four résumé read tools, backed by 104's JSON API (no browser navigation).
 
 Answers: given an already-classified API payload (browser/api_client.classify()'s
 success `payload`), how does it become the documented tool-facing response — which keys
@@ -492,36 +492,6 @@ def _build_match_response(result: dict, requested_page: int | None = None) -> di
     }
 
 
-def _build_job_list_response(envelope) -> dict:
-    """`envelope` is list_jobs' already-classified family-B payload — the WHOLE
-    {data, metadata} envelope, not just `data`. `data` is the row list; `metadata`
-    carries the server's OWN pagination: {total, page, hasSubDepartment} as measured on
-    both job routes [M research/captures/reco_match_bodies.json]. `page`/`total` are
-    therefore the server's own reported values, not an echo of what the caller asked
-    for. `total_pages` is reported as null rather than guessed: the page size itself is
-    unmeasured, so it is not derivable from total+page, and this route is the
-    authoritative source for jobno — reporting a wrong total_pages would tell a caller
-    the list is complete when it may not be. browse_limit is always null; no quota
-    figure exists on this route to report.
-    """
-    if not isinstance(envelope, dict) or not isinstance(envelope.get("data"), list):
-        raise MalformedResponseError("data 缺失或非陣列")
-    metadata = envelope.get("metadata")
-    if not isinstance(metadata, dict):
-        metadata = {}
-    results = [_convert(row) for row in envelope["data"]]
-    return {
-        "results": results,
-        "pagination": {
-            "page": metadata.get("page"),
-            "total_pages": None,
-            "total": metadata.get("total"),
-        },
-        "browse_limit": None,
-        "warnings": [],
-    }
-
-
 _RESTRICTED_CONTACT_WARNING = (
     "此履歷的聯絡方式受限（contact_privacy = 'private'）：email / phone_desc_all / "
     "call_time_desc 是 104 填入的人類可讀佔位文字，不是真實聯絡資料（call_time_desc "
@@ -746,37 +716,6 @@ browse_limit/warnings 同層」的形狀一致，同時更貼近 104 自己的�
 """
 
 
-_LIST_JOBS_DESCRIPTION = """列出本公司職缺清單 —— 這是 jobno 的權威來源（走 JSON API）。
-
-104 的對話與履歷清單都是「候選人 × 職缺」的組合：list_recommended_resumes /
-list_matched_resumes / send_message / get_conversation 都需要 jobno。標準流程：
-
-    search_resumes / list_recommended_resumes / list_matched_resumes
-        → 找到候選人 (candidate_id)
-    list_jobs
-        → 選定要查詢/邀約的職缺 (jobno)
-    list_recommended_resumes(jobno) / list_matched_resumes(jobno) / send_message(jobno, candidate_id, message)
-
-Args:
-    page: 頁碼，預設 1，會送到伺服器。
-
-pagination.page 與 pagination.total 是伺服器自己回報的值（metadata.page /
-metadata.total），不是把呼叫端傳入的 page 原樣回顯。⚠ pagination.total_pages 固定為
-null，不是量測值也不是猜測值：伺服器沒有回報每頁筆數，僅有 total/page 兩個數字時無法
-換算出總頁數，本工具不會用一個未經驗證的假設（例如假設某個常見頁面大小）去填這個欄
-位——本路由是 jobno 的權威來源，回報一個錯誤的 total_pages 會讓呼叫端誤以為清單已經
-完整而漏掉其餘職缺。
-
-回傳每個職缺的 jobno、job（職缺名稱）、switch（on=開放中/off=已關閉，兩者都會回傳，不
-會被篩掉）、role、department（{"id","code","name"}}）等欄位，機械式轉換、不省略。
-browse_limit 固定為 null（此路由沒有配額資訊可回報）。
-
-成功時固定回傳 {"results": [...], "pagination": {"page","total_pages","total"},
-"browse_limit": null, "warnings": [...]}——不論結果是否為空，形狀都相同。失敗時回傳
-{"error": str}，沒有 results 欄位。
-"""
-
-
 def _register_tool(mcp: FastMCP, fn, doc: str) -> None:
     """Register one tool with `doc` as its ACTUAL __doc__ — never as a parallel
     `description=` argument the function's own docstring doesn't carry.
@@ -896,16 +835,3 @@ def register_search_tools(mcp: FastMCP):
             return e.payload
 
     _register_tool(mcp, get_resume_detail, _GET_RESUME_DETAIL_DESCRIPTION)
-
-    async def list_jobs(ctx: Context, page: int = 1) -> dict:
-        params = [("page", str(page))]
-        try:
-            async with guarded_api(ctx, ENDPOINTS["list_jobs"], params=params) as (envelope, _info):
-                return _build_job_list_response(envelope)
-        except GuardAbort as e:
-            return e.payload
-        except MalformedResponseError as exc:
-            log.error("list_jobs: 回應結構異常: %s", exc.detail)
-            return _malformed_response_payload(exc)
-
-    _register_tool(mcp, list_jobs, _LIST_JOBS_DESCRIPTION)
