@@ -141,7 +141,8 @@ python scripts/build_report.py --config report_config.json
 
 ## 不屬於這個 skill 的事
 
-發訊息（`send_inquiry`、`send_message`）**不在範圍內**。它送出去收不回來、沒有 dry-run、
+發訊息與送出招募事件（`send_message`、`send_inquiry`、`send_interview_invite`、
+`send_thank_you_letter`、`send_start_date_reminder`、`send_personality_test_invite`）**不在範圍內**。它送出去收不回來、沒有 dry-run、
 而且會消耗每日發送上限。人選名單出來之後，要不要聯絡、聯絡誰、用什麼措辭，是使用者的決定
 ——把名單和建議給他，讓他說要發哪幾位，然後逐位確認再送。
 

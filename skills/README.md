@@ -54,5 +54,6 @@ Copy-Item -Recurse skills\104-candidate-screening $HOME\.claude\skills\
 
 需要 Python 3 與 Pillow（只有處理照片時需要）。
 
-發訊息（`send_inquiry` / `send_message`）刻意不在範圍內：送出去收不回來、沒有 dry-run，
+發訊息與招募事件（`send_message`、`send_inquiry`、`send_interview_invite`、`send_thank_you_letter`、
+`send_start_date_reminder`、`send_personality_test_invite`）刻意不在範圍內：送出去收不回來、沒有 dry-run，
 該由人決定。

@@ -1171,3 +1171,146 @@ async def test_a_failing_asset_request_never_logs_the_url_or_the_cookie(monkeypa
 
     for forbidden in ("SYNTHETIC-TOKEN-BBB", _ATTACH_URL, "SYNTHETIC-COOKIE"):
         assert forbidden not in caplog.text
+# ── GuardAbort.code and request(pick_data_optional=) — event-sends T-67, T-69 ────────
+
+@pytest.mark.asyncio
+async def test_guard_abort_from_a_104_error_envelope_carries_the_envelope_code(monkeypatch):
+    """design T-67: a 104 error envelope that aborts the sequence carries its code."""
+    ctx, _info = _new_api_ctx_and_session()
+    _patch_fetch(monkeypatch, _SeqFetchSpy([
+        _resp({"code": "00305", "message": "SYNTHETIC-104-TEXT", "detail": []}, status=400),
+    ]))
+
+    with pytest.raises(GuardAbort) as exc_info:
+        async with guarded_sequence(ctx, slots_needed=1) as (request, _info2):
+            await request(ENDPOINTS["resolve_candidate_idno"], params=[])
+
+    assert exc_info.value.code == "00305"
+
+
+@pytest.mark.asyncio
+async def test_guard_abort_from_guarded_api_on_a_404_envelope_carries_the_envelope_code(monkeypatch):
+    """design T-67: the same holds on the single-request guard."""
+    ctx, _info = _new_api_ctx_and_session()
+    _patch_fetch(monkeypatch, _SeqFetchSpy([
+        _resp({"code": "00004", "message": "找不到對應資源", "detail": []}, status=404),
+    ]))
+
+    with pytest.raises(GuardAbort) as exc_info:
+        async with guarded_api(ctx, ENDPOINTS["resolve_candidate_idno"], params=[]):
+            pass  # pragma: no cover
+
+    assert exc_info.value.code == "00004"
+
+
+@pytest.mark.asyncio
+async def test_guard_abort_from_a_transport_failure_has_no_code(monkeypatch):
+    """design T-67: a transport failure is not a 104 envelope, so code stays None."""
+    ctx, _info = _new_api_ctx_and_session()
+    _patch_fetch(monkeypatch, _SeqFetchSpy([TimeoutError("synthetic timeout")]))
+
+    with pytest.raises(GuardAbort) as exc_info:
+        async with guarded_sequence(ctx, slots_needed=1) as (request, _info2):
+            await request(ENDPOINTS["resolve_candidate_idno"], params=[])
+
+    assert exc_info.value.code is None
+
+
+@pytest.mark.asyncio
+async def test_guard_abort_from_a_challenge_page_has_no_code(monkeypatch):
+    """design T-67: a challenge page is not a 104 envelope, so code stays None."""
+    ctx, _info = _new_api_ctx_and_session()
+    challenge = RawResponse(
+        status=200, location=None, content_type="text/html; charset=utf-8",
+        body="正在執行安全驗證 Ray ID: SYNTH123 Performance and Security by Cloudflare",
+        body_bytes=b"", parsed_json=None,
+    )
+    _patch_fetch(monkeypatch, _SeqFetchSpy([challenge]))
+
+    with pytest.raises(GuardAbort) as exc_info:
+        async with guarded_sequence(ctx, slots_needed=1) as (request, _info2):
+            await request(ENDPOINTS["resolve_candidate_idno"], params=[])
+
+    assert exc_info.value.code is None
+
+
+@pytest.mark.asyncio
+async def test_guard_abort_from_throttling_has_no_code(monkeypatch):
+    """design T-67: a throttle rejection is ours, not 104's, so code stays None."""
+    ctx, _info = _new_api_ctx_and_session()
+
+    async def rejecting_throttle(*args, **kwargs):
+        return ThrottleAbort(
+            kind="throttled",
+            payload={"error": "SYNTHETIC-THROTTLE", "retry_after_seconds": 5},
+            detail="",
+        )
+
+    monkeypatch.setattr("mcp104.tools.helpers.enforce_throttle", rejecting_throttle)
+
+    with pytest.raises(GuardAbort) as exc_info:
+        async with guarded_sequence(ctx, slots_needed=1) as (request, _info2):
+            await request(ENDPOINTS["resolve_candidate_idno"], params=[])
+
+    assert exc_info.value.code is None
+
+
+@pytest.mark.asyncio
+async def test_optional_key_present_is_projected_next_to_the_required_one(monkeypatch):
+    """design T-69: a present optional key comes through with its value."""
+    ctx, _info = _new_api_ctx_and_session()
+    _patch_fetch(monkeypatch, _SeqFetchSpy([_resp({"data": {"a": 1, "b": 2}, "metadata": {}})]))
+
+    async with guarded_sequence(ctx, slots_needed=1) as (request, _info2):
+        projected = await request(
+            ENDPOINTS["event_last_info"], params=[],
+            pick_data=("a",), pick_metadata=(), pick_data_optional=("b",),
+        )
+
+    assert projected["data"] == {"a": 1, "b": 2}
+
+
+@pytest.mark.asyncio
+async def test_optional_key_absent_projects_to_none_and_never_aborts(monkeypatch):
+    """design T-69: an absent optional key projects to None; the sequence does not abort."""
+    ctx, _info = _new_api_ctx_and_session()
+    _patch_fetch(monkeypatch, _SeqFetchSpy([_resp({"data": {"a": 1}, "metadata": {}})]))
+
+    async with guarded_sequence(ctx, slots_needed=1) as (request, _info2):
+        projected = await request(
+            ENDPOINTS["event_last_info"], params=[],
+            pick_data=("a",), pick_metadata=(), pick_data_optional=("b",),
+        )
+
+    assert projected["data"] == {"a": 1, "b": None}
+
+
+@pytest.mark.asyncio
+async def test_absent_required_key_still_aborts_as_malformed_with_optional_keys_given(monkeypatch):
+    """design T-69: the required key keeps its malformed rule when optional keys are given."""
+    ctx, _info = _new_api_ctx_and_session()
+    _patch_fetch(monkeypatch, _SeqFetchSpy([_resp({"data": {"b": 2}, "metadata": {}})]))
+
+    with pytest.raises(ToolAbort) as exc_info:
+        async with guarded_sequence(ctx, slots_needed=1) as (request, _info2):
+            await request(
+                ENDPOINTS["event_last_info"], params=[],
+                pick_data=("a",), pick_metadata=(), pick_data_optional=("b",),
+            )
+
+    assert exc_info.value.kind == "malformed"
+
+
+@pytest.mark.asyncio
+async def test_without_pick_data_optional_only_the_required_keys_survive(monkeypatch):
+    """design T-69: with pick_data_optional not given, behaviour is unchanged."""
+    ctx, _info = _new_api_ctx_and_session()
+    _patch_fetch(monkeypatch, _SeqFetchSpy([_resp({"data": {"a": 1, "b": 2}, "metadata": {}})]))
+
+    async with guarded_sequence(ctx, slots_needed=1) as (request, _info2):
+        projected = await request(
+            ENDPOINTS["event_last_info"], params=[],
+            pick_data=("a",), pick_metadata=(),
+        )
+
+    assert projected["data"] == {"a": 1}

@@ -116,6 +116,10 @@
 - `get_conversation(job_id, candidate_id, page)` — 讀取一段對話
 - `send_message(job_id, candidate_id, message)` — 發送一則純文字站內信
 - `send_inquiry(job_id, candidate_id, message, template_id)` — 送出「詢問意願」邀約
+- `send_interview_invite(job_id, candidate_id, message, meeting_time, location, phase, contact_name, contact_phone, reply_days, include_recruiters, template_id)` — 送出「邀約面試」
+- `send_thank_you_letter(job_id, candidate_id, message, template_id)` — 送出「感謝函」（通常用於婉拒）
+- `send_start_date_reminder(job_id, candidate_id, message, start_time, location, contact_name, contact_phone, reply_days, include_recruiters, template_id)` — 送出「到職日期提醒」，通知已錄取者報到時間與地點
+- `send_personality_test_invite(job_id, candidate_id, message, reply_days, template_id)` — 送出「邀性格測驗」（104 職業適性測驗）
 - `list_templates(type_id, page)` — 列出帳號裡存好的罐頭信範本
 
 **候選人狀態（存在本機，與 104 無關）**
@@ -142,7 +146,7 @@ Claude Code skill，內容來自用這個 server 實際跑完一輪招募的過�
 | `MCP104_DATA_DIR` | 選填，預設依平台慣例放在使用者目錄下的 `mcp104` | 資料庫、登入憑證、節流狀態都存在這裡 |
 | `MCP104_AUTH_BASE_URL` | 選填，須與 `MCP104_AUTH_BIND_PORT` 成對設定 | 登入頁的對外網址，你和伺服器不在同一台機器時才需要 |
 | `MCP104_AUTH_BIND_PORT` | 選填，須與 `MCP104_AUTH_BASE_URL` 成對設定 | 登入頁監聽的埠 |
-| `MAX_DAILY_MESSAGES` | `50` | 每個帳號每天最多發幾則訊息（`send_message` 與 `send_inquiry` 合計） |
+| `MAX_DAILY_MESSAGES` | `50` | 每個帳號每天最多發幾則訊息（`send_message` 與上面五個送出事件的工具合計） |
 | `LOGIN_TIMEOUT_SECONDS` | `900` | 等你完成登入的上限秒數 |
 | `MAX_REQUESTS_PER_HOUR` | `300` | 每小時對 104 的請求上限 |
 | `MAX_INLINE_WAIT_SECONDS` | `20` | 節流等待超過這個秒數就改回覆「稍後再試」 |
@@ -156,7 +160,7 @@ Claude Code skill，內容來自用這個 server 實際跑完一輪招募的過�
 
 - **每一次發送都會真的送到一位求職者手上**，無法撤回、沒有試發模式。請要求 Agent
   先把收件人與完整內文給你看過再發。
-- **每日發送上限 50 則**，`send_message` 與 `send_inquiry` 共用計數。
+- **每日發送上限 50 則**，`send_message` 與所有送出邀約、感謝函、提醒、測驗的工具共用計數。
 - **請求節流**：兩次呼叫至少間隔 5 秒、每小時最多 300 次、連續操作 20 分鐘後休息
   3 分鐘，模擬真人節奏，降低被 104 判定為機器人的風險。
 - **104 自己的履歷瀏覽上限**：每天 300 份，由 104 執行；接近上限時工具會提醒。

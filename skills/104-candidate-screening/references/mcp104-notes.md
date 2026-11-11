@@ -9,7 +9,7 @@
 | 欄位 | 是 104 的什麼 | 給誰用 |
 |---|---|---|
 | `candidate_id` | `idNo` | `get_resume_detail`、`get_candidate_photo`、`get_resume_attachment` |
-| `p_id` | `pId` | 訊息系統（`send_message`、`send_inquiry`、`get_conversation`） |
+| `p_id` | `pId` | 訊息系統（`send_message`、`send_inquiry`、`send_interview_invite`、`send_thank_you_letter`、`send_start_date_reminder`、`send_personality_test_invite`、`get_conversation`） |
 
 傳錯的症狀不是明確的錯誤訊息，是查無此人。清單列上兩個欄位並排放著，複製時很容易拿錯，
 **把它們分開存**（例如記錄裡同時保留 `cid` 和 `pid` 兩個鍵）比事後對照省事。

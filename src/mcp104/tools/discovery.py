@@ -165,6 +165,13 @@ MESSAGING_CANDIDATE_ID_NOTE = (
     "candidate_id（idNo）——位數 ≥ 12 在送出任何請求前就會被拒絕。"
 )
 
+# Shared paragraph for the event-route tools whose success response has not been
+# measured. Substituted into each tool's docstring at registration time, the same way
+# MESSAGING_CANDIDATE_ID_NOTE is, so the wording lives in one place.
+UNMEASURED_EVENT_ROUTE_NOTE = (
+    "這條路由的成功回應尚未實測：104 受理後一律回 sent: \"unconfirmed\"，代表很可能已送達，不要重送。"
+)
+
 
 # ── Messaging row field allow-lists (read_messages/get_conversation), moved here for ──
 # ── the same reason RESUME_ROW_FIELD_GLOSS lives here: tools/messaging.py imports these ──
@@ -604,10 +611,9 @@ def _describe_message_fields() -> dict:
 #
 # `type_desc` is the ACCOUNT's own filing category (§8.18, confirmed by six PUT
 # .../template/{id} edits matched typeId->name from wire, cross-checked against §8.15's
-# template-type route naming) — not a routing decision 104 makes: any template's
-# `description` may be sent through send_inquiry regardless of its type_id (§8.16-8.17),
-# and whether a non-詢問意願 category changes what 104 records for that send is
-# unmeasured (see send_inquiry's own docstring for the operational caveat).
+# template-type route naming) — only a way the account sorts its templates, not a
+# routing decision. Each of the five recruiting events has its own tool, and the tool
+# decides which event type is sent; the template's category does not change the route.
 TEMPLATE_TYPE_LABELS: dict[str, str] = {
     "0": "不分類",
     "1": "詢問意願",
@@ -620,12 +626,11 @@ TEMPLATE_TYPE_LABELS: dict[str, str] = {
 TEMPLATE_ROW_FIELD_GLOSS: dict[str, str] = {
     "id": "範本 id；list_templates(type_id=...) 篩選用的不是這個鍵，是 type_id",
     "title": "範本標題",
-    "description": "完整信件本文；send_inquiry 若帶 template_id，104 記錄的訊息內容一律"
-                    "由呼叫端自己的 message 決定，不是這裡的 description（見 send_inquiry"
-                    "自己的說明）",
+    "description": "完整信件本文；各招募事件工具若帶 template_id，104 記錄的訊息內容一律"
+                    "由呼叫端自己的 message 決定，不是這裡的 description",
     "type_id": "帳號自己整理的歸檔分類代碼，不是 104 的事件路由——六個已知代碼："
                + "、".join(f"{code}={label}" for code, label in TEMPLATE_TYPE_LABELS.items())
-               + "。帶哪個類別的範本送出，104 記成哪一種事件未量測",
+               + "。送出哪一種事件由所呼叫的事件工具決定，與範本的類別無關",
     "type_desc": "type_id 對應的中文標籤，由 104 自己回傳",
 }
 

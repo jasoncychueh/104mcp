@@ -21,6 +21,7 @@ from mcp104.tools.auth import (
     register_auth_tools,
 )
 from mcp104.tools.discovery import register_discovery_tools
+from mcp104.tools.events import register_event_tools
 from mcp104.tools.messaging import register_messaging_tools
 from mcp104.tools.resume_files import register_resume_file_tools, sweep_expired_files
 from mcp104.tools.search import register_search_tools
@@ -218,12 +219,19 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
 
 mcp = FastMCP("104-mcp-server", lifespan=app_lifespan)
 
-register_auth_tools(mcp)
-register_search_tools(mcp)
-register_resume_file_tools(mcp)
-register_messaging_tools(mcp)
-register_status_tools(mcp)
-register_discovery_tools(mcp)
+def register_all_tools(mcp: FastMCP) -> None:
+    """The one list of tools this server registers; the server and the tests
+    that scan the registered tools both go through it."""
+    register_auth_tools(mcp)
+    register_search_tools(mcp)
+    register_resume_file_tools(mcp)
+    register_messaging_tools(mcp)
+    register_event_tools(mcp)
+    register_status_tools(mcp)
+    register_discovery_tools(mcp)
+
+
+register_all_tools(mcp)
 
 
 async def main() -> None:

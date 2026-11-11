@@ -43,14 +43,15 @@ many requests actually go out, not a number that binds some tools and is
 slack for others.
 
 ★ The outbound-contact feature adds ONE exception to "one request per
-tool call": send_inquiry issues three (a reverse-bridge GET, an
-event/last-info GET, then the willingness-event POST itself). The
+tool call": each event tool (shared `send_event` in tools/events.py) issues
+three (a reverse-bridge GET, an event/last-info GET, then the event POST
+itself). The
 per-request unit both this module's callers ultimately share is
 `tools/helpers.py`'s `_issue_one` — `guarded_api` (one request per tool
 call) and its sibling `guarded_sequence` (N requests, one lock, one
 throttle-gate check for the whole sequence) both call it once per
 sub-request, and `_issue_one` calls `note_request` once per sub-request
-in turn, so all three of send_inquiry's requests still land in this same
+in turn, so all three of an event send's requests still land in this same
 ThrottleState — the 300/hour budget counts each of the three
 individually, not once per tool call. What changes in THIS module is the
 gate, not the ledger: evaluate() and enforce_throttle() both take a
@@ -224,8 +225,8 @@ def evaluate(
     call site) asks a different question than the old check did: not "is
     the window already full" but "does the window have room for this many
     MORE requests". A multi-request caller (guarded_sequence's callers:
-    send_inquiry with three requests in one tool call, and the two asset
-    tools with two each) that started when the
+    the five event tools with three requests each in one tool call, and the
+    two asset tools with two each) that started when the
     window had only 1 free slot would otherwise be admitted here and then
     blow the hourly cap on its own — the window is charged per
     request (note_request, once per sub-request) but this gate would have

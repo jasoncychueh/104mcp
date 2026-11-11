@@ -20,11 +20,8 @@ import pytest
 from mcp.server.fastmcp import FastMCP
 
 import mcp104.config as config_module
-from mcp104.tools.auth import register_auth_tools
-from mcp104.tools.discovery import register_discovery_tools
-from mcp104.tools.messaging import register_messaging_tools
-from mcp104.tools.search import register_search_tools
-from mcp104.tools.status import register_status_tools
+from mcp104.main import register_all_tools
+import mcp104.main as main_module
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -250,11 +247,7 @@ class _DescriptionCaptureMCP:
 
 def _all_tool_descriptions() -> dict[str, str]:
     mcp = _DescriptionCaptureMCP()
-    register_auth_tools(mcp)
-    register_search_tools(mcp)
-    register_messaging_tools(mcp)
-    register_status_tools(mcp)
-    register_discovery_tools(mcp)
+    register_all_tools(mcp)
     return mcp.descriptions
 
 
@@ -301,11 +294,7 @@ def test_every_tool_description_fits_claude_code_budget_with_headroom():
 
 
 def _register_all_tools(mcp) -> None:
-    register_auth_tools(mcp)
-    register_search_tools(mcp)
-    register_messaging_tools(mcp)
-    register_status_tools(mcp)
-    register_discovery_tools(mcp)
+    register_all_tools(mcp)
 
 
 @pytest.mark.asyncio
@@ -588,3 +577,121 @@ def test_timeout_after_guidance_appears_in_send_message_and_send_inquiry_descrip
         f"(mentions read_messages and tells the caller not to resend, R8.7) -- "
         f"got: {desc!r}"
     )
+# ── register_all_tools is the single registration entry — event-sends T-68 (interface) ──
+
+class _CountingMCP:
+    """Counts how many times each tool name is handed to the registry."""
+
+    def __init__(self):
+        self.counts: dict[str, int] = {}
+
+    def tool(self, *args, **kwargs):
+        def decorator(fn):
+            name = kwargs.get("name", fn.__name__)
+            self.counts[name] = self.counts.get(name, 0) + 1
+            return fn
+        return decorator
+
+
+def _register_call_name(node: ast.Call) -> str | None:
+    func = node.func
+    if isinstance(func, ast.Name):
+        name = func.id
+    elif isinstance(func, ast.Attribute):
+        name = func.attr
+    else:
+        return None
+    if name == "register_all_tools":
+        return None
+    return name if re.fullmatch(r"register_\w+_tools", name) else None
+
+
+def test_main_calls_register_star_tools_only_inside_register_all_tools():
+    """design T-68: main.py has one registration list, register_all_tools; no other code in
+    main.py calls a register_*_tools function."""
+    tree = ast.parse(Path(main_module.__file__).read_text(encoding="utf-8"))
+    entries = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "register_all_tools"]
+    assert len(entries) == 1
+    inside_entry = {id(n) for n in ast.walk(entries[0])}
+    outside = [
+        n.lineno for n in ast.walk(tree)
+        if isinstance(n, ast.Call) and _register_call_name(n) and id(n) not in inside_entry
+    ]
+    assert outside == []
+
+
+def test_register_all_tools_registers_each_tool_once_including_send_inquiry_and_the_asset_tools():
+    """design T-68: send_inquiry is registered exactly once, and the two asset tools are present."""
+    counting = _CountingMCP()
+    register_all_tools(counting)
+
+    assert counting.counts["send_inquiry"] == 1
+    assert {"get_candidate_photo", "get_resume_attachment"} <= set(counting.counts)
+    assert {name: n for name, n in counting.counts.items() if n != 1} == {}
+
+
+@pytest.mark.asyncio
+async def test_the_server_module_registry_is_exactly_what_register_all_tools_registers():
+    """design T-68: the module-level mcp in main.py holds exactly the register_all_tools set."""
+    counting = _CountingMCP()
+    register_all_tools(counting)
+
+    served = {tool.name for tool in await main_module.mcp.list_tools()}
+
+    assert served == set(counting.counts)
+
+
+# ── Event-sends: the five event tools and the two asset tools are all in the scans — T-44, T-45, T-73 ──
+
+_EVENT_AND_ASSET_TOOLS = {
+    "send_inquiry",
+    "send_interview_invite",
+    "send_start_date_reminder",
+    "send_personality_test_invite",
+    "send_thank_you_letter",
+    "get_candidate_photo",
+    "get_resume_attachment",
+}
+
+
+def test_budget_scan_covers_the_five_event_tools_and_the_two_asset_tools_with_headroom():
+    """T-44 (R10.2): the description-budget scan reaches the event tools and the asset tools, and
+    each of them keeps at least the required headroom under the 2,048-character slice."""
+    descriptions = _all_tool_descriptions()
+    assert _EVENT_AND_ASSET_TOOLS <= set(descriptions)
+    for name in _EVENT_AND_ASSET_TOOLS:
+        assert _TOOL_DESCRIPTION_CHAR_BUDGET - len(descriptions[name]) >= _TOOL_DESCRIPTION_HEADROOM, name
+
+
+@pytest.mark.asyncio
+async def test_ctx_scan_reaches_the_five_event_tools_and_the_two_asset_tools():
+    """T-44 (R10.2): the published-schema scan that rejects a caller-facing ctx field is driven by
+    register_all_tools and reaches the same seven tools."""
+    mcp = FastMCP("contract-test-event-ctx-scan")
+    register_all_tools(mcp)
+    published = {tool.name: tool for tool in await mcp.list_tools()}
+    assert _EVENT_AND_ASSET_TOOLS <= set(published)
+    for name in _EVENT_AND_ASSET_TOOLS:
+        schema = published[name].inputSchema
+        assert "ctx" not in schema.get("properties", {}), name
+        assert "ctx" not in schema.get("required", []), name
+
+
+def test_send_inquiry_description_names_the_four_new_tools_and_drops_the_old_future_sentence():
+    """T-45 (R10.3): send_inquiry no longer says other recruiting events will come later as new tools,
+    names the four new tools, and describes the template category as not changing the route."""
+    description = _all_tool_descriptions()["send_inquiry"]
+    squashed = re.sub(r"\s+", "", description)
+    assert "未來量到其他招募事件" not in squashed
+    for name in ("send_interview_invite", "send_start_date_reminder",
+                 "send_personality_test_invite", "send_thank_you_letter"):
+        assert name in description, name
+    assert "事件種類由工具決定" in squashed
+    assert "範本類別不換路由" in squashed
+
+
+def test_register_all_tools_registers_all_five_event_tools():
+    """T-73 (interface): register_all_tools registers the five event tools and the two asset tools."""
+    counting = _CountingMCP()
+    register_all_tools(counting)
+    assert _EVENT_AND_ASSET_TOOLS <= set(counting.counts)

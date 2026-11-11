@@ -861,7 +861,9 @@ def test_all_declared_endpoints_construct_without_error():
     # resolve_candidate_idno, event_last_info, send_willingness_event).
     # get_template is deliberately NOT among them - see the test below that
     # pins it as an intentional omission.
-    assert len(ENDPOINTS) == 14
+    # The four event-route endpoints (send_interview_event, send_thank_event,
+    # send_inquire_event, send_exam_event) raise the count to eighteen.
+    assert len(ENDPOINTS) == 18
 
 
 # =========================================================================
@@ -1280,3 +1282,51 @@ def test_a_binary_containing_marker_strings_is_still_a_successful_fetch():
     verdict = classify_asset(_PHOTO_ROUTE, raw)
     assert verdict.ok is True
     assert verdict.payload["format"] == "jpeg"
+# =========================================================================
+# T-57 (ENDPOINTS, interface) - the four event-route endpoints are declared
+# like send_willingness_event, and `failed` rides along as a sibling key.
+# =========================================================================
+
+_EVENT_ROUTE_ENDPOINTS = [
+    ("send_interview_event", "/bc-comm/event/interview"),
+    ("send_thank_event", "/bc-comm/event/thank"),
+    ("send_inquire_event", "/bc-comm/event/inquire"),
+    ("send_exam_event", "/bc-comm/event/exam"),
+]
+
+
+@pytest.mark.parametrize("key, path", _EVENT_ROUTE_ENDPOINTS)
+def test_event_route_endpoint_is_declared_like_willingness(key, path):
+    ep = ENDPOINTS[key]
+    assert ep.key == key
+    assert ep.path == path
+    assert ep.host == "auth"
+    assert ep.method == "POST"
+    assert ep.family == "B"
+    assert ep.throttle_gated is True
+    assert ep.family_b_shape is not None
+    assert ep.family_b_shape.is_list is True
+    assert ep.family_b_shape.inner_key is None
+    assert tuple(ep.family_b_shape.sibling_keys) == ("failed",)
+
+
+@pytest.mark.parametrize("key", [k for k, _p in _EVENT_ROUTE_ENDPOINTS])
+def test_event_route_failed_is_present_empty_or_absent_on_the_ok_payload(key):
+    ep = ENDPOINTS[key]
+    base = {"data": [{"pId": "073748", "streamId": "073748_12355016"}], "metadata": {}}
+
+    def _verdict(body):
+        return classify(ep, _raw(200, "application/json; charset=utf-8",
+                                 json.dumps(body, ensure_ascii=False), body))
+
+    present = _verdict({**base, "failed": [{"x": 1}]})
+    assert present.ok is True
+    assert present.payload["failed"] == [{"x": 1}]
+
+    empty = _verdict({**base, "failed": []})
+    assert empty.ok is True
+    assert empty.payload["failed"] == []
+
+    absent = _verdict(dict(base))
+    assert absent.ok is True
+    assert "failed" not in absent.payload

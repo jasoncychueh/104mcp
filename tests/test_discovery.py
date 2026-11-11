@@ -826,3 +826,14 @@ def test_no_tool_module_import_touches_the_network_or_session_layer():
             f"never call guarded_page/guarded_api (steering/structure.md: public "
             f"category data must not be routed through them or the throttle)"
         )
+# ── UNMEASURED_EVENT_ROUTE_NOTE — event-sends T-59 (interface) ──────────────────────
+
+def test_unmeasured_event_route_note_says_unmeasured_unconfirmed_and_do_not_resend():
+    """design T-59: the shared note for the unmeasured routes says the success response is
+    unmeasured, that acceptance returns sent "unconfirmed", and that the call must not be resent."""
+    note = discovery_mod.UNMEASURED_EVENT_ROUTE_NOTE
+    assert isinstance(note, str)
+    assert note.strip()
+    assert "未實測" in note
+    assert "unconfirmed" in note
+    assert "重送" in note

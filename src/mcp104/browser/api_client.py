@@ -407,8 +407,8 @@ ENDPOINTS: dict[str, Endpoint] = {
         family_b_shape=FamilyBShape(is_list=True, inner_key=None, sibling_keys=()),
         throttle_gated=True,
     ),
-    # resolve_candidate_idno: the reverse bridge send_inquiry's first
-    # sub-request uses to turn the pId the caller supplied into the idNo
+    # resolve_candidate_idno: the reverse bridge the event sends' (send_event
+    # in tools/events.py) first sub-request uses to turn the pId the caller supplied into the idNo
     # the event route's wire body actually wants [M §8.14-2 #3]. inner_key
     # ="idNo" is a real (true-valued) structural floor, not decoration:
     # this request exists FOR that one field — losing it here, at the
@@ -431,7 +431,7 @@ ENDPOINTS: dict[str, Endpoint] = {
         family_b_shape=FamilyBShape(is_list=False, inner_key="idNo", sibling_keys=()),
         throttle_gated=True,
     ),
-    # event_last_info: send_inquiry's second sub-request, taken only for
+    # event_last_info: the event sends' second sub-request, taken only for
     # data.emailCC. inner_key=None (not "emailCC"): _classify_family_b's
     # inner_key check is a TRUTHY check, and the measured shape for
     # emailCC can legitimately be an empty list — treating that as a
@@ -448,7 +448,7 @@ ENDPOINTS: dict[str, Endpoint] = {
         family_b_shape=FamilyBShape(is_list=False, inner_key=None, sibling_keys=()),
         throttle_gated=True,
     ),
-    # send_willingness_event: send_inquiry's third and only send-bearing
+    # send_willingness_event: the inquiry event's third and only send-bearing
     # sub-request — the one that reaches _send_verdict. sibling_keys=
     # ("failed",) for the same reason as send_message above: `failed` is
     # a third top-level envelope key riding alongside `data`/`metadata`,
@@ -460,6 +460,52 @@ ENDPOINTS: dict[str, Endpoint] = {
         key="send_willingness_event",
         host="auth",
         path="/bc-comm/event/willingness",
+        method="POST",
+        family="B",
+        extra_headers=(),
+        family_b_shape=FamilyBShape(is_list=True, inner_key=None, sibling_keys=("failed",)),
+        throttle_gated=True,
+    ),
+    # The other four structured recruiting events share the willingness
+    # route's declaration shape: same host, same POST, same family-B
+    # envelope, and `failed` riding as a sibling key so the tool layer can
+    # tell "present and empty" from "absent". Their success responses have
+    # not been measured, which is why tools/events.py declares each route's
+    # success shape as unmeasured rather than anything here.
+    "send_interview_event": Endpoint(
+        key="send_interview_event",
+        host="auth",
+        path="/bc-comm/event/interview",
+        method="POST",
+        family="B",
+        extra_headers=(),
+        family_b_shape=FamilyBShape(is_list=True, inner_key=None, sibling_keys=("failed",)),
+        throttle_gated=True,
+    ),
+    "send_thank_event": Endpoint(
+        key="send_thank_event",
+        host="auth",
+        path="/bc-comm/event/thank",
+        method="POST",
+        family="B",
+        extra_headers=(),
+        family_b_shape=FamilyBShape(is_list=True, inner_key=None, sibling_keys=("failed",)),
+        throttle_gated=True,
+    ),
+    "send_inquire_event": Endpoint(
+        key="send_inquire_event",
+        host="auth",
+        path="/bc-comm/event/inquire",
+        method="POST",
+        family="B",
+        extra_headers=(),
+        family_b_shape=FamilyBShape(is_list=True, inner_key=None, sibling_keys=("failed",)),
+        throttle_gated=True,
+    ),
+    "send_exam_event": Endpoint(
+        key="send_exam_event",
+        host="auth",
+        path="/bc-comm/event/exam",
         method="POST",
         family="B",
         extra_headers=(),

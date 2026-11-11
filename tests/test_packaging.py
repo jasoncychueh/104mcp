@@ -16,6 +16,7 @@ steering docs, not in a peek at those files' new content.
 """
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 import sys
@@ -234,3 +235,22 @@ def test_built_release_artifact_excludes_pii_and_login_state(tmp_path):
     finally:
         shutil.rmtree(leftover_build_dir, ignore_errors=True)
         shutil.rmtree(leftover_egg_info, ignore_errors=True)
+
+
+# ── T-46 (R10.5): the three version declarations agree and read 0.4.0 ─────────────────
+
+def test_three_version_declarations_agree_and_are_0_4_0():
+    """T-46 (R10.5): pyproject.toml, .claude-plugin/plugin.json and the mcp104 plugin entry in
+    .claude-plugin/marketplace.json declare the same version, and it is 0.4.0."""
+    pyproject_version = _load_pyproject()["project"]["version"]
+    plugin = json.loads((REPO_ROOT / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
+    marketplace = json.loads((REPO_ROOT / ".claude-plugin" / "marketplace.json").read_text(encoding="utf-8"))
+    entries = [entry for entry in marketplace.get("plugins", []) if entry.get("name") == "mcp104"]
+    assert len(entries) == 1, f"expected exactly one mcp104 plugin entry, found {len(entries)}"
+
+    declared = {
+        "pyproject.toml": pyproject_version,
+        ".claude-plugin/plugin.json": plugin.get("version"),
+        ".claude-plugin/marketplace.json (mcp104 entry)": entries[0].get("version"),
+    }
+    assert set(declared.values()) == {"0.4.0"}, f"version declarations differ or are not 0.4.0: {declared!r}"

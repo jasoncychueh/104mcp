@@ -462,11 +462,18 @@ class GuardAbort(Exception):
     "unknown" may only ever mean a condition the SERVER produced that this
     module's vocabulary does not cover yet; it must never mean a code path
     that forgot to name its own.
+
+    `code` is the `code` of the 104 error envelope that caused the abort,
+    and `None` for every abort that did not come from one (throttle,
+    transport, challenge page, redirect, a caller-side check). A tool that
+    must tell one 104 refusal from another — the kind alone cannot — reads
+    it; everything else may ignore it.
     """
 
-    def __init__(self, payload: dict, kind: str):
+    def __init__(self, payload: dict, kind: str, code: str | None = None):
         self.payload = payload
         self.kind = kind
+        self.code = code
         super().__init__(payload.get("error"))
 
 
@@ -652,7 +659,8 @@ async def _issue_one(
     own message (`verdict.detail`, already 104's text via
     browser.api_client._family_b_error_detail/_family_a's own message
     field) — never `body` (candidate content, event content, emailCC —
-    see tools/messaging.py's send_inquiry) and never the Cookie header.
+    see the event tools' shared `send_event` in tools/events.py) and never the
+    Cookie header.
     That is this function's own property, not a discipline each call site
     has to remember: both guarded_api and guarded_sequence route every
     request through here, so a log line written once, here, is the whole
@@ -831,10 +839,20 @@ async def _issue_one(
         # about still reaches send_message's ambiguous fallthrough
         # rather than silently landing on whatever this line happened
         # to default to.
-        raise abort_cls(error_payload, kind=verdict.kind)
+        raise abort_cls(error_payload, kind=verdict.kind, code=_envelope_code(raw.parsed_json))
 
     info.has_succeeded_api_call = True
     return verdict.payload
+
+
+def _envelope_code(parsed_json: object) -> str | None:
+    """The `code` of a 104 error envelope (`{"code": "00305", "message":
+    ...}`), or None when the body carries none — a non-JSON page, a
+    non-object, or an envelope without a string `code`."""
+    if not isinstance(parsed_json, dict):
+        return None
+    code = parsed_json.get("code")
+    return code if isinstance(code, str) and code else None
 
 
 def _project_field(which: str, obj: object, keys: tuple[str, ...] | None) -> dict:
@@ -868,6 +886,7 @@ def _project_payload(
     payload: dict,
     pick_data: tuple[str, ...] | None,
     pick_metadata: tuple[str, ...] | None,
+    pick_data_optional: tuple[str, ...] = (),
 ) -> dict:
     """`None` for BOTH pick_data and pick_metadata means "no projection at
     all" — the caller never reaches this function in that case (see
@@ -882,10 +901,23 @@ def _project_payload(
     halves, deliberately (信封本來就是兩個並列的鍵 — the envelope is
     inherently two parallel keys), so there is no third parameter asking
     this function to touch anything else.
+
+    `pick_data_optional` names `data` keys that are carried when present and
+    projected as `None` when absent — never an abort. It only takes effect
+    alongside `pick_data`, and `data` must still be an object.
     """
     projected = dict(payload)
     if pick_data is not None:
         projected["data"] = _project_field("data", payload.get("data"), pick_data)
+        if pick_data_optional:
+            data = payload.get("data")
+            if not isinstance(data, dict):
+                raise ToolAbort(
+                    _error_malformed(f"data missing or not an object (cannot project {pick_data_optional[0]})"),
+                    kind="malformed",
+                )
+            for key in pick_data_optional:
+                projected["data"][key] = data.get(key)
     if pick_metadata is not None:
         projected["metadata"] = _project_field("metadata", payload.get("metadata"), pick_metadata)
     return projected
@@ -1017,8 +1049,9 @@ async def guarded_sequence(
     throttle gate, same `_issue_one` per sub-request, but ONE lock hold
     and ONE throttle-gate check for the whole sequence rather than one
     each per sub-request. Used today by three callers
-    (tools/messaging.py's send_inquiry, three sub-requests; and
-    tools/resume_files.py's two asset tools, two sub-requests each), but
+    (tools/events.py's five event tools via their shared `send_event`, three
+    sub-requests each; and tools/resume_files.py's two asset tools, two
+    sub-requests each), but
     nothing here is specific to any of them — the sequence length is
     entirely the caller's business (see `slots_needed` below).
 
@@ -1051,7 +1084,7 @@ async def guarded_sequence(
 
     `before_first` runs once, after the throttle gate and before the
     first sub-request — the sequence-level analogue of guarded_api's
-    `before_request`. Per-sub-request checks (e.g. send_inquiry's daily-
+    `before_request`. Per-sub-request checks (e.g. the event send's daily-
     cap re-check ahead of its third sub-request) are NOT this parameter's
     job; they are the `before_request` argument to an individual
     `request(...)` call instead.
@@ -1122,7 +1155,17 @@ async def guarded_sequence(
             before_request: Callable[[SessionInfo], Awaitable[None]] | None = None,
             pick_data: tuple[str, ...] | None = None,
             pick_metadata: tuple[str, ...] | None = None,
+            pick_data_optional: tuple[str, ...] = (),
         ) -> object:
+            if pick_data is not None and pick_data_optional:
+                duplicated = [k for k in pick_data_optional if k in pick_data]
+                if duplicated:
+                    raise ToolAbort(
+                        _error_internal_config(
+                            f"{endpoint.key} 的 pick_data_optional 與 pick_data 重複：{', '.join(duplicated)}"
+                        ),
+                        kind="internal_config",
+                    )
             if pick_data is not None or pick_metadata is not None:
                 if isinstance(endpoint, AssetRoute):
                     # Checked here rather than in _issue_one (which never
@@ -1157,6 +1200,6 @@ async def guarded_sequence(
             )
             if pick_data is None and pick_metadata is None:
                 return payload
-            return _project_payload(payload, pick_data, pick_metadata)
+            return _project_payload(payload, pick_data, pick_metadata, pick_data_optional)
 
         yield request, info
