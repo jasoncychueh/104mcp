@@ -715,6 +715,14 @@ APPLICANT_ROW_EXCLUDED_FIELDS: dict[str, str] = {
 
 JOB_UNMEASURED_FIELDS: frozenset[str] = frozenset({"role"})
 
+# The six date fields a job row takes from GET /api/job/jobList (not from the
+# /job-api/jobs/apply row the rest of the row comes from), under jobList's own names.
+JOB_DATE_FIELDS = ("appear_date", "modifydate", "inputdate", "closedate", "autoclose", "d5")
+
+_JOB_DATE_NULL_NOTE = (
+    "；null 也可能是本工具沒有取得（jobList 查詢失敗，或這個職缺不在 jobList 那一頁），原因見回應的 warnings"
+)
+
 _JOB_ROW_OWN_GLOSS: dict[str, str] = {
     "jobno": "職缺編號（字串）；就是 list_applicants、list_recommended_resumes、"
              "list_matched_resumes 要的 jobno，也是訊息工具的 job_id",
@@ -723,9 +731,22 @@ _JOB_ROW_OWN_GLOSS: dict[str, str] = {
     "department": "部門物件 {id, code, name}",
     "applyCount60": "近 60 天的應徵人數（整數）",
     "todayMatchCount": "今日配對人數（整數）；null 表示沒有取得——配對數查詢失敗、104 沒有回這一"
-                       "筆、或這個職缺排在前 80 個之後（本工具只查前 80 個），原因見回應的 "
+                       "筆、或這個職缺排在前 60 個之後（本工具只查前 60 個），原因見回應的 "
                        "warnings，null 不是 0",
     "totalMatchCount": "目前配對人數（整數）；null 的含義同 today_match_count",
+    "appear_date": "值：104 給的字串原樣（量到 \"YYYY-MM-DD HH:MM:SS\"）。前端怎麼顯示（前端碼）：104 "
+                   "把它顯示為「更新日」，提示文字說 7 天之內重複更新職務，更新日不會修改"
+                   + _JOB_DATE_NULL_NOTE,
+    "modifydate": "值：104 給的字串原樣（量到 \"YYYY-MM-DD HH:MM:SS\"）。前端怎麼顯示：含義未量測——"
+                  "欄位名稱看起來是最後修改時間，沒有證據" + _JOB_DATE_NULL_NOTE,
+    "inputdate": "值：104 給的字串原樣（量到 \"YYYY-MM-DD HH:MM:SS\"）。前端怎麼顯示（前端碼）：switch "
+                 "為 \"off\" 時，104 把它顯示為關閉日期；switch 為 \"on\" 時含義未量測" + _JOB_DATE_NULL_NOTE,
+    "closedate": "值：104 給的原值（量到 null，那是 104 自己給的值）。前端怎麼顯示（前端碼）：autoclose 為 "
+                 "\"1\" 且這個欄位有值時，104 顯示為「預約關閉」日期" + _JOB_DATE_NULL_NOTE,
+    "autoclose": "值：104 給的字串原樣（量到 \"0\"）。前端怎麼顯示（前端碼）：\"1\" 時顯示預約關閉；"
+                 "其他值未量測" + _JOB_DATE_NULL_NOTE,
+    "d5": "值：104 給的字串原樣（量到 \"\"）。前端怎麼顯示（前端碼）：104 把它當成預約開啟日期"
+          + _JOB_DATE_NULL_NOTE,
 }
 
 JOB_ROW_FIELD_GLOSS: dict[str, str] = {

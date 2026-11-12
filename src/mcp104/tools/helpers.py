@@ -12,6 +12,7 @@ from uuid import uuid4
 from mcp.server.fastmcp import Context
 
 from mcp104.browser.api_client import (
+    BODY_METHODS,
     AssetRoute,
     Endpoint,
     classify,
@@ -696,7 +697,7 @@ async def _issue_one(
     guarantee.
 
     `body` is forwarded to fetch() unchanged. The call-shape checks below
-    (a body handed to a GET endpoint, a POST endpoint called with
+    (a body handed to a GET endpoint, a POST or PUT endpoint called with
     body=None, an AssetRoute without its URL or carrying params/body, a URL
     that is not on the measured asset host) are deliberately CALL-TIME
     checks, not construction-time ones: none of those values exists until a
@@ -752,14 +753,14 @@ async def _issue_one(
                 _error_internal_config(f"{target.key} 不是資產路由卻帶了 asset_url"),
                 kind="internal_config",
             )
-        if target.method == "POST" and body is None:
+        if target.method in BODY_METHODS and body is None:
             raise ToolAbort(
-                _error_internal_config(f"{target.key} 是 POST 端點但未帶 body"),
+                _error_internal_config(f"{target.key} 是 {target.method} 端點但未帶 body"),
                 kind="internal_config",
             )
-        if target.method != "POST" and body is not None:
+        if target.method not in BODY_METHODS and body is not None:
             raise ToolAbort(
-                _error_internal_config(f"{target.key} 不是 POST 端點卻帶了 body"),
+                _error_internal_config(f"{target.key} 是 {target.method} 端點，不接受 body"),
                 kind="internal_config",
             )
 
@@ -1077,10 +1078,13 @@ async def guarded_sequence(
     """The multi-request counterpart to guarded_api — same lock, same
     throttle gate, same `_issue_one` per sub-request, but ONE lock hold
     and ONE throttle-gate check for the whole sequence rather than one
-    each per sub-request. Used today by three callers
+    each per sub-request. Used today by these callers
     (tools/events.py's five event tools via their shared `send_event`, three
-    sub-requests each; and tools/resume_files.py's two asset tools, two
-    sub-requests each), but
+    sub-requests each; tools/resume_files.py's two asset tools, two
+    sub-requests each; tools/jobs.py's `refresh_jobs`, three sub-requests —
+    read the refreshable list, PUT, read it again — and `list_jobs`, whose
+    first segment is two sub-requests and whose second is one per count
+    batch), but
     nothing here is specific to any of them — the sequence length is
     entirely the caller's business (see `slots_needed` below).
 

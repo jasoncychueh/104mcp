@@ -118,7 +118,7 @@ red with a message that points back to this file or fails on the missing structu
 
 ### `refreshable_jobs.json` — bare body
 
-- Route: `GET vip.104.com.tw/vipapi/job/over-seven-day-job`.
+- Route: `GET auth.vip.104.com.tw/vipapi/job/over-seven-day-job`.
 - Shape: `{data: {jobs: [{jobNo, jobName, appearDate}], userPermit}, metadata}`.
 - Conditions: `data.userPermit` is `true`; every job has `jobNo`, `jobName` and `appearDate`.
 

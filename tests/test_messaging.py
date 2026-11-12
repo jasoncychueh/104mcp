@@ -1061,9 +1061,9 @@ def test_no_dialog_detail_or_message_item_or_msgmaster_selectors_remain():
     assert not hits, f"stale DOM-scraping selector reference(s) found: {hits}"
 
 
-def test_no_endpoint_declares_a_method_outside_get_or_post():
+def test_no_endpoint_declares_a_method_outside_get_post_or_put():
     for key, ep in ENDPOINTS.items():
-        assert ep.method in {"GET", "POST"}, f"{key}: unexpected method {ep.method!r}"
+        assert ep.method in {"GET", "POST", "PUT"}, f"{key}: unexpected method {ep.method!r}"
 
 
 # ═════════════════════════════════════════════════════════════════════════════════
@@ -1431,7 +1431,7 @@ async def test_T54_list_templates_requires_login_and_goes_through_the_real_throt
 # would have stayed green even with the method whitelist deleted outright.
 # The correct twin, which supplies a valid FamilyBShape so the failure can
 # only be attributed to the method check, lives in
-# test_api_client.py::test_endpoint_construction_rejects_a_method_outside_get_or_post
+# test_api_client.py::test_endpoint_construction_rejects_a_method_outside_get_post_or_put
 # — kept there rather than duplicated here.
 
 

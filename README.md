@@ -104,8 +104,10 @@
 - `list_matched_resumes(jobno, page, update_date_type)` — 列出配對到某職缺的履歷；`update_date_type="2"` 只看當日配對
 - `get_resume_detail(candidate_id)` — 取得單一候選人的完整履歷
 - `list_applicants(jobno, page)` — 列出某個職缺近 60 天的應徵者；每列的 `p_id` 可直接拿去發訊息，`candidate_id` 用來讀完整履歷。讀清單不扣 104 的每日履歷瀏覽配額
-- `list_jobs(page)` — 列出這個帳號底下的職缺，每個職缺附近 60 天應徵人數，以及今日與目前的配對人數（查不到時為 `null`，不是 0）
+- `list_jobs(page)` — 列出這個帳號底下的職缺，每個職缺附近 60 天應徵人數、今日與目前的配對人數，以及更新日、關閉日等六個日期欄位（查不到時為 `null`，不是 0）
+- `get_job_detail(jobno)` — 讀一個職缺的刊登內容（說明、薪資、地點、條件；唯讀，不含公司同仁的聯絡資料）
 - `list_refreshable_jobs()` — 列出 104 目前標示為可更新的職缺（只讀，不會真的更新職缺）
+- `refresh_jobs(jobnos)` — 更新職缺日期。會立即改變職缺在求職者搜尋中的排序、無法撤回，只接受 `list_refreshable_jobs` 列出的職缺，逐筆回報是否已確認
 - `get_candidate_photo(candidate_id)` — 把候選人的大頭照下載到本機並回傳路徑（沒放照片時回 `photo: null`，那是正常狀態）
 - `get_resume_attachment(candidate_id, sort)` — 把履歷附件（作品集、證照掃描檔、另一版履歷 PDF……）下載到本機並回傳路徑
 

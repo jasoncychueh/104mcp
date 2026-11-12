@@ -29,7 +29,7 @@ raising:
   route someone happened to check first" (docs/104-site-facts.md §6b.3h,
   corrected 2026-08-14 — see the comment above ENDPOINTS for how the
   earlier, narrower conclusion arose).
-- method: a construction-time whitelist ({"GET", "POST"}) is the only
+- method: a construction-time whitelist ({"GET", "POST", "PUT"}) is the only
   thing standing between "an endpoint declaration" and "an endpoint that
   can delete a real conversation" — docs/104-site-facts.md §6b.9-2 records
   two DELETE routes on the same messaging API surface this module talks
@@ -85,13 +85,18 @@ _ASSET_HOST = "asset"
 # constant value serves all of them. [M §6b.3h: "只給站台根目錄就夠"]
 REFERER_SITE_ROOT = "https://vip.104.com.tw/"
 
-# The only two HTTP methods any Endpoint may declare — enforced in
+# The only HTTP methods any Endpoint may declare — enforced in
 # Endpoint.__post_init__, not merely documented. This is what makes the two
 # DELETE routes recorded in docs/104-site-facts.md §6b.9-2
 # (deleteMessage/deleteMessageList) unconstructible: a caller cannot build
 # an Endpoint("DELETE", ...) at all, which is a stronger guarantee than a
 # comment asking people not to add them.
-_ALLOWED_METHODS = frozenset({"GET", "POST"})
+_ALLOWED_METHODS = frozenset({"GET", "POST", "PUT"})
+
+# The methods that carry a JSON request body. fetch() dispatches on this and
+# tools/helpers.py's `_issue_one` reads it for the call-shape check, so "which
+# methods take a body" is decided here and nowhere else.
+BODY_METHODS = frozenset({"POST", "PUT"})
 
 # The only three values Endpoint.family may declare — enforced in
 # Endpoint.__post_init__, the same construction-time whitelist as
@@ -223,7 +228,7 @@ class Endpoint:
     key: str
     host: str  # "vip" | "auth"
     path: str  # may contain `{name}` placeholders filled from build_url's params
-    method: str  # "GET" | "POST" — see _ALLOWED_METHODS
+    method: str  # "GET" | "POST" | "PUT" — see _ALLOWED_METHODS
     family: str  # "A" | "B" — dispatches classify(); "opaque" names a route measured to answer outside either JSON envelope (e.g. logout_session) — classify() is never reached for it in practice, see that endpoint's own comment
     extra_headers: tuple[tuple[str, str], ...]  # NAME/VALUE pairs sent verbatim, beyond the always-sent baseline (User-Agent, Accept-Language, Cookie)
     family_b_shape: FamilyBShape | None  # required (non-None) iff family == "B" — enforced below, not merely documented
@@ -371,6 +376,53 @@ ENDPOINTS: dict[str, Endpoint] = {
         family="B",
         extra_headers=(),
         family_b_shape=FamilyBShape(is_list=False, inner_key=None, sibling_keys=()),
+        throttle_gated=True,
+    ),
+    # The write side of the same path: refresh_jobs. The only evidence is
+    # 104's own front-end code (research/results/job_writes_frontend.md §4);
+    # no success or error body of this PUT has been measured, so the family-B
+    # shape below is only a structural floor. A 200 that fails the floor
+    # (`data` not an object, a non-JSON body) classifies as `malformed` /
+    # `non_json`, which the tool layer reads as "response unrecognisable", not
+    # as a refusal.
+    "refresh_jobs": Endpoint(
+        key="refresh_jobs",
+        host="auth",
+        path="/vipapi/job/over-seven-day-job",
+        method="PUT",
+        family="B",
+        extra_headers=(),
+        family_b_shape=FamilyBShape(is_list=False, inner_key=None, sibling_keys=()),
+        throttle_gated=True,
+    ),
+    # Measured (docs/104-site-facts.md §8.31): the old envelope
+    # {status, message, result, url, data}; `classify` hands back `result`.
+    # Succeeds without a Referer. `result` also carries the operator's own
+    # identity (`email`, `loginNo`, `nccPayload`); the tool layer reads only
+    # `jobDataAry`. extra_headers=() is "not measured" beyond that one call.
+    "job_list": Endpoint(
+        key="job_list",
+        host="auth",
+        path="/api/job/jobList",
+        method="GET",
+        family="A",
+        extra_headers=(),
+        family_b_shape=None,
+        throttle_gated=True,
+    ),
+    # The job editor's own load request, read-only. `act=edit` is a query
+    # parameter. Measured (§8.31): same envelope as job_list, succeeds without
+    # a Referer, and the same job read twice differs only in a server-clock
+    # `additionalInfo.loadTime`. Whether reading it leaves any editing marker
+    # on 104's side is unmeasured.
+    "get_job_detail": Endpoint(
+        key="get_job_detail",
+        host="auth",
+        path="/api/job/jobUpdate",
+        method="GET",
+        family="A",
+        extra_headers=(),
+        family_b_shape=None,
         throttle_gated=True,
     ),
     # ── Messaging (§6b.7-§6b.9): all three on auth.vip.104.com.tw, all
@@ -936,7 +988,7 @@ async def fetch(
     params: Sequence[tuple[str, str]] | None = None,
     body: dict | None = None,
 ) -> RawResponse:
-    """Issue exactly one HTTP request for `endpoint` — GET or POST per
+    """Issue exactly one HTTP request for `endpoint` — GET, POST or PUT per
     `endpoint.method`. Redirects are NOT followed: following one into an
     HTML login page and parsing it as JSON is exactly the silent
     substitution this whole design exists to prevent. The unfollowed 3xx
@@ -945,8 +997,8 @@ async def fetch(
     auth-host check does not belong in this module) is surfaced via
     RawResponse.location instead.
 
-    `body` is only meaningful for a POST endpoint — the method/body
-    mismatch check (a body handed to a GET endpoint, or a POST endpoint
+    `body` is only meaningful for a BODY_METHODS endpoint — the method/body
+    mismatch check (a body handed to a GET endpoint, or a POST/PUT endpoint
     called with body=None) lives in tools/helpers.py's `_issue_one` (the
     per-request unit shared by guarded_api and guarded_sequence), ahead
     of the `try` that wraps this call, not here: it is a call-time check
@@ -957,7 +1009,7 @@ async def fetch(
 
     `Content-Type: application/json` is never declared in
     `endpoint.extra_headers` — aiohttp sets it as a consequence of
-    `json=body` on a POST, so declaring it would both duplicate a fact the
+    `json=body` on a POST or PUT, so declaring it would both duplicate a fact the
     method already determines and imply a measurement (of what the SERVER
     requires) that was never taken.
     """
@@ -974,6 +1026,8 @@ async def fetch(
     async with aiohttp.ClientSession(timeout=timeout) as session:
         if endpoint.method == "POST":
             request_cm = session.post(url, headers=headers, json=body, allow_redirects=False)
+        elif endpoint.method == "PUT":
+            request_cm = session.put(url, headers=headers, json=body, allow_redirects=False)
         else:
             request_cm = session.get(url, headers=headers, allow_redirects=False)
         async with request_cm as response:

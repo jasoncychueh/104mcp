@@ -157,6 +157,39 @@ async def test_guarded_api_get_endpoint_with_body_is_internal_config_error():
 
 
 @pytest.mark.asyncio
+async def test_guarded_api_put_endpoint_without_body_is_internal_config_error_and_sends_nothing(monkeypatch):
+    ctx, _info = _new_api_ctx_and_session()
+    spy = _SeqFetchSpy([])
+    monkeypatch.setattr("mcp104.browser.api_client.fetch", spy)
+    monkeypatch.setattr("mcp104.tools.helpers.fetch", spy, raising=False)
+
+    with pytest.raises(ToolAbort) as exc_info:
+        async with guarded_api(ctx, ENDPOINTS["refresh_jobs"], body=None):
+            pass  # pragma: no cover
+
+    assert exc_info.value.kind == "internal_config"
+    assert exc_info.value.payload != ERROR_API_REQUEST_FAILED
+    assert "PUT" in exc_info.value.payload["error"]
+    assert spy.calls == []
+
+
+@pytest.mark.asyncio
+async def test_guarded_api_get_endpoint_with_body_names_get_in_the_error_and_sends_nothing(monkeypatch):
+    ctx, _info = _new_api_ctx_and_session()
+    spy = _SeqFetchSpy([])
+    monkeypatch.setattr("mcp104.browser.api_client.fetch", spy)
+    monkeypatch.setattr("mcp104.tools.helpers.fetch", spy, raising=False)
+
+    with pytest.raises(ToolAbort) as exc_info:
+        async with guarded_api(ctx, ENDPOINTS["job_list"], body={"unexpected": True}):
+            pass  # pragma: no cover
+
+    assert exc_info.value.kind == "internal_config"
+    assert "GET" in exc_info.value.payload["error"]
+    assert spy.calls == []
+
+
+@pytest.mark.asyncio
 async def test_guarded_api_no_session_at_all_raises_not_logged_in_kind():
     # Round I1 Bug A: this test's old name ("...raise_sites_carry_the_
     # classifiers_own_kind") claimed coverage of every guarded_api raise

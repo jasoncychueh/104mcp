@@ -129,7 +129,7 @@ def _new_ctx_and_session():
 
 
 def _endpoints_matching(*, family: str | None = None, host: str | None = None,
-                         path_contains: str | None = None):
+                         path_contains: str | None = None, method: str | None = None):
     """Look endpoints up by declared property rather than by guessing the
     ENDPOINTS dict's key strings — design.md never names those keys, only the
     five tools' own names (Components §9), so matching on `.path`/`.family`/
@@ -143,6 +143,8 @@ def _endpoints_matching(*, family: str | None = None, host: str | None = None,
         if host is not None and ep.host != host:
             continue
         if path_contains is not None and path_contains not in ep.path:
+            continue
+        if method is not None and ep.method != method:
             continue
         out.append((key, ep))
     return out
@@ -203,6 +205,10 @@ _REFERENCE_ENDPOINTS = [
     ("/api/apply/applyDetail", "auth", "A", None, False),
     ("/vipapi/search/match-number", "auth", "B", None, False),
     ("/vipapi/job/over-seven-day-job", "auth", "B", None, False),
+    # The dated job list and the job editor's load request: /api/job/ paths on the auth
+    # host (the vip host's /api/* paths are different routes), neither measured for Referer.
+    ("/api/job/jobList", "auth", "A", None, False),
+    ("/api/job/jobUpdate", "auth", "A", None, False),
 ]
 
 
@@ -219,10 +225,12 @@ def test_declared_endpoints_match_recorded_host_family_and_referer_declaration()
     # provenance and shows up in the failure message, so a mismatch is
     # legible as "declaration drifted from policy" rather than silently
     # re-read as "measurement was wrong".
+    # Every row of the table is a GET route; over-seven-day-job also has a PUT
+    # endpoint on the same path, so the lookup names the method.
     for path_sub, host, family, measured, declared in _REFERENCE_ENDPOINTS:
-        matches = _endpoints_matching(path_contains=path_sub)
+        matches = _endpoints_matching(path_contains=path_sub, method="GET")
         assert len(matches) == 1, (
-            f"expected exactly one declared endpoint whose path contains "
+            f"expected exactly one declared GET endpoint whose path contains "
             f"{path_sub!r}, found {matches!r}"
         )
         _key, ep = matches[0]
@@ -256,6 +264,23 @@ def test_list_applicants_match_number_and_refreshable_jobs_are_get_auth_and_thro
         assert ep.family == family, f"{key}: expected family {family!r}, got {ep.family!r}"
         assert ep.method == "GET", f"{key}: expected method GET, got {ep.method!r}"
         assert ep.throttle_gated is True, f"{key}: expected throttle_gated=True"
+
+
+def test_refresh_jobs_is_the_put_side_of_the_refreshable_list_path():
+    ep = ENDPOINTS["refresh_jobs"]
+    assert ep.host == "auth"
+    assert ep.method == "PUT"
+    assert ep.family == "B"
+    assert ep.throttle_gated is True
+    assert ep.path == ENDPOINTS["list_refreshable_jobs"].path
+
+
+def test_job_list_and_get_job_detail_are_family_a_gets_on_the_auth_host():
+    for key, path in (("job_list", "/api/job/jobList"), ("get_job_detail", "/api/job/jobUpdate")):
+        ep = ENDPOINTS[key]
+        assert (ep.host, ep.path, ep.method, ep.family) == ("auth", path, "GET", "A"), key
+        assert ep.extra_headers == (), key
+        assert ep.throttle_gated is True, key
 
 
 # ── T-45 (interface): select_cookies_for_host ────────────────────────────
@@ -724,11 +749,20 @@ def test_endpoint_method_has_no_default_and_is_required():
                  extra_headers=(), family_b_shape=None, throttle_gated=True)
 
 
-def test_endpoint_construction_rejects_a_method_outside_get_or_post():
+@pytest.mark.parametrize("method", ["DELETE", "PATCH"])
+def test_endpoint_construction_rejects_a_method_outside_get_post_or_put(method):
     with pytest.raises(ValueError):
         Endpoint(key="probe_bad_method", host="auth", path="/bc-comm/message/{job_no}-{p_id}",
-                 method="DELETE", family="B", extra_headers=(),
+                 method=method, family="B", extra_headers=(),
                  family_b_shape=FamilyBShape(is_list=True, inner_key=None, sibling_keys=()), throttle_gated=True)
+
+
+def test_endpoint_construction_accepts_put():
+    ep = Endpoint(key="probe_put", host="auth", path="/api/probe", method="PUT", family="B",
+                  extra_headers=(),
+                  family_b_shape=FamilyBShape(is_list=False, inner_key=None, sibling_keys=()),
+                  throttle_gated=True)
+    assert ep.method == "PUT"
 
 
 class _FakeAiohttpResponse:
@@ -771,6 +805,10 @@ class _FakeAiohttpSession:
         _FakeAiohttpSession.calls.append(("POST", url, dict(headers), json))
         return _FakeAiohttpResponse()
 
+    def put(self, url, *, headers, json, allow_redirects):
+        _FakeAiohttpSession.calls.append(("PUT", url, dict(headers), json))
+        return _FakeAiohttpResponse()
+
 
 @pytest.fixture(autouse=True)
 def _reset_fake_aiohttp_calls():
@@ -779,7 +817,7 @@ def _reset_fake_aiohttp_calls():
 
 
 @pytest.mark.asyncio
-async def test_fetch_dispatches_get_or_post_per_endpoint_method(monkeypatch):
+async def test_fetch_dispatches_get_post_or_put_per_endpoint_method(monkeypatch):
     from mcp104.browser import api_client as api_client_mod
     monkeypatch.setattr(api_client_mod.aiohttp, "ClientSession", _FakeAiohttpSession)
 
@@ -789,10 +827,18 @@ async def test_fetch_dispatches_get_or_post_per_endpoint_method(monkeypatch):
     _key, post_ep = _endpoints_matching(path_contains="/bc-comm/message/all-stream")[0]
     await api_client_mod.fetch(post_ep, cookie_header="c=1", params=[], body={"content": "x"})
 
+    await api_client_mod.fetch(
+        api_client_mod.ENDPOINTS["refresh_jobs"], cookie_header="c=1",
+        body={"jobs": [{"jobNo": "1"}]},
+    )
+
     assert _FakeAiohttpSession.calls[0][0] == "GET"
     assert _FakeAiohttpSession.calls[0][3] is None
     assert _FakeAiohttpSession.calls[1][0] == "POST"
     assert _FakeAiohttpSession.calls[1][3] == {"content": "x"}
+    assert _FakeAiohttpSession.calls[2][0] == "PUT"
+    assert _FakeAiohttpSession.calls[2][1].endswith("/vipapi/job/over-seven-day-job")
+    assert _FakeAiohttpSession.calls[2][3] == {"jobs": [{"jobNo": "1"}]}
 
 
 @pytest.mark.asyncio
@@ -883,7 +929,9 @@ def test_all_declared_endpoints_construct_without_error():
     # send_inquire_event, send_exam_event) raise the count to eighteen.
     # applicants-and-job-reads adds three more routes (list_applicants, match_number,
     # list_refreshable_jobs); list_jobs keeps its key and changes only its path.
-    assert len(ENDPOINTS) == 21
+    # The job-dates change adds three more: refresh_jobs (the PUT on the refreshable
+    # list's path), job_list and get_job_detail.
+    assert len(ENDPOINTS) == 24
 
 
 # =========================================================================
@@ -892,10 +940,10 @@ def test_all_declared_endpoints_construct_without_error():
 # path, and throttle_gated=True, item by item.
 # =========================================================================
 
-def _endpoint_by_exact_path(path: str):
-    matches = [ep for ep in ENDPOINTS.values() if ep.path == path]
+def _endpoint_by_exact_path(path: str, method: str):
+    matches = [ep for ep in ENDPOINTS.values() if ep.path == path and ep.method == method]
     assert len(matches) == 1, (
-        f"expected exactly one declared endpoint with path == {path!r}, "
+        f"expected exactly one declared {method} endpoint with path == {path!r}, "
         f"found {matches!r}"
     )
     return matches[0]
@@ -912,7 +960,7 @@ _NEW_C7_ENDPOINTS = [
 
 def test_the_four_new_c7_endpoints_are_declared_exactly_per_the_table():
     for path, method, is_list, inner_key, sibling_keys in _NEW_C7_ENDPOINTS:
-        ep = _endpoint_by_exact_path(path)
+        ep = _endpoint_by_exact_path(path, method)
         assert ep.host == "auth", f"{path}: expected host=auth, got {ep.host!r}"
         assert ep.family == "B", f"{path}: expected family=B, got {ep.family!r}"
         assert ep.method == method, f"{path}: expected method={method!r}, got {ep.method!r}"

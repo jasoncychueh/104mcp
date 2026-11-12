@@ -381,9 +381,12 @@ def _build_template_list_response(envelope: object) -> dict:
 # writer. `send_message` and the shared event send (`send_event` in tools/events.py)
 # wire the three together at each send's conclusion.
 
-# NOT SENT — the CLOSED set, and the only one that is enumerated in code. Every
-# member is either a pre-request precondition WE enforce (never reaching 104 at
-# all) or a condition where 104 itself answered with a refusal. `missing_param` and
+# NOT SENT — the CLOSED set, and the only one that is enumerated in code. It
+# answers one question for ANY write that may have reached 104, not only a
+# message: could 104 have acted on it? (tools/jobs.py's refresh_jobs reads the
+# same verdict for its PUT.) Every member is either a pre-request precondition
+# WE enforce (never reaching 104 at all) or a condition where 104 itself
+# answered with a refusal. `missing_param` and
 # `header_fault` are family-A-only kinds and so cannot arrive on a messaging route
 # at all; named anyway, because a mapping that is exhaustive over the classifier's
 # whole vocabulary must not quietly acquire a gap when an endpoint's family changes.
