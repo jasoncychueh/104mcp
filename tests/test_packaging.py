@@ -17,6 +17,7 @@ steering docs, not in a peek at those files' new content.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -179,10 +180,10 @@ def test_built_release_artifact_excludes_pii_and_login_state(tmp_path):
         == 0
     )
     if not build_mod_available:
-        pytest.skip(
+        pytest.fail(
             "the 'build' package is not installed in this environment — cannot "
-            "build a real release artifact to inspect; explicit skip, not a "
-            "silent pass"
+            "build a real release artifact to inspect; install it (pip install build) "
+            "rather than skip this check"
         )
 
     leftover_build_dir = REPO_ROOT / "build"
@@ -224,6 +225,8 @@ def test_built_release_artifact_excludes_pii_and_login_state(tmp_path):
             "104.db",
             "research/captures/",
             "logout_unconfirmed",
+            # the test suite (and any local test data beside it) is not part of a release
+            "tests/",
         ]
         offenders = [
             m for m in members
@@ -237,11 +240,16 @@ def test_built_release_artifact_excludes_pii_and_login_state(tmp_path):
         shutil.rmtree(leftover_egg_info, ignore_errors=True)
 
 
-# ── T-46 (R10.5): the three version declarations agree and read 0.4.0 ─────────────────
+# ── T-46 (R10.5): the three version declarations agree ────────────────────────────────
 
-def test_three_version_declarations_agree_and_are_0_4_0():
+_SEMVER = re.compile(r"^\d+\.\d+\.\d+$")
+
+
+def test_three_version_declarations_agree():
     """T-46 (R10.5): pyproject.toml, .claude-plugin/plugin.json and the mcp104 plugin entry in
-    .claude-plugin/marketplace.json declare the same version, and it is 0.4.0."""
+    .claude-plugin/marketplace.json declare the same X.Y.Z version. The number itself is not
+    pinned here: the test guards "the three are bumped together", and a pinned number would go
+    red on every release."""
     pyproject_version = _load_pyproject()["project"]["version"]
     plugin = json.loads((REPO_ROOT / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
     marketplace = json.loads((REPO_ROOT / ".claude-plugin" / "marketplace.json").read_text(encoding="utf-8"))
@@ -253,4 +261,7 @@ def test_three_version_declarations_agree_and_are_0_4_0():
         ".claude-plugin/plugin.json": plugin.get("version"),
         ".claude-plugin/marketplace.json (mcp104 entry)": entries[0].get("version"),
     }
-    assert set(declared.values()) == {"0.4.0"}, f"version declarations differ or are not 0.4.0: {declared!r}"
+    assert all(isinstance(v, str) and _SEMVER.match(v) for v in declared.values()), (
+        f"a version declaration is missing, empty or not X.Y.Z: {declared!r}"
+    )
+    assert len(set(declared.values())) == 1, f"version declarations differ: {declared!r}"

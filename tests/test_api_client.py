@@ -26,10 +26,10 @@ from __future__ import annotations
 
 import asyncio
 import json
-from pathlib import Path
 
 import pytest
 
+from tests.conftest import load_fixture
 from mcp104.browser.api_client import (
     ENDPOINTS,
     Endpoint,
@@ -43,13 +43,9 @@ from mcp104.browser.throttle import ThrottleAbort
 from mcp104.config import get_config
 from mcp104.tools.helpers import ERROR_CHALLENGE, GuardAbort, ToolAbort, get_session_id, guarded_api
 
-FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 
 # ── Fixture / fake-transport plumbing ────────────────────────────────────
-
-def _load(name: str):
-    return json.loads((FIXTURES_DIR / name).read_text(encoding="utf-8"))
 
 
 def _raw(status: int, content_type: str, body: str, parsed_json, location: str | None = None) -> RawResponse:
@@ -64,12 +60,12 @@ def _raw(status: int, content_type: str, body: str, parsed_json, location: str |
 
 
 def _raw_from_wrapper(fixture_name: str) -> RawResponse:
-    d = _load(fixture_name)
+    d = load_fixture(fixture_name)
     return _raw(d["http_status"], d["content_type"], d["body_text"], d["body_json"])
 
 
 def _raw_from_bare_json(fixture_name: str, http_status: int = 200) -> RawResponse:
-    body_json = _load(fixture_name)
+    body_json = load_fixture(fixture_name)
     return _raw(http_status, "application/json; charset=utf-8",
                 json.dumps(body_json, ensure_ascii=False), body_json)
 
@@ -283,8 +279,8 @@ def test_select_cookies_for_host_includes_only_matching_host_cookies():
 # ── T-46 (interface): classify reads endpoint.family, never the body ─────
 
 def test_classify_family_selected_by_endpoint_declaration_not_body_shape():
-    family_a_body = _load("zero_row_search.json")          # status=SUCCESS, top-level data=null
-    family_b_body = _load("resume_unrestricted.json")      # {data:{...}, metadata:{...}}, no "status"
+    family_a_body = load_fixture("zero_row_search.json")          # status=SUCCESS, top-level data=null
+    family_b_body = load_fixture("resume_unrestricted.json")      # {data:{...}, metadata:{...}}, no "status"
 
     raw_a = _raw(200, "application/json; charset=utf-8",
                  json.dumps(family_a_body, ensure_ascii=False), family_a_body)
@@ -1369,7 +1365,7 @@ _COMPANY_SWITCH_ENDPOINTS = ("list_applicants", "search_resumes")
 
 def test_company_switch_envelope_with_json_escaped_url_is_expired_on_both_family_a_endpoints():
     # T-56
-    d = _load(_COMPANY_SWITCH_FIXTURE)
+    d = load_fixture(_COMPANY_SWITCH_FIXTURE)
     # Precondition: the fixture must really carry the JSON-escaped slashes. Without them
     # this test would pass without exercising the escape at all.
     assert d["http_status"] == 200
@@ -1389,7 +1385,7 @@ def test_company_switch_envelope_with_json_escaped_url_is_expired_on_both_family
 
 def test_company_switch_envelope_with_unescaped_url_is_expired_and_success_bodies_stay_success():
     # T-57
-    d = _load(_COMPANY_SWITCH_FIXTURE)
+    d = load_fixture(_COMPANY_SWITCH_FIXTURE)
     body_json = d["body_json"]
     assert body_json["status"] == "COMPANY_SWITCH"
     # The same envelope, serialised without the JSON escape on "/".
@@ -1410,7 +1406,7 @@ def test_company_switch_envelope_with_unescaped_url_is_expired_and_success_bodie
         ("list_applicants", "rows_applicants.json"),
         ("search_resumes", "rows_search.json"),
     ):
-        assert _load(fixture)["status"] == "SUCCESS"  # precondition: the body is a success envelope
+        assert load_fixture(fixture)["status"] == "SUCCESS"  # precondition: the body is a success envelope
         verdict = classify(ENDPOINTS[key], _raw_from_bare_json(fixture))
         assert verdict.ok is True, (
             f"{key}: a status=SUCCESS body must remain a success, got kind={verdict.kind!r}"

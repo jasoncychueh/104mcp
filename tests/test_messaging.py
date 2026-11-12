@@ -7,18 +7,13 @@ so a session under test is built by handing that field a cookie list directly.
 for real, never mocked.
 
 Fixture bodies here are SYNTHETIC, not derived from a real capture — unlike
-tests/fixtures/rows_*.json, no raw `all-stream`/conversation response was ever
-captured to `research/captures/` (only analysis artifacts under `research/results/`
-exist), so there is nothing for `research/probes/redact_fixtures.py` to redact. The
-field NAMES and shapes below are the measured ones (docs/104-site-facts.md §6b.7,
-§6b.8, §6b.10; cross-checked against `research/results/messaging_contract.json`'s own
-field-name sweep), but the VALUES are invented — same treatment
-tests/test_search.py already gives `list_jobs`' success body (see that file's module
-docstring, "No committed fixture exists for list_jobs' success body").
+tests/fixtures/rows_*.json, no raw `all-stream`/conversation response was ever captured.
+The field NAMES and shapes below are the measured ones (docs/104-site-facts.md §6b.7,
+§6b.8, §6b.10), but the VALUES are invented.
 
-`failure_send_validation.json` is the one new fixture with a real capture behind it
-(`research/results/send_validation.json`, `research/probes/probe_send_validation.py`'s
-output) — see `research/probes/redact_fixtures.py`'s `build_failure_send_validation`.
+`failure_send_validation.json` is the one fixture here with a real recorded response
+behind it (104's refusal of a send that has no content); its format is described in
+tests/fixtures/README.md.
 """
 from __future__ import annotations
 
@@ -30,6 +25,7 @@ import pytest
 import pytest_asyncio
 
 import mcp104.tools.discovery as discovery_mod
+from tests.conftest import load_fixture
 from mcp104.browser.api_client import ENDPOINTS, RawResponse
 from mcp104.browser.session import SessionInfo, SessionPool
 from mcp104.browser.throttle import ThrottleAbort
@@ -51,11 +47,7 @@ from mcp104.tools.messaging import (
 )
 from mcp104.tools.status import register_status_tools
 
-FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
-
-def _load(name: str):
-    return json.loads((FIXTURES_DIR / name).read_text(encoding="utf-8"))
 
 
 # ── Synthetic inbox rows — the measured 19 field names [M §6b.7, §6b.8-1] ───────────
@@ -166,7 +158,7 @@ def _raw_from_body(body: dict, status: int = 200) -> RawResponse:
 
 
 def _raw_from_wrapper(fixture_name: str) -> RawResponse:
-    d = _load(fixture_name)
+    d = load_fixture(fixture_name)
     return _raw(d["http_status"], d["content_type"], d["body_text"], d["body_json"])
 
 
@@ -1086,10 +1078,12 @@ def test_no_endpoint_declares_a_method_outside_get_or_post():
 # ═════════════════════════════════════════════════════════════════════════════════
 
 _SYNTHETIC_LETTER = "測試信件本文-合成"
-# Measured 13-14 digit idNo shape (docs/104-site-facts.md §6b.12/§8.12) — must
-# be rejected by the >=12-digit guard on all three messaging tools.
+# Synthetic ids: the same length as the measured 13-14 digit idNo and 6-8 digit pId
+# shapes (docs/104-site-facts.md §6b.12/§8.12, §8.17), but they start with 0, which no
+# real id does, so they cannot be a real person's id. The idNo-shaped one must be
+# rejected by the >=12-digit guard on all three messaging tools; the pId-shaped one must
+# PASS the same guard.
 _IDNO_SHAPED_ID = "0798066676650"
-# Measured 6-8 digit pId shape (§8.17) — must PASS the same guard.
 _PID_SHAPED_ID = "073748"
 
 

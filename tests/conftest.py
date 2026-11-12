@@ -33,13 +33,37 @@ default a test can still override or remove.
 MCP104_DATA_DIR is set alongside it, pointed at tmp_path, so a test that
 happens to construct a real Config (rather than mocking one) does not touch
 this machine's actual per-user data directory.
+
+`load_fixture` is how every test reads tests/fixtures/*.json. Those files are
+built from real 104 responses and carry candidates' personal data, so they are
+not in version control: each machine builds its own (tests/fixtures/README.md
+says what every file must contain). A missing file must therefore turn the
+tests that need it red -- not skip them, and not fall back to something else --
+and the failure has to tell the reader where to look. It is a plain function,
+called inside a test body or a fixture, never at module level: a module-level
+read would turn one missing file into a collection error for the whole test
+module, and only one missing file would show at a time.
 """
 
+import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
+
+
+def load_fixture(name: str) -> Any:
+    """Read tests/fixtures/<name> as JSON. Raises when the file is absent."""
+    path = FIXTURES_DIR / name
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"tests/fixtures/{name} is missing: test data is not in version control; "
+            f"every machine builds its own -- see tests/fixtures/README.md"
+        )
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 @pytest.fixture(autouse=True)

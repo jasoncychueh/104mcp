@@ -79,3 +79,13 @@ CLAUDE.md
 .mcp.json
 docs/
 research/
+
+# Test data: tests/fixtures/*.json are built from real 104 responses and carry
+# candidates' personal data, so they are never committed. Every machine that runs the
+# tests builds its own; the format each file must have is in tests/fixtures/README.md.
+tests/fixtures/*.json
+# The one exception: this file is describe_result_fields("resume")'s own output
+# snapshot (this package's field-description text), not a 104 response, and holds no
+# candidate data. It cannot be "built locally" either: generating it from the current
+# code would make the test compare the code with itself.
+!tests/fixtures/describe_result_fields_resume_baseline.json

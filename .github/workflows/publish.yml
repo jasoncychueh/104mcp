@@ -1,33 +1,17 @@
 name: Publish to PyPI
 
 # Triggered by pushing a version tag (e.g. `v0.1.0`) — not on every push, so a
-# release is a deliberate act (see README "發布（維護者）").
+# release is a deliberate act. CI builds and publishes only; it does not run the tests,
+# because the test data (tests/fixtures/*.json) is not in the repository. The
+# maintainer runs the full suite locally before tagging.
 on:
   push:
     tags:
       - "v*"
 
 jobs:
-  test:
-    name: Run tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v3
-        with:
-          python-version: "3.13"
-
-      # tests/test_database.py is excluded (it leaves aiosqlite threads alive at
-      # process exit, a known issue); everything else runs network-free against
-      # synthetic fixtures — no live 104 calls happen in CI.
-      - name: Run test suite
-        run: uv run --with pytest --with pytest-asyncio pytest tests -q --ignore=tests/test_database.py
-
   publish:
     name: Build and publish
-    needs: test
     runs-on: ubuntu-latest
     environment: pypi
     permissions:

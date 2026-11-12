@@ -12,7 +12,6 @@ from __future__ import annotations
 import dataclasses
 import json
 import re
-from pathlib import Path
 
 import pytest
 
@@ -20,6 +19,7 @@ import mcp104.tools.categories as categories_mod
 import mcp104.tools.filters as filters_mod
 import mcp104.tools.discovery as discovery_mod
 import mcp104.tools.search as search_mod
+from tests.conftest import load_fixture
 from mcp104.tools.discovery import (
     RESUME_ROW_FIELD_GLOSS,
     _browse_filter_values,
@@ -32,7 +32,6 @@ from mcp104.tools.filters import CONDITIONS, VALID_FILTER_KEYS, Condition
 
 from tests.test_contract_docs import _all_tool_descriptions, _normalize_ws
 
-FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 
 # ── browse_filter_values: a legal shape for EVERY key, swept ────────────────────────
@@ -582,7 +581,7 @@ def test_describe_result_fields_keys_match_a_real_converted_fixture_row():
     compared against itself (both camelCase, mutually consistent, and both wrong
     about the actual output, which is exactly how this defect survived the first
     round)."""
-    fixture = json.loads((FIXTURES_DIR / "rows_search.json").read_text(encoding="utf-8"))
+    fixture = load_fixture("rows_search.json")
     raw_row = fixture["result"]["data"][0]
     converted_row = search_mod._convert_resume_row(raw_row)
 
@@ -938,9 +937,7 @@ def test_resume_describe_output_is_identical_to_the_pre_cycle_baseline_fixture()
     # T-49 clause: the "resume" output is unchanged, byte for byte, from before this round.
     # The baseline is a committed fixture captured from the pre-cycle tree; this test fails
     # with FileNotFoundError until that fixture exists.
-    baseline = json.loads(
-        (FIXTURES_DIR / "describe_result_fields_resume_baseline.json").read_text(encoding="utf-8")
-    )
+    baseline = load_fixture("describe_result_fields_resume_baseline.json")
     current = _describe_result_fields("resume")
     assert "error" not in current
     assert json.dumps(current, sort_keys=True, ensure_ascii=False) == json.dumps(
@@ -978,9 +975,9 @@ import tests.test_jobs as _tj  # noqa: E402
 @pytest.mark.asyncio
 async def test_applicant_fields_cover_every_key_a_list_applicants_row_carries(tmp_path, monkeypatch):
     ctx, _info = await _tj._new_session(tmp_path)
-    _tj._install(monkeypatch, [_tj._raw_from_body(_tj._load("rows_applicants.json"))])
+    _tj._install(monkeypatch, [_tj._raw_from_body(load_fixture("rows_applicants.json"))])
 
-    rows = (await _tj._tool("list_applicants")(_tj.JOBNO, ctx=ctx))["results"]
+    rows = (await _tj._tool("list_applicants")(_tj._jobno(), ctx=ctx))["results"]
 
     assert rows, "the measured applicant fixture must yield rows for this check to mean anything"
     covered = set(discovery_mod._describe_result_fields("applicant")["fields"])
@@ -990,7 +987,7 @@ async def test_applicant_fields_cover_every_key_a_list_applicants_row_carries(tm
 
 @pytest.mark.asyncio
 async def test_job_fields_cover_every_key_a_list_jobs_row_carries(tmp_path, monkeypatch):
-    body = _tj._load("jobs_apply.json")
+    body = load_fixture("jobs_apply.json")
     result, _spy, _info = await _tj._run_list_jobs(tmp_path, monkeypatch, body)
 
     assert result["results"], "the measured jobs fixture must yield rows for this check to mean anything"

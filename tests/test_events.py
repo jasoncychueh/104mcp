@@ -41,13 +41,9 @@ from mcp104.tools.events import (
 from mcp104.tools.helpers import get_session_id
 from mcp104.tools.messaging import register_messaging_tools
 from mcp104.tools.status import register_status_tools
-from tests.conftest import _SeqFetchSpy
-
-FIXTURES_DIR = Path(__file__).parent / "fixtures"
+from tests.conftest import _SeqFetchSpy, load_fixture
 
 
-def _load(name: str):
-    return json.loads((FIXTURES_DIR / name).read_text(encoding="utf-8"))
 
 
 # ── Fixture / fake-transport plumbing (mirrors tests/test_messaging.py) ─────────────
@@ -62,7 +58,7 @@ def _raw_from_body(body: dict, status: int = 200) -> RawResponse:
 
 
 def _raw_from_wrapper(fixture_name: str) -> RawResponse:
-    d = _load(fixture_name)
+    d = load_fixture(fixture_name)
     return _raw(d["http_status"], d["content_type"], d["body_text"], d["body_json"])
 
 
@@ -255,10 +251,12 @@ _CONVERSATION_ENVELOPE_SINGLE_PAGE = {
 
 _SYNTHETIC_LETTER = "測試信件本文-合成"
 _SYNTHETIC_CC = "cc-a@example.invalid"
-# Measured 13-14 digit idNo shape (docs/104-site-facts.md §6b.12/§8.12) — must
-# be rejected by the >=12-digit guard on all three messaging tools.
+# Synthetic ids: the same length as the measured 13-14 digit idNo and 6-8 digit pId
+# shapes (docs/104-site-facts.md §6b.12/§8.12, §8.17), but they start with 0, which no
+# real id does, so they cannot be a real person's id. The idNo-shaped one must be
+# rejected by the >=12-digit guard on all three messaging tools; the pId-shaped one must
+# PASS the same guard.
 _IDNO_SHAPED_ID = "0798066676650"
-# Measured 6-8 digit pId shape (§8.17) — must PASS the same guard.
 _PID_SHAPED_ID = "073748"
 
 

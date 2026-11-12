@@ -81,12 +81,12 @@ import copy
 import dataclasses
 import json
 import re
-from pathlib import Path
 from uuid import uuid4
 
 import pytest
 import pytest_asyncio
 
+from tests.conftest import load_fixture
 from mcp104.browser.api_client import RawResponse
 from mcp104.browser.session import SessionInfo, SessionPool
 from mcp104.config import get_config
@@ -99,13 +99,9 @@ import mcp104.tools.helpers as helpers_mod
 import mcp104.tools.search as search_mod
 from mcp104.tools.search import register_search_tools
 
-FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 
 # ── Fixture / fake-transport plumbing (mirrors tests/test_api_client.py's idiom) ────
-
-def _load(name: str):
-    return json.loads((FIXTURES_DIR / name).read_text(encoding="utf-8"))
 
 
 def _raw(status: int, content_type: str, body: str, parsed_json, location: str | None = None) -> RawResponse:
@@ -114,12 +110,12 @@ def _raw(status: int, content_type: str, body: str, parsed_json, location: str |
 
 
 def _raw_from_wrapper(fixture_name: str) -> RawResponse:
-    d = _load(fixture_name)
+    d = load_fixture(fixture_name)
     return _raw(d["http_status"], d["content_type"], d["body_text"], d["body_json"])
 
 
 def _raw_from_bare_json(fixture_name: str, http_status: int = 200) -> RawResponse:
-    body_json = _load(fixture_name)
+    body_json = load_fixture(fixture_name)
     return _raw(http_status, "application/json; charset=utf-8",
                 json.dumps(body_json, ensure_ascii=False), body_json)
 
@@ -353,26 +349,39 @@ def _contains_value(node, value):
 @pytest.mark.asyncio
 async def test_keyword_search_returns_documented_success_shape(tmp_path, monkeypatch):
     ctx, _info, _db = await _new_session(tmp_path)
-    fixture = _load("rows_search.json")
+    fixture = load_fixture("rows_search.json")
     _install_fake_fetch(monkeypatch, _raw_from_bare_json("rows_search.json"))
 
     result = await search_resumes(keyword="應用工程師", ctx=ctx)
 
     assert "error" not in result
-    assert result["pagination"] == {"page": 1, "total_pages": 30, "total": 300063}
-    assert result["browse_limit"] == {"resume_max": 300, "on_that_day_count": 11}
+    page_info = fixture["result"]["pageInfo"]
+    assert len({page_info["this_page"], page_info["total_page"], page_info["total"]}) == 3, (
+        "pageInfo.this_page, total_page and total must be pairwise distinct so a mix-up between "
+        "them is visible (tests/fixtures/README.md)"
+    )
+    assert result["pagination"] == {
+        "page": page_info["this_page"], "total_pages": page_info["total_page"],
+        "total": page_info["total"],
+    }
+    # 104 sends onThatDayCount as a string; the tool delivers both browse_limit numbers as int
+    assert result["browse_limit"] == {
+        "resume_max": fixture["result"]["browseLimit"]["resumeMax"],
+        "on_that_day_count": int(fixture["result"]["browseLimit"]["onThatDayCount"]),
+    }
     assert isinstance(result["warnings"], list)
     assert "applied_filters" in result
 
     fixture_rows = fixture["result"]["data"]
-    assert len(result["results"]) == len(fixture_rows) == 50
+    assert len(fixture_rows) >= 1, "rows_search.json needs at least 1 row (tests/fixtures/README.md)"
+    assert len(result["results"]) == len(fixture_rows)
     first = result["results"][0]
     # candidate_id <- idNo is the one documented row-field renaming exception
     # (design.md Data Models — Response shapes); age/sex are invariant under any
     # camelCase->snake_case conversion (single lowercase words already).
-    assert first["candidate_id"] == fixture_rows[0]["idNo"] == "0109266474951"
-    assert first["age"] == fixture_rows[0]["age"] == 54
-    assert first["sex"] == fixture_rows[0]["sex"] == 1
+    assert first["candidate_id"] == fixture_rows[0]["idNo"]
+    assert first["age"] == fixture_rows[0]["age"]
+    assert first["sex"] == fixture_rows[0]["sex"]
 
 
 # ── T-3 (R1.3): unrecognised filters key -> error naming it + valid keys, no request ─
@@ -443,16 +452,29 @@ async def test_requesting_a_page_fetches_exactly_one_page(tmp_path, monkeypatch)
 @pytest.mark.asyncio
 async def test_recommend_with_job_id_returns_documented_shape(tmp_path, monkeypatch):
     ctx, _info, _db = await _new_session(tmp_path)
-    fixture = _load("rows_recommend.json")
+    fixture = load_fixture("rows_recommend.json")
     _install_fake_fetch(monkeypatch, _raw_from_bare_json("rows_recommend.json"))
 
     result = await list_recommended_resumes(jobno="12355016", ctx=ctx)
 
     assert "error" not in result
-    assert result["pagination"] == {"page": 1, "total_pages": 10, "total": 499}
-    assert result["browse_limit"] == {"resume_max": 300, "on_that_day_count": 14}
+    page_info = fixture["result"]["pageInfo"]
+    assert len({page_info["this_page"], page_info["total_page"], page_info["total"]}) == 3, (
+        "pageInfo.this_page, total_page and total must be pairwise distinct so a mix-up between "
+        "them is visible (tests/fixtures/README.md)"
+    )
+    assert result["pagination"] == {
+        "page": page_info["this_page"], "total_pages": page_info["total_page"],
+        "total": page_info["total"],
+    }
+    # 104 sends onThatDayCount as a string; the tool delivers both browse_limit numbers as int
+    assert result["browse_limit"] == {
+        "resume_max": fixture["result"]["browseLimit"]["resumeMax"],
+        "on_that_day_count": int(fixture["result"]["browseLimit"]["onThatDayCount"]),
+    }
     fixture_rows = fixture["result"]["data"]
-    assert len(result["results"]) == len(fixture_rows) == 50
+    assert len(fixture_rows) >= 1, "rows_recommend.json needs at least 1 row (tests/fixtures/README.md)"
+    assert len(result["results"]) == len(fixture_rows)
     assert result["results"][0]["candidate_id"] == fixture_rows[0]["idNo"]
 
 
@@ -504,16 +526,22 @@ async def test_recommend_job_with_no_recommendations_is_empty_success_not_error(
 @pytest.mark.asyncio
 async def test_match_with_job_id_returns_documented_shape(tmp_path, monkeypatch):
     ctx, _info, _db = await _new_session(tmp_path)
-    fixture = _load("rows_match.json")
+    fixture = load_fixture("rows_match.json")
     _install_fake_fetch(monkeypatch, _raw_from_bare_json("rows_match.json"))
 
     result = await list_matched_resumes(jobno="12355016", ctx=ctx)
 
     assert "error" not in result
     fixture_rows = fixture["result"]["resumes"]
-    assert len(result["results"]) == len(fixture_rows) == 3
-    assert result["browse_limit"] == {"resume_max": 300, "on_that_day_count": 14}
-    assert result["results"][0]["candidate_id"] == fixture_rows[0]["idNo"] == "01121248880368"
+    assert len(fixture_rows) >= 1, "rows_match.json needs at least 1 row (tests/fixtures/README.md)"
+    assert len(result["results"]) == len(fixture_rows)
+    assert result["browse_limit"] == {
+        "resume_max": fixture["result"]["browseLimit"]["resumeMax"],
+        "on_that_day_count": int(fixture["result"]["browseLimit"]["onThatDayCount"]),
+    }
+    # a 13-14 digit idNo is what the messaging tools' length guard recognises as a resume id
+    assert len(fixture_rows[0]["idNo"]) >= 12, "rows_match.json row 1 idNo must be >= 12 digits (README)"
+    assert result["results"][0]["candidate_id"] == fixture_rows[0]["idNo"]
 
 
 # ── T-11 (R3.2): match route reads container/page from its OWN key names ───────────
@@ -524,7 +552,7 @@ async def test_match_route_reads_container_and_page_from_its_own_keys(tmp_path, 
     # `this_page` key at all (only `resumes` / `thisPage` — docs/104-site-facts.md
     # §6b.3b, tests/fixtures/README.md) — a reader sharing search/recommend's key names
     # would find nothing here, and per design.md must not silently read that as empty.
-    fixture = _load("rows_match.json")
+    fixture = load_fixture("rows_match.json")
     assert "data" not in fixture["result"]
     assert "this_page" not in fixture["result"]["pageInfo"]
 
@@ -534,9 +562,9 @@ async def test_match_route_reads_container_and_page_from_its_own_keys(tmp_path, 
     result = await list_matched_resumes(jobno="12355016", ctx=ctx)
 
     assert "error" not in result
-    assert len(result["results"]) == 3
-    assert result["pagination"]["page"] == 1
-    assert result["pagination"]["total"] == 3
+    assert len(result["results"]) == len(fixture["result"]["resumes"]) >= 1
+    assert result["pagination"]["page"] == fixture["result"]["pageInfo"]["thisPage"]
+    assert result["pagination"]["total"] == fixture["result"]["pageInfo"]["total"]
 
 
 # ── T-12 (R3.3): closed job on match route -> server's own explanation ──────────────
@@ -601,10 +629,10 @@ async def test_match_update_date_type_blank_rejected_before_request(tmp_path, mo
 @pytest.mark.asyncio
 async def test_get_resume_detail_returns_every_field_the_server_provided(tmp_path, monkeypatch):
     ctx, _info, _db = await _new_session(tmp_path)
-    fixture = _load("resume_unrestricted.json")
+    fixture = load_fixture("resume_unrestricted.json")
     _install_fake_fetch(monkeypatch, _raw_from_bare_json("resume_unrestricted.json"))
 
-    result = await get_resume_detail(candidate_id="0772636993942", ctx=ctx)
+    result = await get_resume_detail(candidate_id=fixture["data"]["resume"]["idNo"], ctx=ctx)
 
     assert "error" not in result
     assert "warnings" in result and isinstance(result["warnings"], list)
@@ -620,8 +648,8 @@ async def test_get_resume_detail_returns_every_field_the_server_provided(tmp_pat
         "field count of the nested `resume` object changed from the server's own "
         "data.resume (R4.1: 'return every field the server provides')"
     )
-    assert _corresponding(source_resume, response_resume, "idNo") == "0772636993942"
-    assert _corresponding(source_resume, response_resume, "userName") == "邱文家"
+    assert _corresponding(source_resume, response_resume, "idNo") == source_resume["idNo"]
+    assert _corresponding(source_resume, response_resume, "userName") == source_resume["userName"]
 
     # design.md: "the envelope's other siblings are deliberately dropped" — userName/
     # companyName at the ENVELOPE level are the signed-in OPERATOR's identity, not the
@@ -639,10 +667,10 @@ async def test_get_resume_detail_returns_every_field_the_server_provided(tmp_pat
 @pytest.mark.asyncio
 async def test_get_resume_detail_key_conversion_is_mechanical_with_no_collision(tmp_path, monkeypatch):
     ctx, _info, _db = await _new_session(tmp_path)
-    fixture = _load("resume_unrestricted.json")
+    fixture = load_fixture("resume_unrestricted.json")
     _install_fake_fetch(monkeypatch, _raw_from_bare_json("resume_unrestricted.json"))
 
-    result = await get_resume_detail(candidate_id="0772636993942", ctx=ctx)
+    result = await get_resume_detail(candidate_id=fixture["data"]["resume"]["idNo"], ctx=ctx)
 
     assert "error" not in result
     assert "resume" in result
@@ -659,9 +687,13 @@ async def test_get_resume_detail_key_conversion_is_mechanical_with_no_collision(
 @pytest.mark.asyncio
 async def test_get_resume_detail_restricted_contact_appends_warning(tmp_path, monkeypatch):
     ctx, _info, _db = await _new_session(tmp_path)
+    restricted = load_fixture("resume_restricted.json")
+    assert restricted["data"]["resume"]["contactPrivacy"] == "private", (
+        "resume_restricted.json must be a restricted resume (tests/fixtures/README.md)"
+    )
     _install_fake_fetch(monkeypatch, _raw_from_bare_json("resume_restricted.json"))
 
-    result = await get_resume_detail(candidate_id="0193412088859", ctx=ctx)
+    result = await get_resume_detail(candidate_id=restricted["data"]["resume"]["idNo"], ctx=ctx)
 
     assert "error" not in result
     assert "warnings" in result
@@ -681,10 +713,10 @@ async def test_get_resume_detail_restricted_contact_appends_warning(tmp_path, mo
 @pytest.mark.asyncio
 async def test_get_resume_detail_restricted_contact_fields_byte_identical_no_derived_flag(tmp_path, monkeypatch):
     ctx, _info, _db = await _new_session(tmp_path)
-    fixture = _load("resume_restricted.json")
+    fixture = load_fixture("resume_restricted.json")
     _install_fake_fetch(monkeypatch, _raw_from_bare_json("resume_restricted.json"))
 
-    result = await get_resume_detail(candidate_id="0193412088859", ctx=ctx)
+    result = await get_resume_detail(candidate_id=fixture["data"]["resume"]["idNo"], ctx=ctx)
 
     assert "error" not in result
     assert "resume" in result
@@ -726,7 +758,7 @@ def test_malformed_response_error_class_identity_across_modules():
 @pytest.mark.asyncio
 async def test_search_resumes_missing_page_info_is_malformed_not_empty_result(tmp_path, monkeypatch):
     ctx, _info, _db = await _new_session(tmp_path)
-    body = copy.deepcopy(_load("rows_search.json"))
+    body = copy.deepcopy(load_fixture("rows_search.json"))
     del body["result"]["pageInfo"]
     _install_fake_fetch(monkeypatch, _raw_from_body(body))
 
@@ -742,7 +774,7 @@ async def test_search_resumes_missing_page_info_is_malformed_not_empty_result(tm
 @pytest.mark.asyncio
 async def test_dropped_filter_condition_errors_naming_it_no_results_key(tmp_path, monkeypatch):
     ctx, _info, _db = await _new_session(tmp_path)
-    body = copy.deepcopy(_load("zero_row_search.json"))
+    body = copy.deepcopy(load_fixture("zero_row_search.json"))
     # zero_row_search.json's searchForm already carries sex=2 (104's own "unfiltered"
     # default) and kws matching what we send below — sending filters={"sex": "1"}
     # against this UNCHANGED echo is exactly a dropped condition: sent "1", echoed "2".
@@ -769,7 +801,7 @@ async def test_applied_filters_carries_resolved_wire_value_not_callers_name(tmp_
     assert resolution.code != leaf.name, "need a case where the resolved code differs from the caller's name"
 
     ctx, _info, _db = await _new_session(tmp_path)
-    body = copy.deepcopy(_load("zero_row_search.json"))
+    body = copy.deepcopy(load_fixture("zero_row_search.json"))
     body["result"]["searchForm"]["jobcat"] = resolution.code  # confirm, don't drop
     _install_fake_fetch(monkeypatch, _raw_from_body(body))
 
@@ -801,7 +833,7 @@ async def test_quota_key_present_and_populated_on_success(tmp_path, monkeypatch)
 @pytest.mark.asyncio
 async def test_quota_key_present_and_null_when_response_carries_none(tmp_path, monkeypatch):
     ctx, _info, _db = await _new_session(tmp_path)
-    body = copy.deepcopy(_load("zero_row_search.json"))
+    body = copy.deepcopy(load_fixture("zero_row_search.json"))
     del body["result"]["browseLimit"]
     _install_fake_fetch(monkeypatch, _raw_from_body(body))
 
@@ -819,7 +851,7 @@ async def test_quota_reaching_threshold_appends_warning(tmp_path, monkeypatch):
     # design.md Data Models — Response shapes (pinned): "the warning threshold is
     # on_that_day_count >= 270" — ninety per cent of the measured 300 daily maximum.
     ctx, _info, _db = await _new_session(tmp_path)
-    body = copy.deepcopy(_load("rows_search.json"))
+    body = copy.deepcopy(load_fixture("rows_search.json"))
     body["result"]["browseLimit"] = {"resumeMax": 300, "onThatDayCount": "270"}
     _install_fake_fetch(monkeypatch, _raw_from_body(body))
 
@@ -835,7 +867,7 @@ async def test_quota_below_threshold_appends_no_warning(tmp_path, monkeypatch):
     # 270 must NOT trigger the quota warning (a test that only ever checks the positive
     # side would still pass if the threshold were e.g. always-on).
     ctx, _info, _db = await _new_session(tmp_path)
-    body = copy.deepcopy(_load("rows_search.json"))
+    body = copy.deepcopy(load_fixture("rows_search.json"))
     body["result"]["browseLimit"] = {"resumeMax": 300, "onThatDayCount": "269"}
     _install_fake_fetch(monkeypatch, _raw_from_body(body))
 
@@ -850,7 +882,7 @@ async def test_quota_at_maximum_does_not_refuse_call(tmp_path, monkeypatch):
     # design.md (pinned): "the tool does not refuse at the maximum — the allowance is
     # 104's to enforce, we have never observed it enforcing one" (R11.4).
     ctx, _info, _db = await _new_session(tmp_path)
-    body = copy.deepcopy(_load("rows_search.json"))
+    body = copy.deepcopy(load_fixture("rows_search.json"))
     body["result"]["browseLimit"] = {"resumeMax": 300, "onThatDayCount": "300"}
     _install_fake_fetch(monkeypatch, _raw_from_body(body))
 
@@ -905,7 +937,7 @@ async def test_filtered_search_resolves_name_submits_and_confirms_in_echo(tmp_pa
     assert resolution.status == "resolved", "picked dataset node must resolve at the exact tier"
 
     ctx, _info, _db = await _new_session(tmp_path)
-    fixture = _load("rows_search.json")
+    fixture = load_fixture("rows_search.json")
     body = copy.deepcopy(fixture)
     body["result"]["searchForm"]["jobcat"] = resolution.code
     _install_fake_fetch(monkeypatch, _raw_from_body(body))
@@ -913,7 +945,8 @@ async def test_filtered_search_resolves_name_submits_and_confirms_in_echo(tmp_pa
     result = await search_resumes(keyword="應用工程師", filters={"jobcat": leaf.name}, ctx=ctx)
 
     assert "error" not in result, f"filtered search unexpectedly failed: {result}"
-    assert len(result["results"]) == len(fixture["result"]["data"]) == 50
+    assert len(fixture["result"]["data"]) >= 1, "rows_search.json needs at least 1 row (README)"
+    assert len(result["results"]) == len(fixture["result"]["data"])
     assert result["applied_filters"].get("jobcat") == resolution.code
 
 
@@ -1244,7 +1277,7 @@ async def test_prefix_family_warning_marks_only_the_refused_sibling(tmp_path, mo
 
     # Direction 1: a family naming a refused sibling identifies it as such.
     ctx, _info, _db = await _new_session(tmp_path)
-    fixture = _load("rows_search.json")
+    fixture = load_fixture("rows_search.json")
     keyword = fixture["result"]["searchForm"]["kws"]  # matches the fixture's own echo
     body = copy.deepcopy(fixture)
     body["result"]["searchForm"][mixed_key] = mixed_resolution.code
@@ -1339,7 +1372,7 @@ async def test_unmeasured_and_not_echoed_reach_the_caller_as_one_flag(tmp_path, 
     field_name = _echo_evidence_field_name(real_jobcat)
     assert getattr(real_jobcat, field_name) == "echoed", "sanity: jobcat must start out echoed"
 
-    fixture = _load("rows_search.json")
+    fixture = load_fixture("rows_search.json")
     keyword = fixture["result"]["searchForm"]["kws"]
     dataset = categories.load_dataset("JobCat.json", "jobcat")
     leaf = next(n for n in dataset.nodes if not n.children)
@@ -1396,7 +1429,7 @@ _HTML_TAG = re.compile(r"<[A-Za-z/!][^>]*>")
 
 
 def _fixture_rows(name):
-    result = _load(name)["result"]
+    result = load_fixture(name)["result"]
     return result.get("data") or result.get("resumes")
 
 
@@ -1458,7 +1491,10 @@ def test_row_level_fields_are_not_compacted_only_the_nested_job_objects_are():
     """A row's own key set stays stable (and fully published by describe_result_fields);
     only the per-job objects inside exp_job_arr drop their empties."""
     raw_rows = _fixture_rows("rows_search.json")
-    row_with_empty_top_level = next(r for r in raw_rows if r.get("latestMemo") is None)
+    row_with_empty_top_level = next((r for r in raw_rows if r.get("latestMemo") is None), None)
+    assert row_with_empty_top_level is not None, (
+        "rows_search.json needs a row whose latestMemo is null (tests/fixtures/README.md)"
+    )
     converted = search_mod._convert_resume_row(row_with_empty_top_level)
     assert "latest_memo" in converted and converted["latest_memo"] is None
 
@@ -1466,10 +1502,10 @@ def test_row_level_fields_are_not_compacted_only_the_nested_job_objects_are():
 @pytest.mark.asyncio
 async def test_get_resume_detail_delivers_rich_text_fields_as_plain_text(tmp_path, monkeypatch):
     ctx, _info, _db = await _new_session(tmp_path)
-    fixture = _load("resume_unrestricted.json")
+    fixture = load_fixture("resume_unrestricted.json")
     _install_fake_fetch(monkeypatch, _raw_from_bare_json("resume_unrestricted.json"))
 
-    result = await get_resume_detail(candidate_id="0772636993942", ctx=ctx)
+    result = await get_resume_detail(candidate_id=fixture["data"]["resume"]["idNo"], ctx=ctx)
 
     assert "error" not in result
     source_resume = fixture["data"]["resume"]

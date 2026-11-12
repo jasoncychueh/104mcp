@@ -33,7 +33,7 @@ from mcp104.tools.resume_files import (
     write_asset_atomically,
 )
 
-CANDIDATE_ID = "0798066676650"  # 13 digits, the measured idNo shape; not a real candidate
+CANDIDATE_ID = "0798066676650"  # synthetic: 13 digits like the measured idNo shape, but starts with 0, which no real id does
 
 _SYNTH_JPEG = b"\xff\xd8\xff\xe0\x00\x10JFIF" + b"\x00" * 32
 _SYNTH_PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32

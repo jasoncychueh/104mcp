@@ -54,6 +54,8 @@ GITIGNORE_PATH = REPO_ROOT / ".gitignore"
 PERSONAL_DATA_PATHS = (
     "research/captures/",
     "data/",
+    # Test data built from real 104 responses; each machine builds its own.
+    "tests/fixtures/",
 )
 
 

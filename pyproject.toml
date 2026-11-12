@@ -47,7 +47,7 @@ dependencies = [
 # The ruff / pyflakes floors below are conservative floors BELOW the versions actually
 # measured on the dev machine (ruff 0.14.7, pyflakes 3.2.0) — not tested minima. Say so
 # here rather than implying either was measured as a working lower bound.
-dev = ["pytest>=8.0.0", "pytest-asyncio>=0.24.0", "ruff>=0.14", "pyflakes>=3.2"]
+dev = ["pytest>=8.0.0", "pytest-asyncio>=0.24.0", "ruff>=0.14", "pyflakes>=3.2", "build>=1.0"]
 
 [project.urls]
 Homepage = "https://github.com/jasoncychueh/104mcp"

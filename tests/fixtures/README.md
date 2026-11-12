@@ -1,379 +1,237 @@
-# tests/fixtures/ — provenance and regeneration
+# tests/fixtures/ — building your own test data
 
-Every file in this directory is derived, by `research/probes/redact_fixtures.py`, from
-`research/captures/` — the gitignored measurement archive that holds real candidates' résumés,
-names, e-mail addresses and phone numbers taken from a live 104 enterprise session (see
-`research/README.md` and `CLAUDE.md`) — with one exception, `failure_send_validation.json`,
-derived from `research/results/send_validation.json` instead (a probe's recorded output, not a
-raw capture; see its own table row below and "A gap the JSON-API messaging migration could not
-close" for the two messaging-page fixtures this script could not derive from either directory at
-all). A clean clone has no `research/captures/`, so tests must depend only on this directory
-(design.md Testing Strategy). **Nothing here is hand-typed** — every value is produced by the
-script, never edited in the JSON directly — **but "produced by the script" is not the same claim
-as "measured"**: a small number of fields (currently only in `failure_send_validation.json`,
-flagged in its own table row and its own `not_measured` key) are synthesised because the source
-recording never captured them. Look for an explicit "not measured" / "synthesised" marker before
-treating any single field as evidence of what 104 actually sent.
+The JSON files in this directory are **not in version control**. They are 104 responses (or
+shapes derived from them), and real 104 responses carry candidates' personal data: names,
+schools, employers, free text, contact details. Every machine that runs the tests builds its own
+copy; `.gitignore` excludes `tests/fixtures/*.json` so a stray `git add` cannot publish them
+(do not use `git add -f` on them).
 
-## Regenerating
+When a file is missing, the tests that need it fail — they are not skipped — and the failure names
+the file and points here. The simplest way to build a file is to take a real response from your own
+104 enterprise account and replace everything a person supplied: candidate names, contact details,
+schools, employers, free text, photo and attachment URLs, colleagues' names inside `remark`, and,
+in the wrapper files below, the `Cookie` header. The values do not have to be real. They only have to
+meet the conditions listed per file. The maintainer builds the files with a script that is not
+published.
+
+The one file that **is** committed is `describe_result_fields_resume_baseline.json` (last section).
+
+## Two file formats
+
+**Bare body.** The file is the JSON body 104 returned, unchanged in shape:
+`rows_*`, `resume_*`, `zero_row_*`, `jobs_apply`, `refreshable_jobs`.
+
+**Wrapper.** The file records a whole HTTP response, so the tests can replay an error that has no
+JSON body. All `failure_*` files and `refreshable_jobs_no_permit` use it. The tests read exactly
+these keys:
+
+| Key | Type | Meaning |
+|---|---|---|
+| `http_status` | int | the HTTP status code |
+| `content_type` | string | the `Content-Type` header value, exactly as sent |
+| `body_text` | string | the response body as text |
+| `body_json` | object or `null` | `body_text` parsed as JSON; `null` when the body is not JSON |
+
+Any other key is optional and no test reads it (`request_url`, `request_headers_sent`,
+`body_bytes`, `captured_at`, `note`, `derived_unmeasured`, `derived_from`, `derivation`,
+`not_measured`). Existing files do not all carry the same optional keys.
+
+## Files
+
+Each section gives the route and request, the response shape, and what the tests depend on. A
+condition listed here is one a test asserts or relies on; if your file breaks it, the test goes
+red with a message that points back to this file or fails on the missing structure.
+
+### `rows_search.json` — bare body
+
+- Route: `GET vip.104.com.tw/api/search/searchResult`, a keyword search.
+- Shape: `{status: "SUCCESS", message, result: {...}, url, data}`. Rows are in `result.data`.
+  `result.pageInfo` is `{this_page, total_page, total}`; `result.browseLimit` is
+  `{resumeMax: int, onThatDayCount: "<digits as a string>"}`; `result.searchForm` echoes the search
+  that was sent.
+- Conditions:
+  - at least 1 row;
+  - `pageInfo.this_page`, `total_page` and `total` are three different numbers (a test checks that
+    each one is delivered under its own name);
+  - row 1 has an `idNo`, `age` and `sex`;
+  - `result.searchForm.kws` is `應用工程師` (the tests search for that keyword and the tool compares
+    the echo with what was sent); other `searchForm` keys must be 104's own defaults, and
+    `searchForm` has a `jobcat` key;
+  - at least one row has a `masterUrl`, and at least one row has `latestMemo: null`;
+  - at least one row has an `expJobArr` entry with an empty field (`null`, `""` or `[]`) and at
+    least one entry whose `expJobNote` contains HTML;
+  - every key on row 1 is one of the fields 104 really sends for résumé rows (the field-description
+    tool must document every key it finds there).
+
+### `rows_recommend.json` — bare body
+
+- Route: `GET vip.104.com.tw/api/recommend/resumeListAll?jobno=<jobno>`.
+- Shape: like `rows_search.json`; rows in `result.data`, `result.pageInfo` is
+  `{this_page, total_page, total}`, `result.browseLimit` as above.
+- Conditions: at least 1 row; `pageInfo.this_page`, `total_page` and `total` are three different
+  numbers; `expJobArr` entries follow the same two conditions as `rows_search.json` (an empty
+  per-job field, and an `expJobNote` with HTML, each somewhere in the file).
+
+### `rows_match.json` — bare body
+
+- Route: `GET vip.104.com.tw/api/match/matchResult?jobno=<jobno>`.
+- Shape: different from the other two routes. Rows are in `result.resumes` (there is **no**
+  `result.data`); `result.pageInfo` is `{total, start, end, pageRow, total_page, thisPage, prePage,
+  nextPage}` (there is **no** `this_page`); `result.browseLimit` as above.
+- Conditions: at least 1 row; row 1 has an `idNo` of at least 12 digits; `expJobArr` entries follow
+  the same two conditions as `rows_search.json`.
+
+### `rows_applicants.json` — bare body
+
+- Route: `GET auth.vip.104.com.tw/api/apply/applyDetail?jobno=<jobno>`, the applicants of one job
+  over the last 60 days.
+- Shape: `{status: "SUCCESS", ..., result: {...}}`. `result` has `jobNo` (int or string), `jobName`,
+  `jobSwitch`, `jobRole`, `resumeGroups: {today: [...rows], others: [{inputDate, resumes: [...rows]}]}`,
+  `pageInfo`, and `resumeNumber: {match, notMatch, isBlack, recycle}` (all strings of digits).
+  `nccLogBaseData` (the operator's account) may be any placeholder.
+- Conditions:
+  - at least 1 applicant row; every row has `idNo` and `pId`;
+  - `result.jobNo` is the job number the applicants belong to (tests call `list_applicants` with
+    it, and the tool rejects a response whose `jobNo` differs from the request);
+  - `resumeNumber.notMatch`, `isBlack` and `recycle` are all `"0"`;
+  - `pageInfo` is `{total, start, end, pageRow, total_page: 1, thisPage: 1, prePage, nextPage}`;
+  - at least one entry of `resumeGroups.others` holds 2 or more applicants;
+  - `resumeGroups.today` is an empty list (no test needs a populated one).
+
+### `zero_row_applicants.json` — bare body
+
+- Route: same as `rows_applicants.json`, for a job with no applicants.
+- Shape: same envelope; `resumeGroups` is `{today: [], others: []}`.
+- Conditions: `result.pageInfo` is `null`; both groups empty; `result.jobNo` present;
+  `resumeNumber` has the four keys.
+
+### `jobs_apply.json` — bare body
+
+- Route: `GET vip.104.com.tw/job-api/jobs/apply?page=1`, the company's job list.
+- Shape: `{data: [jobs], metadata: {total, page, hasSubDepartment}}`. Each job is `{jobno, job, switch,
+  role, applyCount, applyCount60, department: {id, code, name}}`.
+- Conditions:
+  - between 21 and 40 jobs (the tool looks counts up 20 jobs per request, and tests expect exactly
+    two such requests);
+  - `jobno` values are digit strings, unique;
+  - `applyCount60` is an int on every job; at least one job carries an `applyCount` key.
+
+### `refreshable_jobs.json` — bare body
+
+- Route: `GET vip.104.com.tw/vipapi/job/over-seven-day-job`.
+- Shape: `{data: {jobs: [{jobNo, jobName, appearDate}], userPermit}, metadata}`.
+- Conditions: `data.userPermit` is `true`; every job has `jobNo`, `jobName` and `appearDate`.
+
+### `refreshable_jobs_no_permit.json` — wrapper
+
+- A variant of `refreshable_jobs.json` for an account that may not refresh jobs.
+- Conditions: `http_status` 200, `content_type` `application/json`; `body_json` is the body of
+  `refreshable_jobs.json` with `data.userPermit` set to `false`; `body_text` is `body_json`
+  serialised.
+
+### `resume_unrestricted.json` — bare body
+
+- Route: `GET auth.vip.104.com.tw/vipapi/resume/search/<idNo>`, a résumé whose contact details are
+  public.
+- Shape: `{data: {resume: {...}, ...}, metadata}`. The candidate is in `data.resume`; `data` also has
+  operator-side siblings such as `userName` and `companyName` (the signed-in operator, not the
+  candidate).
+- Conditions:
+  - `data.resume.contactPrivacy` is `"public"`; `data.resume` has `idNo` and `userName`;
+  - `data.resume.auto` is an HTML string (the self-introduction);
+  - `data.resume.callTimeDesc` is a non-empty string (the restricted file's must be longer);
+  - nested values go to arbitrary depth (`achievement.list`, `customResume`, `expJobArr`, ...);
+    the tests check that every key is converted at every depth, so use a résumé with several
+    levels.
+
+### `resume_restricted.json` — bare body
+
+- Route: same as `resume_unrestricted.json`, for a candidate who hides contact details.
+- Shape: same.
+- Conditions:
+  - `data.resume.contactPrivacy` is `"private"`; `data.resume` has `idNo`;
+  - `email`, `phoneDescAll`, `callTimeDesc` and `addressDesc` are 104's human-readable placeholder
+    texts, not real contact data; `email` contains no `@`;
+  - `callTimeDesc` is **longer** than `callTimeDesc` in `resume_unrestricted.json`;
+  - `phone` is an object whose fields are empty.
+
+### `zero_row_search.json` — bare body
+
+- Route: same as `rows_search.json`, for a search that matches nobody.
+- Conditions: `status` `"SUCCESS"`; `result.data` empty or null; `result.searchForm.kws` is
+  `zzqxvkwj9871nonexistentkeyword`; `result.searchForm.sex` is the number `2` (104's "no filter"
+  default); `result.searchForm` has the same keys as `rows_search.json`.
+
+### `zero_row_recommend.json` — bare body
+
+- Route: same as `rows_recommend.json`, for a job with no recommendations.
+- Conditions: `status` `"SUCCESS"`; `result.data` empty; `result.pageInfo` is `{this_page, total_page, total}`
+  with `total` 0.
+
+### `failure_family_a_logged_out.json` — wrapper
+
+- Route: `GET vip.104.com.tw/api/search/getSearchRsNum?kws=...` with no login cookie (any family-A
+  search route behaves the same).
+- Conditions: `http_status` 200; `content_type` starts with `text/html`; `body_json` is `null`;
+  `body_text` is an HTML/JavaScript redirect page that contains the string
+  `/company/status/switchCompany`.
+
+### `failure_family_a_expired.json` — wrapper
+
+- Route: same request with an expired login cookie.
+- Conditions: same as `failure_family_a_logged_out.json` (HTML, `body_json` `null`, contains
+  `/company/status/switchCompany`). The two files do not have to be byte-identical.
+
+### `failure_applicants_company_switch.json` — wrapper
+
+- Route: `GET auth.vip.104.com.tw/api/apply/applyDetail` with no cookie.
+- Conditions: `http_status` 200; `content_type` starts with `text/html`; `body_json.status` is
+  `"COMPANY_SWITCH"`; `body_text` contains `COMPANY_SWITCH` and the **JSON-escaped** form of the
+  redirect target: the characters `\/company\/status` (backslash before each slash); the unescaped
+  redirect target is `/company/status/switchCompany`.
+
+### `failure_applicants_not_found.json` — wrapper
+
+- Route: `GET auth.vip.104.com.tw/api/apply/applyDetail?jobno=<a job that does not exist>`.
+- Conditions: `http_status` 404; JSON content type; `body_json.status` `"DATA_NOT_FOUND"`;
+  `body_json.message` is `此職務不存在`.
+
+### `failure_data_not_found.json` — wrapper
+
+- Route: `GET vip.104.com.tw/api/match/matchResult?jobno=<a closed job>`.
+- Conditions: `http_status` 404; JSON content type; `body_json.status` `"DATA_NOT_FOUND"`; the
+  message contains `此職務已關閉`.
+
+### `failure_access_denied.json` — wrapper
+
+- Route: `GET vip.104.com.tw/api/match/matchResult?jobno=<jobno>` rejected by 104 with `ACCESS_DENIED`
+  (message `invalid referer`).
+- Conditions: `http_status` 200; JSON content type; `body_json.status` `"ACCESS_DENIED"`.
+
+### `failure_family_b_unauthenticated.json` — wrapper
+
+- Route: `GET auth.vip.104.com.tw/job-api/jobs/recommend?page=1` called without a login cookie (any
+  `auth.vip.104.com.tw` route behaves the same).
+- Conditions: `http_status` 401; JSON content type; `body_json` is an object with an `error` key and
+  no `status` key.
+
+### `failure_send_validation.json` — wrapper
+
+- Route: `POST auth.vip.104.com.tw/bc-comm/message/<jobno>-<pId>` with a body that has no `content`.
+- Conditions: `http_status` 400; JSON content type; `body_json` is
+  `{code, message, detail}` where `detail` is an object whose `content` entry is a list of messages
+  containing the word `required` (any letter case).
+
+## `describe_result_fields_resume_baseline.json` — committed
+
+This is **not** a 104 response. It is a snapshot of what `describe_result_fields("resume")` returns:
+this package's own field-description text. It holds no candidate data, so it is committed. It also
+cannot be "built locally": generating it from the current code would make the test compare the code
+with itself. The test checks that the résumé descriptions do not change; when you change them on
+purpose, regenerate this file in the same commit:
 
 ```
-python research/probes/redact_fixtures.py
+python -c "import json; from mcp104.tools.discovery import _describe_result_fields as d; f = open('tests/fixtures/describe_result_fields_resume_baseline.json', 'w', encoding='utf-8', newline='\n'); f.write(json.dumps(d('resume'), sort_keys=True, ensure_ascii=False, indent=2) + '\n'); f.close()"
 ```
 
-Requires `research/captures/` to be present locally (it exists only in the main working tree;
-from a feature worktree, run the main tree's copy of the script with `--out <worktree>/tests/fixtures`,
-which writes there instead). Re-run whenever a capture under
-`research/captures/` is corrected — that is the entire reason the derivation is scripted rather
-than hand-maintained: a hand-edited fixture silently stops tracking its source the next time a
-measurement is corrected.
-
-## A gap the JSON-API messaging migration could not close
-
-The messaging migration's plan called for two more fixtures here — one inbox (`all-stream`) page
-and one conversation — derived from `research/captures/` by the same redaction this script
-already applies to `rows_*.json`. **No such raw capture exists.** `research/captures/` holds no
-`all-stream` body and no conversation body; the only messaging-related artifacts under
-`research/` are analysis outputs (`research/results/messaging_contract.json`,
-`messaging_endpoints.json`) that record field names, counts and correlation statistics, never a
-full response body with real row data. Recording the gap rather than papering over it: `git
-grep -l "all-stream\|jobNo.*pId\|candidateName" research/captures/` and a recursive search for
-`*message*`/`*inbox*`/`*conversation*`/`*stream*` under `research/captures/` both come back with
-nothing beyond `03_bc-comm_message_setting.json` and `07_bc-comm_message_unread-stream.json` —
-neither of which is a row-bearing body.
-
-`tests/test_messaging.py` therefore follows the precedent `tests/test_search.py` already set for
-`list_jobs`' missing success-body fixture (see that file's own module docstring, "No committed
-fixture exists for list_jobs' success body"): synthetic inbox rows and conversation messages,
-built directly in the test file rather than committed under `tests/fixtures/`, using the
-MEASURED field names (docs/104-site-facts.md §6b.7/§6b.8/§6b.10, cross-checked against
-`messaging_contract.json`'s own field-name sweep — 19 inbox fields, 13 message fields, both
-counts agreeing independently) with invented values. This is a deviation from the migration
-plan's literal instruction and is flagged here rather than silently resolved, per this project's
-"measure, don't infer" rule — closing it for real requires Verification steps 8/9 (a live
-`read_messages()`/`get_conversation()` call), at which point the captured response should be
-archived to `research/captures/` and this script extended with `build_inbox_page`/
-`build_conversation` builders mirroring `build_rows_search`'s redaction shape.
-
-## What is here, and where it came from
-
-| Fixture | Source | Personal data | Treatment |
-|---|---|---|---|
-| `access_denied.json` | `research/captures/zero_row_match.json` | none | copied verbatim |
-| `zero_row_search.json` | `research/captures/zero_row_search.json` (`.body` unwrapped from the probe's own diagnostic envelope) | none — empty container | copied verbatim |
-| `zero_row_recommend.json` | `research/captures/zero_row_recommend.json` | none — empty container | copied verbatim |
-| `rows_search.json` | `research/captures/api_bodies/08_api_search_searchResult.json` (50 rows) | names, ages, areas, photo URLs | redacted per row |
-| `rows_recommend.json` | `research/captures/reco_match_rows.json`, key `/api/recommend/resumeListAll` (50 rows) | same | redacted per row |
-| `rows_match.json` | `research/captures/reco_match_rows.json`, key `/api/match/matchResult` (3 rows, container key `resumes` — deliberately different from the other two routes, see design.md Components §9 / T-11) | same | redacted per row |
-| `resume_unrestricted.json` | `research/captures/resume_correct_host.json` (`contactPrivacy: "public"`) | name, contact fields, attachments, operator identity | redacted |
-| `resume_restricted.json` | `research/captures/resume_private.json` (`contactPrivacy: "private"`) | name, attachments, operator identity | redacted — **except** the masked contact fields, preserved byte-for-byte (see below) |
-| `failure_family_a_logged_out.json` | `research/captures/failure_family_a_logged_out.json` | none | body copied verbatim; **`note` corrected** — the capture's own note says the body is a JSON envelope carrying `COMPANY_SWITCH`, but the body is an HTML/JavaScript redirect page (see "The `COMPANY_SWITCH` envelope did not reproduce" below). The JSON `COMPANY_SWITCH` shape is `failure_applicants_company_switch.json` |
-| `failure_family_a_expired.json` | `research/captures/failure_family_a_expired.json` | none in the body; the wrapper's `request_headers_sent.Cookie` was a live session credential | body copied verbatim; `Cookie` header value replaced with a redaction placeholder |
-| `failure_family_b_unauthenticated.json` | `research/captures/failure_family_b_unauthenticated.json` | same | same |
-| `failure_access_denied.json` | `research/captures/failure_access_denied.json` | same | same |
-| `failure_data_not_found.json` | `research/captures/failure_data_not_found.json` | same | same |
-| `failure_send_validation.json` | `research/results/send_validation.json` (the `"both_bogus:empty"` entry, `research/probes/probe_send_validation.py`'s reject-and-read output) | none — every target thread used `pId=0` (non-existent), no probed body ever carried text | **partially synthesised, not "copied verbatim"** — `http_status` and `body_json` are the probe's own measured `status`/`body`, copied through unchanged; `content_type` was never recorded by the probe on this route (assumed, matched to the one auth-host route that IS measured — `failure_family_b_unauthenticated.json`'s `application/json;charset=utf-8`, no space after the semicolon; the vip-host family-A fixtures write it with a space, which is a different host, not evidence for this one) and `body_text` is `body_json` re-serialised by the script, not captured bytes. The fixture's own `not_measured` field states both gaps; see `build_failure_send_validation`'s docstring in `redact_fixtures.py` for the full account |
-
-### `list_applicants` and job-read fixtures (`applicants_prework_*` captures, 2026-11-12)
-
-Sources are the raw bodies archived by the `list_applicants` pre-work probes
-(`research/probes/probe_applicants_prework.py` and two one-off follow-ups; results in
-`research/results/applicants_prework.md`). All are GETs against a real enterprise session; the
-script writes them with the same `build_*` machinery as the rest of this directory.
-
-| Fixture | Source | Personal data | Treatment |
-|---|---|---|---|
-| `rows_applicants.json` | `applicants_prework_applyDetail_11706763_ec4.json` (`GET /api/apply/applyDetail`, 12 applicants over 11 day-groups, one group holds two; `resumeGroups.today` is empty — **no capture has a non-empty `today` group**, so that shape is unmeasured) | every candidate-supplied string, see below | redacted per row |
-| `zero_row_applicants.json` | `applicants_prework_applyDetail_12007405_r1.json` (open job, no applicants: `pageInfo: null`, both groups empty, `resumeNumber` all `"0"`) | none | verbatim except the business-account ids |
-| `applicants_out_of_range_page.json` | `applicants_prework_applyDetail_11706763_p2.json` (`page=2` on a one-page job: both groups empty, `pageInfo` `{total: 12, start: 50, end: 12, thisPage: 2, nextPage: 100 ...}` — `start`/`end`/`nextPage` are meaningless there) | none | verbatim except the business-account ids |
-| `failure_applicants_company_switch.json` | `applicants_prework_fail_nocookie.txt` (no cookies at all) | none | wrapper `{http_status 200, content_type "text/html; charset=UTF-8", body_text, body_json}`; `body_text` is the archived text byte for byte (escaped slashes in `url` kept), `body_json` its parse. The request's query string was not archived, so `request_url` (auth host) carries no query string |
-| `failure_applicants_not_found.json` | `applicants_prework_fail_b_nonexistent.json` (job `99999999`; a 13-digit job number measured the same) | none | wrapper, HTTP 404 `DATA_NOT_FOUND` / `此職務不存在`. `body_text` is the archived file's text (pretty-printed, CRLF); the probe logged 130 wire bytes for this request, the archived 148 is the stored text — `body_bytes` is the stored length |
-| `jobs_apply.json` | `applicants_prework_jobs_apply.json` (`GET /job-api/jobs/apply?page=1`, 21 jobs, `applyCount` 0 on all, `applyCount60` meaningful) | none — our own company's job numbers, titles, department names | verbatim (re-indented) |
-| `match_number.json` | `applicants_prework_match_number_5.json` (`GET /vipapi/search/match-number`, 5 `jobNos[]` deliberately not in `jobs/apply` order; returned order equals request order; all three values strings) | none | verbatim (re-indented) |
-| `refreshable_jobs.json` | `applicants_prework_over_seven_day_job.json` (`GET /vipapi/job/over-seven-day-job`, 12 jobs, `userPermit: true`) | none | verbatim (re-indented) |
-| `match_number_missing_row.json` | **derived, not measured** from `match_number.json` | none | one row deleted (the third of five); wrapper carries `derived_unmeasured: true`, `derived_from`, `derivation`, `request_jobnos` (the five asked for), `not_measured` |
-| `refreshable_jobs_no_permit.json` | **derived, not measured** from `refreshable_jobs.json` | none | `data.userPermit` flipped to `false`; same wrapper keys |
-
-**The two derived fixtures are not 104 responses.** Neither variant was ever observed (104 was never
-seen dropping a `match-number` row; this account only ever had `userPermit: true`). Each is the
-measured body with one stated edit, labelled so inside the file; the measured body sits unchanged in
-`body_json` so a test can hand it to the transport exactly as it would a real response, and
-`body_text` is `body_json` re-serialised by the script, not captured bytes — the same precedent as
-`failure_send_validation.json`. Use them to exercise how the code copes with that shape, never as
-evidence of what 104 sends. `content_type` on both is the one measured for their *source* route
-(`application/json`); it is not a measurement of the derived case.
-
-**Applicant rows get the strict redaction, not the "names, ages, areas" scope of the `rows_*`
-fixtures above.** Every applicant row is real people's data, and these fixtures cover the whole
-row, so everything the candidate supplied is replaced with a synthetic value of the same shape —
-keys, value types, list lengths, nesting and the day-group layout are unchanged:
-
-- replaced: `userName`, `age`, `areaDesc`, `personalPic`; `idNo` (kept ≥ 12 digits), `pId` (7–8
-  digits), `autoNo`, `snapshotId`; `eduDesc` (degree word kept, school and department replaced);
-  `titleCatDesc`; `skills` (and the same strings inside `fitness`); per `expJobArr` entry the
-  employer name, job title, free-text note (`<p>` wrapping kept), skill list and any wage; the
-  `otherCourse` description and credential link; `latestMemo` if present;
-- in `remark`/`remarkWithoutHtml`: the staff name recorded as the actor, the ids inside the message
-  anchor (`id_no`, `pid`, the `msgMaster/<jobno>/<pid>` path, `bc_msg_id_*`) and the template title in
-  `【…】` are replaced; timestamps, action words and our own company's department and job-title
-  segments are kept;
-- kept as measured: dates and durations, 104's fixed-vocabulary descriptions (`expJobDesc`,
-  `expIndDesc`, `expManagementDesc`, `coSizeDesc`, `expPeriodDesc`, `sexDesc`), the flags and
-  versions, the placeholder `公司名暫不公開` (104's own masking text), and our own company's job number,
-  job title and department names (the same treatment `rows_recommend.json` gives `jobName`).
-- `nccLogBaseData` (`custno`, `Buserid`, `pid`) carries the same synthetic business-account values
-  as every other fixture; the script now applies that substitution to every file it writes (it
-  previously relied on a manual pre-publish pass, so regenerating would have restored the real ids).
-
-After writing, the script asserts that none of the original names, ids, photo URLs, employer names or
-staff names appears anywhere in `rows_applicants.json`, and the widened sweep below also checks the
-applicant names and staff names against every file in this directory. The sweep's e-mail/phone-shape
-checks found nothing. As with the earlier rows, a candidate-supplied string no rule anticipated would
-only be caught by reading; the non-ASCII strings left in `rows_applicants.json` were listed and read
-(all are replaced values, 104's fixed vocabulary, or our own job and department names).
-
-`access_denied.json`'s source filename is misleading: `zero_row_match.json` does not actually
-hold an empty-result match body — it holds the same `ACCESS_DENIED` shape that
-`failure_access_denied.json` now documents more completely (with HTTP status, content type and
-request headers alongside the body). Both are kept: `access_denied.json` is the older, bare-body
-fixture; `failure_access_denied.json` is the fuller wrapper. See "How these were obtained" below
-for why a richer capture exists now.
-
-## The masking pair: opposite treatment on the contact fields
-
-`resume_unrestricted.json` / `resume_restricted.json` are 104's own measured proof
-(`docs/104-site-facts.md` §6b.3d) that a privacy-restricted résumé has its contact fields filled
-with placeholder text rather than emptied: the restricted résumé's `email` is a short string with
-no `@`, and `callTimeDesc` is *longer* than the unrestricted résumé's — the shape that defeats a
-"shorter means masked" heuristic. **Those placeholder values are 104's masking, not the
-candidate's data.** `redact_fixtures.py` asserts, before writing `resume_restricted.json`, that
-`email`, `phoneDescAll`, `callTimeDesc`, `addressDesc` and every `phone` sub-field are still
-byte-identical to `research/captures/resume_private.json` — if a future edit to the script ever
-touches one of them, the script raises instead of silently degrading the fixture that several
-tests (T-15, T-16) depend on.
-
-### Design-basis gap this script resolved conservatively
-
-design.md's Testing Strategy states plainly: *"What is redacted is the unrestricted candidate's
-real contact details and name."* Read literally, that leaves the **restricted** candidate's name
-alone. But 104 does not mask the name field on a privacy-restricted résumé — only the contact
-fields — so the restricted résumé's `userName`/`engName` are the candidate's real, unmasked name,
-not a masking placeholder. Leaving them in a committed fixture would fail this task's own
-mandatory safety check (no real candidate name in `tests/fixtures/`). This script redacts the
-restricted résumé's name exactly as it redacts the unrestricted one's, while leaving every
-masking-placeholder field untouched. This is very likely what design.md intended (the sentence is
-almost certainly summarizing "redact real names and contact details, preserve 104's masking" —
-not making a deliberate exception for one candidate's name) but it is a literal deviation from the
-doc's wording, flagged here rather than silently resolved, per this project's "measure, don't
-infer" standing rule and the "no assumptions" rule this task was dispatched under.
-
-### Fields intentionally left as measured, not redacted
-
-design.md scopes the row-set redaction to "names, ages, areas" and the résumé pair's redaction to
-"name and contact details." This script matches that scope rather than guessing at a broader one.
-Left untouched: `expJobArr` (employment history — employer names, job descriptions),
-`eduDesc`/`major`/school fields, and free-text fields such as `characteristic`, `workDesc`,
-`introduction`, `motto`, `talentDesc` (except for a literal-name safety-net scrub, below). If a
-future reviewer wants these redacted too, that is a scope change to make deliberately, not a gap
-found by accident.
-
-### What manual audit found beyond design.md's explicit list, and why it's handled
-
-Design.md's stated scope ("name and contact details") undersells what a full résumé object
-actually contains. Reading every field of both captures by hand (not just the fields design.md
-names) surfaced three things the literal scope would have missed, all fixed in
-`redact_fixtures.py`:
-
-- **The candidate's own name written into free text.** `resume.auto` (self-written biography) on
-  the unrestricted résumé read, in part, "...我叫[真實姓名]..." ("...my name is [real name]...") —
-  the candidate wrote their own name into their own biography (the real name is deliberately not
-  reproduced here — this document is itself committed to version control, so quoting it would
-  recreate exactly the leak this section describes catching). Field-by-field redaction of only the
-  structured `userName`/`engName` fields would have left this in place. `redact_fixtures.py`'s
-  `_scrub_literal` runs after the structured redaction and replaces every remaining literal
-  occurrence of the candidate's real name (in every written form found) across all string fields,
-  including narrative ones this script otherwise deliberately leaves alone.
-- **A real external link to the candidate's own document.** `attachArr[0].link` on the
-  unrestricted résumé, and `customContent.list[0].body[0].url`/`.file.url` on the restricted
-  résumé, were live `docs.google.com` URLs pointing at the candidate's own uploaded
-  presentation/portfolio — including, in one case, the candidate's Google Drive account id in the
-  query string, and an attachment `title` with the candidate's name embedded in the filename.
-  `_redact_candidate_attachments` replaces every such attachment/achievement/custom-content link
-  and title with a synthetic placeholder. Left alone: `achievement.list[*].url` (a generic public
-  reference page, e.g. a vendor driver-download page — not the candidate's own content) and
-  `expFirmLogo` (the *employer's* public logo, not the candidate's data).
-- **The photo URL on the restricted résumé.** `personalPic` is a real photo-download URL on both
-  résumés; 104 does not mask it under `contactPrivacy: private` (it is not part of the
-  measured masking signal in §6b.3d), so it is the candidate's own data on both, and is redacted
-  on both.
-
-`redact_fixtures.py` asserts, before writing either résumé fixture, that the original name (both
-written forms), email, phone values, photo URL and any `docs.google.com`/`drive.google.com`
-substring are absent from the output — the script fails loudly rather than silently shipping a
-fixture with one of these values still present.
-
-### The signed-in operator's own identity
-
-Every résumé-detail response — regardless of which candidate is open — also carries the *viewing
-account's* own name and company (`data.userName`, `data.companyName`) and account identifiers
-(`data.nccLogBaseData.ext`). This is not a candidate's data; it is the real human operator who
-captured these responses. Both fixtures redact `data.userName`/`data.companyName`
-unconditionally (`_redact_operator_envelope`). Business account identifiers embedded elsewhere in
-several fixtures (`custno`, `Buserid`, `pid`, distinct from the operator's name/company) are
-**not** redacted — they identify the recruiting agency's account, not a person, and design.md
-categorizes the bodies they appear in ("zero-row", "unauthenticated") as carrying no personal
-data; this script follows that categorization rather than widening it unilaterally.
-
-**Update (pre-publish scrub):** `pid`, `custno` and `Buserid` are no longer the real business
-account identifiers captured from the live session — every occurrence across every fixture that
-carries them (including inside URL query strings such as `manage_pid`) has been replaced with a
-synthetic value of the same digit length, applied consistently so the same real identifier maps
-to the same synthetic one everywhere it appears.
-
-## Bystanders in the activity log — a third population the original sweep missed
-
-An independent review found real names and corporate e-mail addresses still present in
-`rows_recommend.json` after every check described above had passed: `remark`/`remarkWithoutHtml`
-(a row's message/interview-invite/forward activity log, one entry per past action) named real
-people, twice over, in two different ways.
-
-**What was there.** Every populated `remark`/`remarkWithoutHtml` entry follows 104's own log
-format, roughly `<timestamp> <action>｜<department>｜<job title>｜<staff name>[｜行動裝置_<device>]`
-for a staff-initiated action, or `<timestamp> 應徵履歷｜<department>｜<job title>` (no staff name)
-for a candidate-initiated one. Walking every `｜`-delimited segment of every `remark`/
-`remarkWithoutHtml` entry across all three row datasets (search/recommend/match) and checking
-each distinct segment by hand found exactly two real staff members recorded as the acting
-recruiter, on dozens of entries, with **no e-mail or phone number anywhere near them** — plain
-Han-character names sitting between two pipe delimiters, next to department and job-title
-segments of the same shape. It also confirmed the pair the independent review reported: one
-`remark` entry read (translated) *"forwarded full résumé to [name]([e-mail]), [name]([e-mail])"*
-— two more real people, this time with two corporate addresses.
-None of the four are the row's own candidate, and none is the signed-in operator (`data.userName`
-on a résumé-detail response, confirmed by the JWT `sub` claim) — they are the account holder's own
-colleagues, named in passing in an activity log that nothing in design.md's fixture table
-anticipated needing redaction at all.
-
-**Why the earlier checks reported zero and were still wrong.** Every verification in this file up
-to this point was built around a two-person notion of "whose data this is": the record's subject
-(candidate) and the record's viewer (operator). Both checks searched honestly for exactly what
-they were built to find, and found none of it, because a bystander mentioned in a free-text log
-line is neither. The email/phone-anchored literal-scrub approach used for résumé attachments
-(`_scrub_literal`) would also have missed most of these: only two of the four bystanders have an
-e-mail anywhere nearby to anchor on. The lesson carried into `redact_fixtures.py` is in its
-`_verify_no_stray_identifiers` docstring: the sweep now asks "is this a real person's identifier,
-whoever they are" rather than "is this the candidate's / operator's."
-
-**The fix.** `_BYSTANDER_NAME_LITERALS`/`_BYSTANDER_EMAIL_LITERALS` in `redact_fixtures.py` name
-the four people and two e-mails found, and `_scrub_bystanders_in_row` replaces every literal
-occurrence of any of them, in every string field of every row (not just `remark`), with a
-deterministic synthetic name/e-mail — consistent across every occurrence of the same bystander
-within a run, so "forwarded to A, B" and "actor: A" don't produce three unrelated synthetic
-identities for two real people. Department and job-title segments sharing the same pipe-delimited
-position (`應用工程部`, `應用工程師`, etc.) are not in the literal table and are left alone.
-
-**A permanent, generic backstop was added on top of the specific fix**, per the instruction that
-motivated it: `_verify_no_stray_identifiers` runs after every `build_*` call, re-reads every file
-actually written to `tests/fixtures/`, and fails the script (raises, before it reports success) if
-it finds either (a) any of the 115 real identifiers this script has ever had to know about
-(candidates + operator + these four bystanders, collected from the source captures at run time
-rather than hand-maintained, so the list can't silently drift stale) or (b) any e-mail-shaped or
-Taiwan-phone-shaped string that isn't in the registry of values this run's own generators
-produced. (b) is the part that matters for the *next* leak: it does not require knowing in advance
-who the next bystander is, only that their e-mail or phone doesn't look like this script's own
-synthetic output. It is a heuristic, not a guarantee — a bystander named with no e-mail or
-phone-shaped string anywhere nearby (as two of these four originally were) is still only caught by
-(a), which means a genuinely new such mention in a future capture would need to be found by
-inspection the way this one was, the same way the original four were found: by reading the data
-by hand, not by trusting an automated sweep to be complete on its own.
-
-**Regeneration confirmed only `rows_recommend.json` and `rows_match.json` changed** beyond the
-five `failure_*` additions from the previous round — `rows_match.json` was not mentioned in the
-report that prompted this fix, but both bystanders (the two staff names; the two forwarded-to
-colleagues appear only in `rows_recommend.json`) also show up as the recorded actor on one row
-each in the match dataset. `rows_search.json` and both résumé fixtures were re-verified and are
-byte-identical to before this fix — no bystander was found in either.
-
-## How these were obtained — re-measured, not reconstructed
-
-The first pass through this task found that design.md's Testing Strategy table listed five
-shapes as available to copy verbatim from `research/captures/` — the Family A unauthenticated
-envelope, the Family A natural-expiry HTML redirect, the Family B 401 body, `ACCESS_DENIED`, and
-`DATA_NOT_FOUND` — when in fact only `ACCESS_DENIED` had a raw capture on disk (as
-`zero_row_match.json`, misleadingly named). The other four existed only as prose/table excerpts in
-`docs/104-site-facts.md`, two of them explicitly truncated (`target_link_uri=...`, `<scrip…`) and
-one given only as a byte count (`{"error": …} (60 bytes)`). That was reported as a blocker rather
-than resolved by transcribing the doc's prose into a file that would look like a measurement
-without being one — consistent with this project's "measure, don't infer" rule.
-
-The blocker turned out to be an archiving gap, not a measurement gap: these five shapes had been
-measured on 2026-08-14 but only ever printed to a terminal, never saved to
-`research/captures/`. Rather than have the missing four transcribed from doc prose (which would
-produce a file that looks like a measurement and is actually someone's typing), they were
-re-measured live and archived as `research/captures/failure_*.json` — each one a wrapper
-recording `captured_at`, `note`, `request_url`, `request_headers_sent`, `http_status`,
-`content_type`, `body_bytes`, `body_text` and `body_json` (null when the body isn't JSON), so a
-test can assert on status and content type as well as body. Three of the five needed no
-authentication at all (`failure_family_a_logged_out`, and the two that go through a valid session
-were captured alongside the two that don't for direct comparison).
-
-### The `COMPANY_SWITCH` envelope did not reproduce
-
-Both design.md and `docs/104-site-facts.md` described the logged-out Family A response as a JSON
-envelope carrying `status: "COMPANY_SWITCH"`, served under a `text/html` header. **Re-measuring
-it did not reproduce that.** Sending no cookies at all
-(`failure_family_a_logged_out.json`) now returns the same *kind* of HTML/JavaScript
-`location.href` redirect that natural session expiry returns
-(`failure_family_a_expired.json`) — **no `COMPANY_SWITCH` string, and no JSON-parseable body,
-anywhere in either capture.** The two bodies remain distinct from each other (different
-Cloudflare challenge-script parameters embedded in each, confirmed byte-for-byte different), just
-not in the way either document described.
-
-Three explanations are consistent with this and **are not distinguished by anything measured
-here**: the original measurement used a different method (stripping specific session cookies
-rather than sending none — a method difference design.md's own citation format already flags as
-possible), 104 changed its logged-out response between the original measurement and 2026-08-14,
-or the original record was mistaken. `docs/104-site-facts.md` now states this discrepancy
-explicitly rather than silently updating the old claim. **Do not describe either
-`failure_family_a_logged_out.json` or `failure_family_a_expired.json` as "the `COMPANY_SWITCH`
-body" — as measured today, neither is one.** The redirect-body classification logic
-(Error Handling scenario 4) still applies to both: they carry the same
-`/company/status/switchCompany` signal in the `location.href` value, just not the alternate
-JSON-envelope shape the design document also describes. If a test specifically needs a
-`COMPANY_SWITCH`-carrying envelope, use `failure_applicants_company_switch.json`: the JSON envelope
-(`{"status": "COMPANY_SWITCH", ..., "url": "\/company\/status\/switchCompany?target_link_uri="}`) was
-later measured on `GET /api/apply/applyDetail` with no cookies, HTTP 200 and `text/html; charset=UTF-8`.
-It was not measured on the search route these two fixtures come from, so it stays a distinct fixture
-with its own request path.
-
-### Credentials found in the wrapper, stripped before committing
-
-The coordinator's instruction described all five re-measured captures as carrying no personal
-data and safe to copy verbatim, since each is an error response for a request that returned no
-candidate. That is true of the **response body** on all five. It is not true of the **request
-wrapper**: `request_headers_sent.Cookie` on four of the five (every one captured through a valid
-session) is a real, live session — `PHPSESSID`/`CFID`/`CFTOKEN`, `cf_clearance`, and 104's own
-`its`/`ithp` session JWTs. Decoding the `ithp` JWT payload (routine base64url, no secret needed)
-surfaces `login_no`, `company_id`, `pid`, and a `sub` claim carrying the signed-in operator's
-real e-mail address. This is a live, replayable credential and the operator's real identity, not
-descriptive client metadata — checked for and confirmed, not assumed, per the coordinator's
-explicit ask to confirm rather than assume the "no personal data" premise.
-
-`redact_fixtures.py`'s `build_failure_envelope_fixtures` copies every field of each wrapper
-through unchanged **except** `request_headers_sent.Cookie`, which is replaced with a fixed
-placeholder string (`_REDACTED_HEADER_PLACEHOLDER`) rather than deleted, so the fixture still
-shows structurally that a cookie was sent without carrying its value. This is not part of
-design.md's stated PII policy for these fixtures (which only discusses response bodies) — it is
-an additional safety measure this script applies unconditionally to any fixture wrapper that
-carries a `request_headers_sent` block, regardless of what the response body contains.
-
-## Committability
-
-`git add tests/fixtures/` stages every JSON fixture plus this README cleanly (verified).
-Note:
-`git check-ignore -v tests/fixtures/` (directory path, trailing slash) prints a spurious match
-(`.gitignore:9: tests/fixtures/`, pointing at a *blank* line in `.gitignore`) — this is a git
-diagnostic quirk on a not-yet-tracked directory path, not a real ignore rule: `git check-ignore -v`
-against each individual file returns nothing, `git status --porcelain --ignored` reports the
-directory as untracked (`??`, not the ignored marker `!!`), and `git add` stages every file
-without complaint. The actual ignore rule in `.gitignore` (line 14, `research/captures/`) does not
-reach `tests/fixtures/` at all.
+(Check the output with `git diff` first: the diff is the change you are announcing.)

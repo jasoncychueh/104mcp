@@ -15,7 +15,7 @@ Nothing is mocked across the classify / guard seam.
 Import discipline: tools/jobs.py is imported lazily (see _jobs()), so a missing module fails
 the Phase 2 tests with ImportError but does not stop collection of the Phase 1 tests above.
 
-Fixture use: every body comes from tests/fixtures/ (design C8). Two things are built in the
+Fixture use: every body comes from tests/fixtures/. Two things are built in the
 test body, not read from a fixture, and each says so where it happens:
   * a non-empty resumeGroups.today (no capture has one; T-8 moves a row into it);
   * match-number responses for 21 / 81 / 80 jobs (the only measured match-number fixture
@@ -29,7 +29,6 @@ import json
 import re
 import time
 from datetime import date, datetime, timedelta, timezone
-from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -45,11 +44,8 @@ from mcp104.db.database import Database
 from mcp104.tools.helpers import get_session_id
 from mcp104.tools.messaging import register_messaging_tools
 from mcp104.tools.search import register_search_tools
-from tests.conftest import _SeqFetchSpy
+from tests.conftest import _SeqFetchSpy, load_fixture
 
-JOBNO = "11706763"
-ZERO_ROW_JOBNO = "12007405"  # zero_row_applicants.json was captured for this job
-FIXTURES_DIR = Path(__file__).parent / "fixtures"
 TAIPEI = timezone(timedelta(hours=8))
 UTC = timezone.utc
 MATCH_BATCH = 20
@@ -60,9 +56,6 @@ NOT_LOGGED_IN = {"error": "請先呼叫 login()"}
 
 # ── Fixture / fake-transport plumbing (mirrors tests/test_search.py and test_events.py) ─
 
-def _load(name: str):
-    return json.loads((FIXTURES_DIR / name).read_text(encoding="utf-8"))
-
 
 def _raw(status, content_type, body, parsed_json, location=None) -> RawResponse:
     return RawResponse(status=status, location=location, content_type=content_type,
@@ -70,7 +63,7 @@ def _raw(status, content_type, body, parsed_json, location=None) -> RawResponse:
 
 
 def _raw_from_wrapper(name: str) -> RawResponse:
-    d = _load(name)
+    d = load_fixture(name)
     return _raw(d["http_status"], d["content_type"], d["body_text"], d["body_json"])
 
 
@@ -183,9 +176,15 @@ def _messaging_tool(name: str):
     return _registered_tool(register_messaging_tools, name)
 
 
-async def _call_tool(name: str, ctx, jobno: str = JOBNO):
+def _jobno() -> str:
+    """The job number rows_applicants.json was captured for. list_applicants compares the
+    response's jobNo with the request, so the request must carry this machine's value."""
+    return str(load_fixture("rows_applicants.json")["result"]["jobNo"])
+
+
+async def _call_tool(name: str, ctx, jobno: str | None = None):
     if name == "list_applicants":
-        return await _tool(name)(jobno, ctx=ctx)
+        return await _tool(name)(jobno if jobno is not None else _jobno(), ctx=ctx)
     return await _tool(name)(ctx=ctx)
 
 
@@ -283,7 +282,7 @@ def _batches(jobnos) -> list[list[str]]:
 
 
 def _jobs_body(jobnos) -> dict:
-    template = _load("jobs_apply.json")["data"][0]
+    template = load_fixture("jobs_apply.json")["data"][0]
     rows = []
     for i, jn in enumerate(jobnos):
         row = copy.deepcopy(template)
@@ -291,6 +290,14 @@ def _jobs_body(jobnos) -> dict:
         row["job"] = f"職缺{i:03d}"
         rows.append(row)
     return {"data": rows, "metadata": {"total": len(rows), "page": 1, "hasSubDepartment": True}}
+
+
+def _require_two_count_batches(jobs) -> None:
+    """Precondition for tests that look at the first and second count batch: jobs_apply.json
+    must hold 21-40 jobs (20 per count request)."""
+    assert 20 < len(jobs) <= 40, (
+        "jobs_apply.json needs 21-40 jobs so the count lookup takes two batches (tests/fixtures/README.md)"
+    )
 
 
 def _jobnos_of(body) -> list[str]:
@@ -311,7 +318,7 @@ async def _run_list_jobs(tmp_path, monkeypatch, jobs_body, *, match_bodies=None)
 
 
 def _applicant_raw(mutate) -> RawResponse:
-    body = _load("rows_applicants.json")
+    body = load_fixture("rows_applicants.json")
     mutate(body)
     return _raw_from_body(body)
 
@@ -320,9 +327,9 @@ def _applicant_raw(mutate) -> RawResponse:
 
 # -- T-45: normalise_jobno --------------------------------------------------------
 
-@pytest.mark.parametrize("value", [11706763, JOBNO], ids=["int", "digit-string"])
+@pytest.mark.parametrize("value", [11706763, "11706763"], ids=["int", "digit-string"])
 def test_normalise_jobno_returns_the_digit_string_for_an_int_or_a_digit_string(value):
-    assert helpers.normalise_jobno(value) == JOBNO
+    assert helpers.normalise_jobno(value) == "11706763"
 
 
 @pytest.mark.parametrize("value", [None, "", "12a", 1.5], ids=["none", "empty", "letters", "float"])
@@ -334,7 +341,7 @@ def test_normalise_jobno_refuses_anything_that_is_not_a_job_number(value):
 # -- T-46: jobno_error ------------------------------------------------------------
 
 def test_jobno_error_passes_a_non_empty_digit_string_without_an_error():
-    assert helpers.jobno_error(JOBNO) is None
+    assert helpers.jobno_error("11706763") is None
 
 
 @pytest.mark.parametrize(
@@ -366,9 +373,9 @@ async def test_applicant_window_is_sixty_days_ending_on_taipei_today(tmp_path, m
     real_taipei_today = jobs.taipei_today
     monkeypatch.setattr(jobs, "taipei_today", lambda *args, **kwargs: real_taipei_today(now=now))
     ctx, _info = await _new_session(tmp_path)
-    spy = _install(monkeypatch, [_raw_from_body(_load("rows_applicants.json"))])
+    spy = _install(monkeypatch, [_raw_from_body(load_fixture("rows_applicants.json"))])
 
-    result = await _tool("list_applicants")(JOBNO, ctx=ctx)
+    result = await _tool("list_applicants")(_jobno(), ctx=ctx)
 
     assert len(spy.calls) == 1
     params = _pdict(spy.calls[0][1])
@@ -382,11 +389,11 @@ async def test_applicant_window_is_sixty_days_ending_on_taipei_today(tmp_path, m
 @pytest.mark.asyncio
 async def test_each_applicant_row_carries_candidate_id_from_id_no_and_p_id_from_p_id(tmp_path, monkeypatch):
     ctx, _info = await _new_session(tmp_path)
-    _install(monkeypatch, [_raw_from_body(_load("rows_applicants.json"))])
+    _install(monkeypatch, [_raw_from_body(load_fixture("rows_applicants.json"))])
 
-    rows = (await _tool("list_applicants")(JOBNO, ctx=ctx))["results"]
+    rows = (await _tool("list_applicants")(_jobno(), ctx=ctx))["results"]
 
-    source = _fixture_rows(_load("rows_applicants.json"))
+    source = _fixture_rows(load_fixture("rows_applicants.json"))
     assert [r["candidate_id"] for r in rows] == [str(s["idNo"]) for s in source]
     assert [r["p_id"] for r in rows] == [str(s["pId"]) for s in source]
     for row in rows:
@@ -398,11 +405,11 @@ async def test_each_applicant_row_carries_candidate_id_from_id_no_and_p_id_from_
 @pytest.mark.asyncio
 async def test_p_id_reaches_get_conversation_and_candidate_id_reaches_get_resume_detail(tmp_path, monkeypatch):
     ctx, _info = await _new_session(tmp_path)
-    _install(monkeypatch, [_raw_from_body(_load("rows_applicants.json"))])
-    row = (await _tool("list_applicants")(JOBNO, ctx=ctx))["results"][0]
+    _install(monkeypatch, [_raw_from_body(load_fixture("rows_applicants.json"))])
+    row = (await _tool("list_applicants")(_jobno(), ctx=ctx))["results"][0]
 
     conversation_spy = _install(monkeypatch, [_raw_from_body({"data": [], "metadata": {}})])
-    await _messaging_tool("get_conversation")(job_id=JOBNO, candidate_id=row["p_id"], ctx=ctx)
+    await _messaging_tool("get_conversation")(job_id=_jobno(), candidate_id=row["p_id"], ctx=ctx)
     assert conversation_spy.calls, "get_conversation must reach the transport: the id guard may not reject a p_id"
     assert row["p_id"] in _request_text(*conversation_spy.calls[0])
 
@@ -425,14 +432,14 @@ def _converted_applicant_name(raw: str) -> str:
 @pytest.mark.asyncio
 async def test_applicant_row_keys_are_within_the_allowlist_and_every_present_allowed_field_appears(tmp_path, monkeypatch):
     ctx, _info = await _new_session(tmp_path)
-    _install(monkeypatch, [_raw_from_body(_load("rows_applicants.json"))])
+    _install(monkeypatch, [_raw_from_body(load_fixture("rows_applicants.json"))])
 
-    rows = (await _tool("list_applicants")(JOBNO, ctx=ctx))["results"]
+    rows = (await _tool("list_applicants")(_jobno(), ctx=ctx))["results"]
 
     allowed = {_converted_applicant_name(raw): raw for raw in discovery_mod.APPLICANT_ROW_FIELD_GLOSS}
     for row in rows:
         assert set(row) <= set(allowed) | {"input_date"}, f"unexpected keys: {set(row) - set(allowed) - {'input_date'}}"
-    for source, row in zip(_fixture_rows(_load("rows_applicants.json")), rows):
+    for source, row in zip(_fixture_rows(load_fixture("rows_applicants.json")), rows):
         for name, raw in allowed.items():
             if raw in source:
                 assert name in row, f"allowed field {raw!r} is in the fixture row but missing as {name!r}"
@@ -443,13 +450,13 @@ async def test_applicant_row_keys_are_within_the_allowlist_and_every_present_all
 @pytest.mark.asyncio
 async def test_exp_job_arr_entries_keep_only_four_fields_with_fixture_values(tmp_path, monkeypatch):
     ctx, _info = await _new_session(tmp_path)
-    _install(monkeypatch, [_raw_from_body(_load("rows_applicants.json"))])
+    _install(monkeypatch, [_raw_from_body(load_fixture("rows_applicants.json"))])
 
-    rows = (await _tool("list_applicants")(JOBNO, ctx=ctx))["results"]
+    rows = (await _tool("list_applicants")(_jobno(), ctx=ctx))["results"]
 
     four = {"exp_firm", "exp_title", "exp_start", "exp_end"}
     pairs = [("expFirm", "exp_firm"), ("expTitle", "exp_title"), ("expStart", "exp_start"), ("expEnd", "exp_end")]
-    for source, row in zip(_fixture_rows(_load("rows_applicants.json")), rows):
+    for source, row in zip(_fixture_rows(load_fixture("rows_applicants.json")), rows):
         entries = row["exp_job_arr"]
         source_entries = source.get("expJobArr") or []
         assert len(entries) == len(source_entries)
@@ -473,9 +480,9 @@ _FORBIDDEN_ROW_KEYS = {
 @pytest.mark.asyncio
 async def test_excluded_applicant_fields_never_reach_the_caller(tmp_path, monkeypatch):
     ctx, _info = await _new_session(tmp_path)
-    _install(monkeypatch, [_raw_from_body(_load("rows_applicants.json"))])
+    _install(monkeypatch, [_raw_from_body(load_fixture("rows_applicants.json"))])
 
-    result = await _tool("list_applicants")(JOBNO, ctx=ctx)
+    result = await _tool("list_applicants")(_jobno(), ctx=ctx)
 
     for row in result["results"]:
         assert not (set(row) & _FORBIDDEN_ROW_KEYS), f"excluded fields leaked: {set(row) & _FORBIDDEN_ROW_KEYS}"
@@ -489,15 +496,18 @@ async def test_a_today_group_row_has_null_input_date_and_leads_the_list(tmp_path
     # No capture has a non-empty resumeGroups.today, so the today group is built here by
     # moving one row out of a two-row day group into `today`. Design §C2 gives `today` as a
     # plain row list (its rows carry no group date), which is also unmeasured.
-    body = _load("rows_applicants.json")
+    body = load_fixture("rows_applicants.json")
     groups = body["result"]["resumeGroups"]
-    source_group = next(g for g in groups["others"] if len(g["resumes"]) >= 2)
+    source_group = next((g for g in groups["others"] if len(g["resumes"]) >= 2), None)
+    assert source_group is not None, (
+        "rows_applicants.json needs a date group with at least 2 applicants (tests/fixtures/README.md)"
+    )
     moved = source_group["resumes"].pop(0)
     groups["today"].append(moved)
     ctx, _info = await _new_session(tmp_path)
     _install(monkeypatch, [_raw_from_body(body)])
 
-    rows = (await _tool("list_applicants")(JOBNO, ctx=ctx))["results"]
+    rows = (await _tool("list_applicants")(_jobno(), ctx=ctx))["results"]
 
     assert rows[0]["p_id"] == str(moved["pId"])
     assert rows[0]["input_date"] is None
@@ -511,12 +521,12 @@ async def test_a_today_group_row_has_null_input_date_and_leads_the_list(tmp_path
 @pytest.mark.asyncio
 async def test_job_header_carries_jobno_as_a_string_plus_name_switch_and_role(tmp_path, monkeypatch):
     ctx, _info = await _new_session(tmp_path)
-    _install(monkeypatch, [_raw_from_body(_load("rows_applicants.json"))])
+    _install(monkeypatch, [_raw_from_body(load_fixture("rows_applicants.json"))])
 
-    result = await _tool("list_applicants")(JOBNO, ctx=ctx)
+    result = await _tool("list_applicants")(_jobno(), ctx=ctx)
 
-    source = _load("rows_applicants.json")["result"]
-    assert result["job"]["jobno"] == JOBNO and isinstance(result["job"]["jobno"], str)
+    source = load_fixture("rows_applicants.json")["result"]
+    assert result["job"]["jobno"] == _jobno() and isinstance(result["job"]["jobno"], str)
     assert result["job"]["job"] == source["jobName"]
     assert result["job"]["switch"] == source["jobSwitch"]
     assert result["job"]["role"] == source["jobRole"]
@@ -527,11 +537,11 @@ async def test_job_header_carries_jobno_as_a_string_plus_name_switch_and_role(tm
 @pytest.mark.asyncio
 async def test_resume_number_buckets_are_ints_equal_to_the_fixture_strings(tmp_path, monkeypatch):
     ctx, _info = await _new_session(tmp_path)
-    _install(monkeypatch, [_raw_from_body(_load("rows_applicants.json"))])
+    _install(monkeypatch, [_raw_from_body(load_fixture("rows_applicants.json"))])
 
-    result = await _tool("list_applicants")(JOBNO, ctx=ctx)
+    result = await _tool("list_applicants")(_jobno(), ctx=ctx)
 
-    src = _load("rows_applicants.json")["result"]["resumeNumber"]
+    src = load_fixture("rows_applicants.json")["result"]["resumeNumber"]
     assert result["resume_number"] == {
         "match": int(src["match"]),
         "not_match": int(src["notMatch"]),
@@ -545,12 +555,12 @@ async def test_resume_number_buckets_are_ints_equal_to_the_fixture_strings(tmp_p
 
 @pytest.mark.asyncio
 async def test_a_nonzero_other_bucket_adds_a_warning_naming_the_count_and_unmeasured_scope(tmp_path, monkeypatch):
-    body = _load("rows_applicants.json")
+    body = load_fixture("rows_applicants.json")
     body["result"]["resumeNumber"]["notMatch"] = "2"
     ctx, _info = await _new_session(tmp_path)
     _install(monkeypatch, [_raw_from_body(body)])
 
-    result = await _tool("list_applicants")(JOBNO, ctx=ctx)
+    result = await _tool("list_applicants")(_jobno(), ctx=ctx)
 
     assert any("2" in w and "未量測" in w for w in result["warnings"]), result["warnings"]
 
@@ -558,9 +568,17 @@ async def test_a_nonzero_other_bucket_adds_a_warning_naming_the_count_and_unmeas
 @pytest.mark.asyncio
 async def test_all_three_other_buckets_at_zero_add_no_such_warning(tmp_path, monkeypatch):
     ctx, _info = await _new_session(tmp_path)
-    _install(monkeypatch, [_raw_from_body(_load("rows_applicants.json"))])
+    body = load_fixture("rows_applicants.json")
+    numbers = body["result"]["resumeNumber"]
+    assert all(int(numbers[k]) == 0 for k in ("notMatch", "isBlack", "recycle")), (
+        "rows_applicants.json: notMatch, isBlack and recycle must all be 0 (tests/fixtures/README.md)"
+    )
+    assert body["result"]["pageInfo"]["total_page"] == 1, (
+        "rows_applicants.json: pageInfo.total_page must be 1 (tests/fixtures/README.md)"
+    )
+    _install(monkeypatch, [_raw_from_body(body)])
 
-    result = await _tool("list_applicants")(JOBNO, ctx=ctx)
+    result = await _tool("list_applicants")(_jobno(), ctx=ctx)
 
     assert not any("未量測" in w for w in result["warnings"]), result["warnings"]
 
@@ -570,7 +588,7 @@ async def test_all_three_other_buckets_at_zero_add_no_such_warning(tmp_path, mon
 @pytest.mark.asyncio
 async def test_zero_applicant_job_is_an_empty_success_not_an_error(tmp_path, monkeypatch):
     ctx, _info = await _new_session(tmp_path)
-    body = _load("zero_row_applicants.json")
+    body = load_fixture("zero_row_applicants.json")
     _install(monkeypatch, [_raw_from_body(body)])
 
     result = await _tool("list_applicants")(str(body["result"]["jobNo"]), ctx=ctx)
@@ -585,11 +603,11 @@ async def test_zero_applicant_job_is_an_empty_success_not_an_error(tmp_path, mon
 @pytest.mark.asyncio
 async def test_pagination_mirrors_the_page_info_of_the_response(tmp_path, monkeypatch):
     ctx, _info = await _new_session(tmp_path)
-    _install(monkeypatch, [_raw_from_body(_load("rows_applicants.json"))])
+    _install(monkeypatch, [_raw_from_body(load_fixture("rows_applicants.json"))])
 
-    result = await _tool("list_applicants")(JOBNO, ctx=ctx)
+    result = await _tool("list_applicants")(_jobno(), ctx=ctx)
 
-    page_info = _load("rows_applicants.json")["result"]["pageInfo"]
+    page_info = load_fixture("rows_applicants.json")["result"]["pageInfo"]
     assert result["pagination"] == {
         "page": page_info["thisPage"],
         "total_pages": page_info["total_page"],
@@ -599,12 +617,12 @@ async def test_pagination_mirrors_the_page_info_of_the_response(tmp_path, monkey
 
 @pytest.mark.asyncio
 async def test_a_second_page_is_named_as_unmeasured_in_a_warning(tmp_path, monkeypatch):
-    body = _load("rows_applicants.json")
+    body = load_fixture("rows_applicants.json")
     body["result"]["pageInfo"]["total_page"] = 3
     ctx, _info = await _new_session(tmp_path)
     _install(monkeypatch, [_raw_from_body(body)])
 
-    result = await _tool("list_applicants")(JOBNO, ctx=ctx)
+    result = await _tool("list_applicants")(_jobno(), ctx=ctx)
 
     assert result["pagination"]["total_pages"] == 3
     assert any("未量測" in w and "2" in w for w in result["warnings"]), result["warnings"]
@@ -615,9 +633,9 @@ async def test_a_second_page_is_named_as_unmeasured_in_a_warning(tmp_path, monke
 @pytest.mark.asyncio
 async def test_applicant_list_reports_no_browse_limit(tmp_path, monkeypatch):
     ctx, _info = await _new_session(tmp_path)
-    _install(monkeypatch, [_raw_from_body(_load("rows_applicants.json"))])
+    _install(monkeypatch, [_raw_from_body(load_fixture("rows_applicants.json"))])
 
-    result = await _tool("list_applicants")(JOBNO, ctx=ctx)
+    result = await _tool("list_applicants")(_jobno(), ctx=ctx)
 
     assert result["browse_limit"] is None
 
@@ -641,7 +659,7 @@ async def test_non_digit_jobno_is_refused_naming_list_jobs_and_sends_nothing(tmp
 
 @pytest.mark.asyncio
 async def test_list_jobs_carries_apply_count60_as_an_int_per_job(tmp_path, monkeypatch):
-    body = _load("jobs_apply.json")
+    body = load_fixture("jobs_apply.json")
     result, _spy, _info = await _run_list_jobs(tmp_path, monkeypatch, body)
 
     assert len(result["results"]) == len(body["data"])
@@ -654,7 +672,7 @@ async def test_list_jobs_carries_apply_count60_as_an_int_per_job(tmp_path, monke
 
 @pytest.mark.asyncio
 async def test_list_jobs_rows_never_carry_apply_count(tmp_path, monkeypatch):
-    body = _load("jobs_apply.json")
+    body = load_fixture("jobs_apply.json")
     assert any("applyCount" in row for row in body["data"])  # the fixture does carry it
     result, _spy, _info = await _run_list_jobs(tmp_path, monkeypatch, body)
 
@@ -666,7 +684,7 @@ async def test_list_jobs_rows_never_carry_apply_count(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_list_jobs_keeps_jobs_apply_order_with_string_jobnos_and_the_listed_fields(tmp_path, monkeypatch):
-    body = _load("jobs_apply.json")
+    body = load_fixture("jobs_apply.json")
     result, _spy, _info = await _run_list_jobs(tmp_path, monkeypatch, body)
 
     assert [r["jobno"] for r in result["results"]] == [s["jobno"] for s in body["data"]]
@@ -682,7 +700,7 @@ async def test_list_jobs_keeps_jobs_apply_order_with_string_jobnos_and_the_liste
 
 @pytest.mark.asyncio
 async def test_an_unlisted_upstream_field_is_not_on_the_row(tmp_path, monkeypatch):
-    body = _load("jobs_apply.json")
+    body = load_fixture("jobs_apply.json")
     body["data"][0]["zzNewField"] = "zz-sentinel"
     result, _spy, _info = await _run_list_jobs(tmp_path, monkeypatch, body)
 
@@ -691,12 +709,15 @@ async def test_an_unlisted_upstream_field_is_not_on_the_row(tmp_path, monkeypatc
     assert "zz-sentinel" not in json.dumps(result, ensure_ascii=False)
 
 
-# -- T-20 (R4.1): 21 jobs -> jobs list, then a 20-job and a 1-job batch ----------------------
+# -- T-20 (R4.1): 21-40 jobs -> jobs list, then a 20-job batch and a remainder batch ----------
 
 @pytest.mark.asyncio
-async def test_twenty_one_jobs_send_three_requests_in_order_and_each_row_gets_its_own_counts(tmp_path, monkeypatch):
-    body = _load("jobs_apply.json")
+async def test_more_than_twenty_jobs_send_a_list_then_two_count_batches_and_each_row_gets_its_own_counts(
+    tmp_path, monkeypatch
+):
+    body = load_fixture("jobs_apply.json")
     jobnos = _jobnos_of(body)
+    _require_two_count_batches(jobnos)
     result, spy, _info = await _run_list_jobs(tmp_path, monkeypatch, body)
 
     assert [endpoint.key for endpoint, _p, _b in spy.calls] == ["list_jobs", "match_number", "match_number"]
@@ -711,8 +732,9 @@ async def test_twenty_one_jobs_send_three_requests_in_order_and_each_row_gets_it
 
 @pytest.mark.asyncio
 async def test_a_job_missing_from_the_match_response_is_null_and_named(tmp_path, monkeypatch):
-    body = _load("jobs_apply.json")
+    body = load_fixture("jobs_apply.json")
     jobnos = _jobnos_of(body)
+    _require_two_count_batches(jobnos)
     batches = _batches(jobnos)
     missing = jobnos[2]
     match_bodies = [_match_body(batches[0], omit={missing})] + [_match_body(b) for b in batches[1:]]
@@ -729,8 +751,9 @@ async def test_a_job_missing_from_the_match_response_is_null_and_named(tmp_path,
 
 @pytest.mark.asyncio
 async def test_a_non_numeric_total_count_is_null_and_named(tmp_path, monkeypatch):
-    body = _load("jobs_apply.json")
+    body = load_fixture("jobs_apply.json")
     jobnos = _jobnos_of(body)
+    _require_two_count_batches(jobnos)
     batches = _batches(jobnos)
     bad = jobnos[5]
     match_bodies = [_match_body(batches[0], total_overrides={bad: "abc"})] + [_match_body(b) for b in batches[1:]]
@@ -782,10 +805,10 @@ async def test_only_the_first_eighty_jobs_are_matched_and_the_eighty_first_is_na
 async def test_second_segment_session_failure_returns_the_error_list_matched_resumes_returns(tmp_path, monkeypatch, make_raw):
     ref_ctx, _ = await _new_session(tmp_path)
     _install(monkeypatch, [make_raw()])
-    reference = await _search_tool("list_matched_resumes")(jobno=JOBNO, ctx=ref_ctx)
+    reference = await _search_tool("list_matched_resumes")(jobno=_jobno(), ctx=ref_ctx)
 
     ctx, _ = await _new_session(tmp_path)
-    _install(monkeypatch, [_raw_from_body(_load("jobs_apply.json")), make_raw()])
+    _install(monkeypatch, [_raw_from_body(load_fixture("jobs_apply.json")), make_raw()])
     result = await _tool("list_jobs")(ctx=ctx)
 
     assert result == reference
@@ -800,15 +823,17 @@ async def test_count_batch_that_does_not_fit_the_window_is_skipped_and_warned(tm
     ctx, info = await _new_session(tmp_path)
     app = ctx.request_context.lifespan_context
     now = time.time()
+    jobs_apply = load_fixture("jobs_apply.json")
+    _require_two_count_batches(jobs_apply["data"])
     # One slot is left after the jobs/apply request, and the two count batches need two.
     for _ in range(app.config.max_requests_per_hour - 2):
         info.throttle.unpersisted_timestamps.append(now)
-    spy = _install(monkeypatch, [_raw_from_body(_load("jobs_apply.json"))])
+    spy = _install(monkeypatch, [_raw_from_body(jobs_apply)])
 
     result = await _tool("list_jobs")(ctx=ctx)
 
     assert len(spy.calls) == 1, "no count request may be sent when the gate refuses the second segment"
-    assert "error" not in result and len(result["results"]) == 21
+    assert "error" not in result and len(result["results"]) == len(jobs_apply["data"])
     assert all(r["today_match_count"] is None and r["total_match_count"] is None for r in result["results"])
     assert result["warnings"] and any(re.search(r"\d", w) for w in result["warnings"]), result["warnings"]
 
@@ -824,12 +849,13 @@ async def test_count_batch_that_does_not_fit_the_window_is_skipped_and_warned(tm
 )
 async def test_count_failures_keep_the_job_list_and_null_the_counts(tmp_path, monkeypatch, match_raw):
     ctx, _info = await _new_session(tmp_path)
-    _install(monkeypatch, [_raw_from_body(_load("jobs_apply.json")), match_raw()])
+    jobs_apply = load_fixture("jobs_apply.json")
+    _install(monkeypatch, [_raw_from_body(jobs_apply), match_raw()])
 
     result = await _tool("list_jobs")(ctx=ctx)
 
     assert "error" not in result and "results" in result
-    assert len(result["results"]) == 21
+    assert len(result["results"]) == len(jobs_apply["data"])
     assert all(r["today_match_count"] is None and r["total_match_count"] is None for r in result["results"])
     assert result["warnings"], "the reason the counts are missing must be stated"
 
@@ -838,7 +864,7 @@ async def test_count_failures_keep_the_job_list_and_null_the_counts(tmp_path, mo
 
 @pytest.mark.asyncio
 async def test_refreshable_rows_are_jobno_job_and_appear_date(tmp_path, monkeypatch):
-    body = _load("refreshable_jobs.json")
+    body = load_fixture("refreshable_jobs.json")
     ctx, _info = await _new_session(tmp_path)
     _install(monkeypatch, [_raw_from_body(body)])
 
@@ -862,7 +888,7 @@ async def test_refreshable_rows_are_jobno_job_and_appear_date(tmp_path, monkeypa
     ids=["no-permit-derived", "permit-measured"],
 )
 async def test_missing_update_permission_is_named_in_a_warning(tmp_path, monkeypatch, name, expect_warning):
-    raw_doc = _load(name)
+    raw_doc = load_fixture(name)
     body = raw_doc["body_json"] if "body_json" in raw_doc else raw_doc
     ctx, _info = await _new_session(tmp_path)
     _install(monkeypatch, [_raw_from_body(body)])
@@ -890,7 +916,7 @@ async def test_first_request_auth_failure_is_the_same_error_as_list_matched_resu
     make_raw = _FAILURE_SCENARIOS[scenario]
     ref_ctx, _ = await _new_session(tmp_path)
     _install(monkeypatch, [make_raw()])
-    reference = await _search_tool("list_matched_resumes")(jobno=JOBNO, ctx=ref_ctx)
+    reference = await _search_tool("list_matched_resumes")(jobno=_jobno(), ctx=ref_ctx)
 
     ctx, _ = await _new_session(tmp_path)
     _install(monkeypatch, [make_raw()])
@@ -905,7 +931,7 @@ async def test_company_switch_html_on_applicants_reads_as_expired_not_unrecognis
     ctx, _ = await _new_session(tmp_path)
     _install(monkeypatch, [_raw_from_wrapper("failure_applicants_company_switch.json")])
 
-    result = await _tool("list_applicants")(JOBNO, ctx=ctx)
+    result = await _tool("list_applicants")(_jobno(), ctx=ctx)
 
     assert "已過期" in result["error"]
     assert "無法辨識" not in result["error"]
@@ -928,7 +954,7 @@ async def test_non_success_applicant_envelopes_are_errors_not_empty_lists(tmp_pa
     ctx, _ = await _new_session(tmp_path)
     _install(monkeypatch, [make_raw()])
 
-    result = await _tool("list_applicants")(JOBNO, ctx=ctx)
+    result = await _tool("list_applicants")(_jobno(), ctx=ctx)
 
     assert "error" in result and "results" not in result
 
@@ -1045,7 +1071,7 @@ async def test_an_applicant_row_without_its_identifiers_is_a_structural_error(tm
     ctx, _ = await _new_session(tmp_path)
     _install(monkeypatch, [_applicant_raw(mutate)])
 
-    result = await _tool("list_applicants")(JOBNO, ctx=ctx)
+    result = await _tool("list_applicants")(_jobno(), ctx=ctx)
 
     assert "error" in result and "results" not in result
     assert "104 回應結構異常" in result["error"]
@@ -1068,9 +1094,9 @@ async def test_no_session_and_no_credential_file_answers_please_login_without_a_
 # -- T-34 (R8.1): every request is a GET with no body --------------------------------------
 
 _SCRIPTS = {
-    "list_applicants": lambda: [_raw_from_body(_load("rows_applicants.json"))],
-    "list_jobs": lambda: _list_jobs_script(_load("jobs_apply.json")),
-    "list_refreshable_jobs": lambda: [_raw_from_body(_load("refreshable_jobs.json"))],
+    "list_applicants": lambda: [_raw_from_body(load_fixture("rows_applicants.json"))],
+    "list_jobs": lambda: _list_jobs_script(load_fixture("jobs_apply.json")),
+    "list_refreshable_jobs": lambda: [_raw_from_body(load_fixture("refreshable_jobs.json"))],
 }
 
 
@@ -1104,10 +1130,12 @@ async def test_a_successful_call_sends_exactly_one_request(tmp_path, monkeypatch
 # -- T-36 (R8.3): the rolling window counts every request of the multi-request call ---------
 
 @pytest.mark.asyncio
-async def test_list_jobs_with_twenty_one_jobs_adds_three_entries_to_the_rolling_window(tmp_path, monkeypatch):
+async def test_list_jobs_with_more_than_twenty_jobs_adds_three_entries_to_the_rolling_window(tmp_path, monkeypatch):
     ctx, info = await _new_session(tmp_path)
     before = len(info.throttle.request_timestamps)
-    _install(monkeypatch, _list_jobs_script(_load("jobs_apply.json")))
+    jobs_apply = load_fixture("jobs_apply.json")
+    _require_two_count_batches(jobs_apply["data"])
+    _install(monkeypatch, _list_jobs_script(jobs_apply))
 
     await _tool("list_jobs")(ctx=ctx)
 
@@ -1134,10 +1162,10 @@ def test_list_jobs_cold_path_worst_case_leaves_fifteen_seconds_under_the_120_sec
 
 def test_build_applicant_page_returns_exactly_the_documented_keys_for_a_legal_result():
     jobs = _jobs()
-    result = copy.deepcopy(_load("rows_applicants.json")["result"])
+    result = copy.deepcopy(load_fixture("rows_applicants.json")["result"])
 
     page = jobs.build_applicant_page(
-        result, requested_jobno=JOBNO, requested_page=1, date_range=("2026/09/13", "2026/11/12")
+        result, requested_jobno=_jobno(), requested_page=1, date_range=("2026/09/13", "2026/11/12")
     )
 
     assert set(page) == {"job", "results", "pagination", "resume_number", "date_range", "browse_limit", "warnings"}
@@ -1146,7 +1174,7 @@ def test_build_applicant_page_returns_exactly_the_documented_keys_for_a_legal_re
 @pytest.mark.parametrize("bad", ["x", 5, None, []], ids=["str", "int", "none", "list"])
 def test_build_applicant_page_refuses_a_result_that_is_not_an_object(bad):
     with pytest.raises(helpers.MalformedResponseError):
-        _jobs().build_applicant_page(bad, requested_jobno=JOBNO, requested_page=1, date_range=("a", "b"))
+        _jobs().build_applicant_page(bad, requested_jobno=_jobno(), requested_page=1, date_range=("a", "b"))
 
 
 # -- T-39 (interface): the 60-day window, including leap-year edges -------------------------
@@ -1239,15 +1267,15 @@ def test_build_refreshable_jobs_on_an_empty_permitted_list_is_empty_with_no_remi
 
 @pytest.mark.asyncio
 async def test_applicant_text_fields_convert_exactly_like_search_resumes_rows(tmp_path, monkeypatch):
-    applicant_body = _load("rows_applicants.json")
+    applicant_body = load_fixture("rows_applicants.json")
     first_applicant = _fixture_rows(applicant_body)[0]
     first_applicant["userName"] = "<p>王</p>"
     first_applicant["latestMemo"] = "a&amp;b"
     ctx, _ = await _new_session(tmp_path)
     _install(monkeypatch, [_raw_from_body(applicant_body)])
-    applicant_row = (await _tool("list_applicants")(JOBNO, ctx=ctx))["results"][0]
+    applicant_row = (await _tool("list_applicants")(_jobno(), ctx=ctx))["results"][0]
 
-    search_body = _load("rows_search.json")
+    search_body = load_fixture("rows_search.json")
     keyword = search_body["result"]["searchForm"]["kws"]
     search_rows = search_body["result"].get("data") or search_body["result"].get("resumes")
     search_rows[0]["userName"] = "<p>王</p>"
@@ -1392,7 +1420,7 @@ async def test_applydetail_for_another_job_or_with_no_name_is_a_structural_error
     ctx, _ = await _new_session(tmp_path)
     _install(monkeypatch, [_applicant_raw(mutate)])
 
-    result = await _tool("list_applicants")(JOBNO, ctx=ctx)
+    result = await _tool("list_applicants")(_jobno(), ctx=ctx)
 
     assert "error" in result and "results" not in result
     assert "104 回應結構異常" in result["error"]
