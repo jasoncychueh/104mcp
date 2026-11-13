@@ -94,51 +94,66 @@
 完整參數與回傳格式請看各工具自己的說明；這裡只列一句話用途。
 
 **登入**
-- `login()` — 開始一次登入，或在憑證仍有效時直接回報已登入
-- `check_login(token, wait_seconds)` — 等待一次登入完成（Agent 用，一般不需自己呼叫）
-- `logout()` — 清除本機登入憑證
+
+| 工具 | 參數 | 用途 |
+|---|---|---|
+| `login` | — | 開始一次登入，或在憑證仍有效時直接回報已登入 |
+| `check_login` | `token`、`wait_seconds` | 等待一次登入完成（Agent 用，一般不需自己呼叫） |
+| `logout` | — | 清除本機登入憑證 |
 
 **履歷與職缺**
-- `search_resumes(keyword, filters, page)` — 依關鍵字與篩選條件搜尋履歷
-- `list_recommended_resumes(jobno, page)` — 列出 104 推薦給某職缺的履歷
-- `list_matched_resumes(jobno, page, update_date_type)` — 列出配對到某職缺的履歷；`update_date_type="2"` 只看當日配對
-- `get_resume_detail(candidate_id)` — 取得單一候選人的完整履歷
-- `list_applicants(jobno, page)` — 列出某個職缺近 60 天的應徵者；每列的 `p_id` 可直接拿去發訊息，`candidate_id` 用來讀完整履歷。讀清單不扣 104 的每日履歷瀏覽配額
-- `list_jobs(page)` — 列出這個帳號底下的職缺，每個職缺附近 60 天應徵人數、今日與目前的配對人數，以及更新日、關閉日等六個日期欄位（查不到時為 `null`，不是 0）
-- `get_job_detail(jobno)` — 讀一個職缺的刊登內容（說明、薪資、地點、條件；唯讀，不含公司同仁的聯絡資料）
-- `list_refreshable_jobs()` — 列出 104 目前標示為可更新的職缺（只讀，不會真的更新職缺）
-- `refresh_jobs(jobnos)` — 更新職缺日期。會立即改變職缺在求職者搜尋中的排序、無法撤回，只接受 `list_refreshable_jobs` 列出的職缺，逐筆回報是否已確認
-- `close_jobs(jobnos, reasons, other_reason, return_add_ons, allow_pausing_company_ads)` — 關閉開放中的職缺。立刻生效、求職者看得到；關閉前要給原因代碼，有加值廣告要歸還或會暫停公司廣告時要明確確認，逐筆回報是否已確認
-- `open_jobs(jobnos, cancel_add_ons)` — 開啟已關閉的職缺。立刻生效、求職者看得到；會使用職務刊登額度，有會被取消的加值廣告時要明確確認，逐筆回報是否已確認
-- `delete_job(jobno)` — 刪除一個已關閉的職缺。無法復原，會一併刪除這個職缺的應徵履歷與聯絡紀錄；一次只刪一個，只接受 104 標示可刪除的職缺，逐筆回報是否已確認
-- `update_job(jobno, changes, confirm, accept_forbidden_word_warnings, accept_progress_reset)` — 修改一個職缺的刊登內容。儲存立刻生效、求職者看得到、無法撤回；預設只預覽「改前→改後」與 104 的禁用詞檢查，真人看過才帶 `confirm=true` 送出。有加值廣告、自動關閉日、預約開啟日的職缺請到 104 後台修改；是否儲存成功以重讀職缺的全欄比對為準
-- `create_job(source_jobno, changes, confirm, accept_forbidden_word_warnings)` — 以一個既有職缺為底稿複製新增職缺（不能從空白表單新增）。預設只預覽；新職缺開不開放以 104 回報為準（`new_job_switch`），可能用掉職務數額度。逾時後不要重送，先用 `list_jobs` 確認新職缺有沒有出現
-- `get_candidate_photo(candidate_id)` — 把候選人的大頭照下載到本機並回傳路徑（沒放照片時回 `photo: null`，那是正常狀態）
-- `get_resume_attachment(candidate_id, sort)` — 把履歷附件（作品集、證照掃描檔、另一版履歷 PDF……）下載到本機並回傳路徑
+
+| 工具 | 參數 | 用途 |
+|---|---|---|
+| `search_resumes` | `keyword`、`filters`、`page` | 依關鍵字與篩選條件搜尋履歷 |
+| `list_recommended_resumes` | `jobno`、`page` | 列出 104 推薦給某職缺的履歷 |
+| `list_matched_resumes` | `jobno`、`page`、`update_date_type` | 列出配對到某職缺的履歷；`update_date_type="2"` 只看當日配對 |
+| `get_resume_detail` | `candidate_id` | 取得單一候選人的完整履歷 |
+| `list_applicants` | `jobno`、`page` | 列出某個職缺近 60 天的應徵者；每列的 `p_id` 可直接拿去發訊息，`candidate_id` 用來讀完整履歷。讀清單不扣 104 的每日履歷瀏覽配額 |
+| `list_jobs` | `page` | 列出這個帳號底下的職缺，每個職缺附近 60 天應徵人數、今日與目前的配對人數，以及更新日、關閉日等六個日期欄位（查不到時為 `null`，不是 0） |
+| `get_job_detail` | `jobno` | 讀一個職缺的刊登內容（說明、薪資、地點、條件；唯讀，不含公司同仁的聯絡資料） |
+| `list_refreshable_jobs` | — | 列出 104 目前標示為可更新的職缺（只讀，不會真的更新職缺） |
+| `refresh_jobs` | `jobnos` | 更新職缺日期。會立即改變職缺在求職者搜尋中的排序、無法撤回，只接受 `list_refreshable_jobs` 列出的職缺，逐筆回報是否已確認 |
+| `close_jobs` | `jobnos`、`reasons`、`other_reason`、`return_add_ons`、`allow_pausing_company_ads` | 關閉開放中的職缺。立刻生效、求職者看得到；關閉前要給原因代碼，有加值廣告要歸還或會暫停公司廣告時要明確確認，逐筆回報是否已確認 |
+| `open_jobs` | `jobnos`、`cancel_add_ons` | 開啟已關閉的職缺。立刻生效、求職者看得到；會使用職務刊登額度，有會被取消的加值廣告時要明確確認，逐筆回報是否已確認 |
+| `delete_job` | `jobno` | 刪除一個已關閉的職缺。無法復原，會一併刪除這個職缺的應徵履歷與聯絡紀錄；一次只刪一個，只接受 104 標示可刪除的職缺，逐筆回報是否已確認 |
+| `update_job` | `jobno`、`changes`、`confirm`、`accept_forbidden_word_warnings`、`accept_progress_reset` | 修改一個職缺的刊登內容。儲存立刻生效、求職者看得到、無法撤回；預設只預覽「改前→改後」與 104 的禁用詞檢查，真人看過才帶 `confirm=true` 送出。有加值廣告、自動關閉日、預約開啟日的職缺請到 104 後台修改；是否儲存成功以重讀職缺的全欄比對為準 |
+| `create_job` | `source_jobno`、`changes`、`confirm`、`accept_forbidden_word_warnings` | 以一個既有職缺為底稿複製新增職缺（不能從空白表單新增）。預設只預覽；新職缺開不開放以 104 回報為準（`new_job_switch`），可能用掉職務數額度。逾時後不要重送，先用 `list_jobs` 確認新職缺有沒有出現 |
+| `get_candidate_photo` | `candidate_id` | 把候選人的大頭照下載到本機並回傳路徑（沒放照片時回 `photo: null`，那是正常狀態） |
+| `get_resume_attachment` | `candidate_id`、`sort` | 把履歷附件（作品集、證照掃描檔、另一版履歷 PDF……）下載到本機並回傳路徑 |
 
 **篩選與欄位說明（純本機資料，不呼叫 104）**
-- `browse_filter_values(key, code)` — 查 `search_resumes` 某個篩選鍵接受哪些值
-- `describe_result_fields(row_type)` — 說明各工具回傳的每個欄位是什麼意思
+
+| 工具 | 參數 | 用途 |
+|---|---|---|
+| `browse_filter_values` | `key`、`code` | 查 `search_resumes` 某個篩選鍵接受哪些值 |
+| `describe_result_fields` | `row_type` | 說明各工具回傳的每個欄位是什麼意思 |
 
 **訊息**
-- `read_messages(page, job_nos, candidate_name)` — 讀取收件匣
-- `get_conversation(job_id, candidate_id, page)` — 讀取一段對話
-- `send_message(job_id, candidate_id, message)` — 發送一則純文字站內信
-- `send_inquiry(job_id, candidate_id, message, template_id)` — 送出「詢問意願」邀約
-- `send_interview_invite(job_id, candidate_id, message, meeting_time, location, phase, contact_name, contact_phone, reply_days, include_recruiters, template_id)` — 送出「邀約面試」
-- `send_thank_you_letter(job_id, candidate_id, message, template_id)` — 送出「感謝函」（通常用於婉拒）
-- `send_start_date_reminder(job_id, candidate_id, message, start_time, location, contact_name, contact_phone, reply_days, include_recruiters, template_id)` — 送出「到職日期提醒」，通知已錄取者報到時間與地點
-- `send_personality_test_invite(job_id, candidate_id, message, reply_days, template_id)` — 送出「邀性格測驗」（104 職業適性測驗）
-- `list_templates(type_id, page)` — 列出帳號裡存好的罐頭信範本
-- `create_template(title, description, type_id)` — 新增一則罐頭信範本（只存在帳號裡，不會送給任何人），標題 16 字內、內容 1000 字內
-- `update_template(template_id, title, description, type_id)` — 修改一則範本，只改有給的欄位；帶附件的範本不修改，請到 104 後台
-- `delete_template(template_id)` — 刪除一則範本。無法復原；被職缺使用的範本 104 不讓刪，會列出使用它的職缺
+
+| 工具 | 參數 | 用途 |
+|---|---|---|
+| `read_messages` | `page`、`job_nos`、`candidate_name` | 讀取收件匣 |
+| `get_conversation` | `job_id`、`candidate_id`、`page` | 讀取一段對話 |
+| `send_message` | `job_id`、`candidate_id`、`message` | 發送一則純文字站內信 |
+| `send_inquiry` | `job_id`、`candidate_id`、`message`、`template_id` | 送出「詢問意願」邀約 |
+| `send_interview_invite` | `job_id`、`candidate_id`、`message`、`meeting_time`、`location`、`phase`、`contact_name`、`contact_phone`、`reply_days`、`include_recruiters`、`template_id` | 送出「邀約面試」 |
+| `send_thank_you_letter` | `job_id`、`candidate_id`、`message`、`template_id` | 送出「感謝函」（通常用於婉拒） |
+| `send_start_date_reminder` | `job_id`、`candidate_id`、`message`、`start_time`、`location`、`contact_name`、`contact_phone`、`reply_days`、`include_recruiters`、`template_id` | 送出「到職日期提醒」，通知已錄取者報到時間與地點 |
+| `send_personality_test_invite` | `job_id`、`candidate_id`、`message`、`reply_days`、`template_id` | 送出「邀性格測驗」（104 職業適性測驗） |
+| `list_templates` | `type_id`、`page` | 列出帳號裡存好的罐頭信範本 |
+| `create_template` | `title`、`description`、`type_id` | 新增一則罐頭信範本（只存在帳號裡，不會送給任何人），標題 16 字內、內容 1000 字內 |
+| `update_template` | `template_id`、`title`、`description`、`type_id` | 修改一則範本，只改有給的欄位；帶附件的範本不修改，請到 104 後台 |
+| `delete_template` | `template_id` | 刪除一則範本。無法復原；被職缺使用的範本 104 不讓刪，會列出使用它的職缺 |
 
 **候選人狀態（存在本機，與 104 無關）**
-- `get_candidate_status(candidate_id, id_source)` — 讀回本機對一位候選人記下的紀錄（狀態、名字、時間）；同一個人在履歷 id 與訊息 id 下的紀錄都會一起列出
-- `list_tracked_candidates(status, page)` — 列出已記下狀態的候選人，可依狀態篩選，每頁 50 筆
-- `check_already_contacted(candidate_id, id_source)` — 查是否已聯繫過；讀過這個人的履歷列、履歷詳情或應徵者資料之後，不論拿履歷 id 還是訊息 id 都查得到
-- `update_candidate_status(candidate_id, id_source, status)` — 更新狀態標記
+
+| 工具 | 參數 | 用途 |
+|---|---|---|
+| `get_candidate_status` | `candidate_id`、`id_source` | 讀回本機對一位候選人記下的紀錄（狀態、名字、時間）；同一個人在履歷 id 與訊息 id 下的紀錄都會一起列出 |
+| `list_tracked_candidates` | `status`、`page` | 列出已記下狀態的候選人，可依狀態篩選，每頁 50 筆 |
+| `check_already_contacted` | `candidate_id`、`id_source` | 查是否已聯繫過；讀過這個人的履歷列、履歷詳情或應徵者資料之後，不論拿履歷 id 還是訊息 id 都查得到 |
+| `update_candidate_status` | `candidate_id`、`id_source`、`status` | 更新狀態標記 |
 
 ---
 
