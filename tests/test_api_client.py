@@ -749,8 +749,8 @@ def test_endpoint_method_has_no_default_and_is_required():
                  extra_headers=(), family_b_shape=None, throttle_gated=True)
 
 
-@pytest.mark.parametrize("method", ["DELETE", "PATCH"])
-def test_endpoint_construction_rejects_a_method_outside_get_post_or_put(method):
+@pytest.mark.parametrize("method", ["PATCH"])
+def test_endpoint_construction_rejects_patch(method):
     with pytest.raises(ValueError):
         Endpoint(key="probe_bad_method", host="auth", path="/bc-comm/message/{job_no}-{p_id}",
                  method=method, body_encoding=None, family="B", extra_headers=(),
@@ -947,7 +947,7 @@ def _endpoint_by_exact_path(path: str, method: str):
     return matches[0]
 
 
-# (path, method, is_list, inner_key, sibling_keys) - C7's table verbatim.
+# (path, method, expect_list, inner_key, sibling_keys) - C7's table verbatim.
 _NEW_C7_ENDPOINTS = [
     ("/bc-comm/template", "GET", True, None, ()),
     ("/bc-comm/message/resume/{job_no}-{p_id}", "GET", False, "idNo", ()),
@@ -957,15 +957,15 @@ _NEW_C7_ENDPOINTS = [
 
 
 def test_the_four_new_c7_endpoints_are_declared_exactly_per_the_table():
-    for path, method, is_list, inner_key, sibling_keys in _NEW_C7_ENDPOINTS:
+    for path, method, expect_list, inner_key, sibling_keys in _NEW_C7_ENDPOINTS:
         ep = _endpoint_by_exact_path(path, method)
         assert ep.host == "auth", f"{path}: expected host=auth, got {ep.host!r}"
         assert ep.family == "B", f"{path}: expected family=B, got {ep.family!r}"
         assert ep.method == method, f"{path}: expected method={method!r}, got {ep.method!r}"
         assert ep.throttle_gated is True, f"{path}: expected throttle_gated=True"
         assert ep.family_b_shape is not None, f"{path}: expected a family_b_shape"
-        assert (ep.family_b_shape.data_kind == "list") == is_list, (
-            f"{path}: expected is_list={is_list!r}, got data_kind={ep.family_b_shape.data_kind!r}"
+        assert (ep.family_b_shape.data_kind == "list") == expect_list, (
+            f"{path}: expected expect_list={expect_list!r}, got data_kind={ep.family_b_shape.data_kind!r}"
         )
         assert ep.family_b_shape.inner_key == inner_key, (
             f"{path}: expected inner_key={inner_key!r}, got {ep.family_b_shape.inner_key!r}"
@@ -974,18 +974,6 @@ def test_the_four_new_c7_endpoints_are_declared_exactly_per_the_table():
             f"{path}: expected sibling_keys={sibling_keys!r}, "
             f"got {ep.family_b_shape.sibling_keys!r}"
         )
-
-
-# =========================================================================
-# T-68 (R2.5, behavior) - get_template is deliberately NOT declared: C7
-# says no caller ever needs a single-template fetch. Distinct from the
-# housekeeping len(ENDPOINTS) == 14 update above.
-# =========================================================================
-
-def test_get_template_endpoint_is_not_declared():
-    assert not any(
-        ep.path == "/bc-comm/template/{id}" for ep in ENDPOINTS.values()
-    ), "get_template (GET /bc-comm/template/{id}) must not be registered - C7"
 
 
 # =========================================================================
@@ -1723,3 +1711,136 @@ def test_family_b_string_error_keeps_its_existing_detail():
     verdict = classify(_jobswitch_probe(), _jobswitch_json_raw(404, body))
     assert verdict.kind == "not_found"
     assert verdict.detail == "SYNTH-NOT-FOUND-TEXT"
+
+
+# ── Template management, Phase 1 (design Testing Strategy T-68..T-73) ────────────────
+# Written against design.md's declared interfaces: the six template declarations are read
+# by key from ENDPOINTS, Endpoint and FamilyBShape are built with the keywords the design
+# names, and classify() is called with nothing mocked across it.
+
+
+_TEMPLATE_DECLARATIONS = {
+    # key: (method, path, data_kind, body_encoding); host auth, family B, throttled, no extra headers
+    "list_template_types": ("GET", "/bc-comm/template-type", "list", None),
+    "get_template": ("GET", "/bc-comm/template/{template_id}", "object", None),
+    "create_template": ("POST", "/bc-comm/template", "any", "json"),
+    "update_template": ("PUT", "/bc-comm/template/{template_id}", "bool", "json"),
+    "template_delete_check": ("GET", "/bc-comm/template/delete-check/{template_id}", "bool", None),
+    "delete_template": ("DELETE", "/bc-comm/template/{template_id}", "any", None),
+}
+
+
+# T-68 (interface): the six new template declarations, read key by key.
+
+@pytest.mark.parametrize("key", sorted(_TEMPLATE_DECLARATIONS))
+def test_T68_template_declaration_matches_the_design_table(key):
+    method, path, data_kind, body_encoding = _TEMPLATE_DECLARATIONS[key]
+    ep = ENDPOINTS[key]
+    assert ep.host == "auth"
+    assert ep.family == "B"
+    assert ep.throttle_gated is True
+    assert ep.method == method
+    assert ep.path == path
+    assert ep.family_b_shape.data_kind == data_kind
+    assert ep.body_encoding == body_encoding
+    assert tuple(ep.extra_headers) == ()
+    assert tuple(ep.family_b_shape.sibling_keys) == ()
+
+
+# T-69 (interface): the only DELETE declaration is the template deletion; no message route declares DELETE.
+
+def test_T69_only_the_template_deletion_declares_delete():
+    delete_keys = {key for key, ep in ENDPOINTS.items() if ep.method == "DELETE"}
+    assert delete_keys == {"delete_template"}
+
+
+def test_T69_no_message_route_declares_delete():
+    assert not any(
+        ep.path.startswith("/bc-comm/message") and ep.method == "DELETE" for ep in ENDPOINTS.values()
+    )
+
+
+# T-70 (interface): PATCH is still refused at construction; DELETE constructs.
+
+def _template_probe(**overrides):
+    fields = dict(key="t70_probe", host="auth", path="/bc-comm/template/{template_id}", method="DELETE",
+                  body_encoding=None, family="B", extra_headers=(),
+                  family_b_shape=FamilyBShape(data_kind="any", inner_key=None, sibling_keys=()),
+                  throttle_gated=True)
+    fields.update(overrides)
+    return Endpoint(**fields)
+
+
+def test_T70_patch_is_refused_at_construction():
+    with pytest.raises(ValueError):
+        _template_probe(method="PATCH")
+
+
+def test_T70_delete_constructs_without_a_body_encoding():
+    ep = _template_probe(method="DELETE")
+    assert ep.method == "DELETE"
+    assert ep.body_encoding is None
+
+
+# T-72 (interface): data_kind has four values and no default; inner_key goes only with "object".
+
+def test_T72_data_kind_has_no_default():
+    with pytest.raises(TypeError):
+        FamilyBShape(inner_key=None, sibling_keys=())
+
+
+def test_T72_an_unknown_data_kind_is_refused():
+    with pytest.raises(ValueError):
+        FamilyBShape(data_kind="dict", inner_key=None, sibling_keys=())
+
+
+@pytest.mark.parametrize("data_kind", ["list", "bool", "any"])
+def test_T72_inner_key_is_refused_with_any_data_kind_but_object(data_kind):
+    with pytest.raises(ValueError):
+        FamilyBShape(data_kind=data_kind, inner_key="resume", sibling_keys=())
+
+
+@pytest.mark.parametrize("data_kind", ["list", "object", "bool", "any"])
+def test_T72_each_of_the_four_data_kinds_constructs(data_kind):
+    shape = FamilyBShape(data_kind=data_kind, inner_key=None, sibling_keys=())
+    assert shape.data_kind == data_kind
+
+
+def test_T72_inner_key_constructs_with_object():
+    shape = FamilyBShape(data_kind="object", inner_key="resume", sibling_keys=())
+    assert shape.inner_key == "resume"
+
+
+# T-73 (interface): classify() on each data_kind; "bool" and "any" are the new kinds.
+
+def _kind_probe(data_kind):
+    return Endpoint(key="t73_probe", host="auth", path="/bc-comm/template/probe", method="GET",
+                    body_encoding=None, family="B", extra_headers=(),
+                    family_b_shape=FamilyBShape(data_kind=data_kind, inner_key=None, sibling_keys=()),
+                    throttle_gated=True)
+
+
+@pytest.mark.parametrize("data", [True, False])
+def test_T73_bool_kind_accepts_either_boolean_data(data):
+    verdict = classify(_kind_probe("bool"), _jobswitch_json_raw(200, {"data": data, "metadata": {}}))
+    assert verdict.ok is True
+
+
+@pytest.mark.parametrize("data", [{}, "true"])
+def test_T73_bool_kind_refuses_data_that_is_not_a_boolean(data):
+    verdict = classify(_kind_probe("bool"), _jobswitch_json_raw(200, {"data": data, "metadata": {}}))
+    assert verdict.kind == "malformed"
+
+
+def test_T73_any_kind_accepts_null_data_and_refuses_a_missing_data_key():
+    ok = classify(_kind_probe("any"), _jobswitch_json_raw(200, {"data": None, "metadata": {}}))
+    assert ok.ok is True
+    missing = classify(_kind_probe("any"), _jobswitch_json_raw(200, {"metadata": {}}))
+    assert missing.kind == "malformed"
+
+
+def test_T73_list_and_object_kinds_keep_their_shape_rules():
+    assert classify(_kind_probe("list"), _jobswitch_json_raw(200, {"data": [], "metadata": {}})).ok is True
+    assert classify(_kind_probe("list"), _jobswitch_json_raw(200, {"data": {}, "metadata": {}})).kind == "malformed"
+    assert classify(_kind_probe("object"), _jobswitch_json_raw(200, {"data": {"a": 1}, "metadata": {}})).ok is True
+    assert classify(_kind_probe("object"), _jobswitch_json_raw(200, {"data": [1], "metadata": {}})).kind == "malformed"

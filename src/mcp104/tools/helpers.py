@@ -469,12 +469,27 @@ class GuardAbort(Exception):
     transport, challenge page, redirect, a caller-side check). A tool that
     must tell one 104 refusal from another — the kind alone cannot — reads
     it; everything else may ignore it.
+
+    `envelope_detail` and `envelope_message` come from the same error envelope
+    and are set at the same moment as `code`: the top-level `detail` (any JSON
+    value, as 104 sent it) and the top-level `message` (when it is a string).
+    Both are None for an abort that did not come from a 104 error envelope. A
+    message inside a nested `error` object is not read here.
     """
 
-    def __init__(self, payload: dict, kind: str, code: str | None = None):
+    def __init__(
+        self,
+        payload: dict,
+        kind: str,
+        code: str | None = None,
+        envelope_detail: object = None,
+        envelope_message: str | None = None,
+    ):
         self.payload = payload
         self.kind = kind
         self.code = code
+        self.envelope_detail = envelope_detail
+        self.envelope_message = envelope_message
         super().__init__(payload.get("error"))
 
 
@@ -849,7 +864,14 @@ async def _issue_one(
                 "_issue_one: request blocked (403) for session %s calling %s (status=%s)",
                 session_id, target.key, raw.status,
             )
-            raise SessionUnavailable(payload, kind="blocked", code=_envelope_code(raw.parsed_json))
+            # A 403 can carry a 104 error envelope (its code, detail and message
+            # still matter to a tool that must tell refusals apart); a
+            # Cloudflare or bot block has none, and all three stay None.
+            raise SessionUnavailable(
+                payload, kind="blocked", code=_envelope_code(raw.parsed_json),
+                envelope_detail=_envelope_detail(raw.parsed_json),
+                envelope_message=_envelope_message(raw.parsed_json),
+            )
         # ── Dispatch point 4 of 4: which kind -> payload + abort class ───
         # The asset table handles only its own four kinds and delegates
         # every other one back to _api_error_for_kind, so a shared kind
@@ -869,7 +891,11 @@ async def _issue_one(
         # about still reaches send_message's ambiguous fallthrough
         # rather than silently landing on whatever this line happened
         # to default to.
-        raise abort_cls(error_payload, kind=verdict.kind, code=_envelope_code(raw.parsed_json))
+        raise abort_cls(
+            error_payload, kind=verdict.kind, code=_envelope_code(raw.parsed_json),
+            envelope_detail=_envelope_detail(raw.parsed_json),
+            envelope_message=_envelope_message(raw.parsed_json),
+        )
 
     info.has_succeeded_api_call = True
     return verdict.payload
@@ -897,6 +923,24 @@ def _envelope_code(parsed_json: object) -> str | None:
         if isinstance(inner, int) and not isinstance(inner, bool):
             return str(inner)
     return None
+
+
+def _envelope_detail(parsed_json: object) -> object:
+    """The top-level `detail` of a 104 error envelope exactly as 104 sent it
+    (any JSON value), or None when the body is not an object or has no
+    `detail` key."""
+    if not isinstance(parsed_json, dict):
+        return None
+    return parsed_json.get("detail")
+
+
+def _envelope_message(parsed_json: object) -> str | None:
+    """The top-level `message` of a 104 error envelope when it is a string,
+    else None. A message nested inside an `error` object is not read."""
+    if not isinstance(parsed_json, dict):
+        return None
+    message = parsed_json.get("message")
+    return message if isinstance(message, str) else None
 
 
 def _project_field(which: str, obj: object, keys: tuple[str, ...] | None) -> dict:
@@ -1098,7 +1142,8 @@ async def guarded_sequence(
     sub-requests each; tools/jobs.py's `refresh_jobs`, three sub-requests —
     read the refreshable list, PUT, read it again — and `list_jobs`, whose
     first segment is two sub-requests and whose second is one per count
-    batch), but
+    batch; tools/templates.py's create, update and delete tools, three or
+    four sub-requests each), but
     nothing here is specific to any of them — the sequence length is
     entirely the caller's business (see `slots_needed` below).
 

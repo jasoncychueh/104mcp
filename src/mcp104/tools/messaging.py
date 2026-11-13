@@ -1,5 +1,5 @@
-"""Four messaging tools backed by 104's JSON API (no browser navigation) —
-`read_messages` / `get_conversation` / `send_message` / `list_templates`. Every
+"""Three messaging tools backed by 104's JSON API (no browser navigation) —
+`read_messages` / `get_conversation` / `send_message`. Every
 non-trivial decision (body/param construction, row conversion, the send taxonomy)
 is a module-level pure function, testable with no browser, no HTTP and no MCP
 `Context`. Each issues exactly one HTTP request per tool call via
@@ -316,58 +316,6 @@ def _build_conversation_response(envelope: object) -> dict:
 
     return {
         "results": [_convert_message_row(row, watermark) for row in envelope["data"]],
-        "pagination": pagination,
-        "browse_limit": None,
-        "warnings": warnings,
-    }
-
-
-# ── list_templates: allow-listed row conversion ─────────────────────────
-
-# Allow-list, not deny-list — matching INBOX_ROW_EXCLUDED_FIELDS'/
-# MESSAGE_ROW_EXCLUDED_FIELDS' policy of "the mechanism publishes only what
-# it names", applied the other way round because a template row's full key
-# set (which includes `files`, only meaningful on the single-template
-# route this project never calls) is not itself documented anywhere this
-# module owns. `_convert` (already defined above) does the camelCase ->
-# snake_case rename for the two keys that need it (typeId -> type_id,
-# typeDesc -> type_desc).
-_TEMPLATE_ROW_ALLOWED_FIELDS = frozenset({"id", "title", "description", "typeId", "typeDesc"})
-
-
-def _convert_template_row(raw: dict) -> dict:
-    """One row from list_templates -> the tool-facing dict, allow-listed to the
-    five measured keys (`id`, `title`, `description`, `typeId`, `typeDesc`).
-    `description` is already the complete letter body (51-307 characters
-    measured) — there is no separate detail fetch this project performs."""
-    picked = {k: v for k, v in raw.items() if k in _TEMPLATE_ROW_ALLOWED_FIELDS}
-    return _convert(picked)
-
-
-def _build_template_list_response(envelope: object) -> dict:
-    """`envelope` is list_templates' already-classified family-B payload. Same
-    "missing metadata is an error" rule as `_build_inbox_response` — measured
-    `metadata` present even on the no-typeId call, so its absence here is a
-    genuine departure, handled via the existing MalformedResponseError precedent
-    rather than a new failure mode."""
-    if not isinstance(envelope, dict) or not isinstance(envelope.get("data"), list):
-        raise MalformedResponseError("data 缺失或非陣列")
-    metadata = envelope.get("metadata")
-    if not isinstance(metadata, dict):
-        raise MalformedResponseError("metadata 缺失或非物件")
-
-    pagination = {
-        "page": metadata.get("page"),
-        "total_pages": metadata.get("totalPage"),
-        "total": metadata.get("total"),
-    }
-    warnings = []
-    warning = _more_pages_warning(pagination)
-    if warning:
-        warnings.append(warning)
-
-    return {
-        "results": [_convert_template_row(row) for row in envelope["data"]],
         "pagination": pagination,
         "browse_limit": None,
         "warnings": warnings,
@@ -851,38 +799,3 @@ def register_messaging_tools(mcp: FastMCP):
 
     mcp.tool()(require_login(get_conversation))
     mcp.tool()(require_login(send_message))
-
-    @mcp.tool()
-    @require_login
-    async def list_templates(ctx: Context, type_id: str | None = None, page: int = 1) -> dict:
-        """列出這個帳號已存好的罐頭信件範本（走 JSON API；一次呼叫一個請求，
-        不佔履歷瀏覽配額，但仍需要登入、仍過節流閘）。用來挑出要給事件送出工具
-        （send_inquiry 等）的 template_id，但不是它們的必要前置步驟——template_id
-        都是選填的，完全不呼叫本工具也能送出。
-
-        Args:
-            type_id: 選填，依範本的歸檔分類篩選——這是帳號自己整理範本用的分類，
-                只是歸檔，不換路由：五種招募事件（詢問意願、邀約面試、感謝函、
-                到職日期提醒、邀性格測驗）各有自己的送出工具，事件種類由工具
-                決定，與所帶範本的類別無關。已知六種：
-                "1" 詢問意願、"2" 邀約面試、"3" 感謝函、"4" 到職日期提醒、
-                "5" 邀性格測驗、"0" 不分類。省略時回全部範本。
-            page: 頁碼，預設 1。
-
-        成功時固定回傳 {"results": [{"id","title","description","type_id",
-        "type_desc"}, ...], "pagination": {"page","total_pages","total"},
-        "browse_limit": null, "warnings": [...]}——description 就是完整信件
-        本文，不需要另外查單則範本。total_pages 大於 page 時 warnings 會提醒還有
-        其餘頁面。失敗時回傳 {"error": str}，沒有 results 欄位。
-        """
-        params: list[tuple[str, str]] = [("page", str(page))]
-        if type_id is not None:
-            params.append(("typeId", type_id))
-        try:
-            async with guarded_api(ctx, ENDPOINTS["list_templates"], params=params) as (envelope, _info):
-                return _build_template_list_response(envelope)
-        except GuardAbort as e:
-            return e.payload
-        except MalformedResponseError as exc:
-            log.error("list_templates: 回應結構異常: %s", exc.detail)
-            return _malformed_response_payload(exc)

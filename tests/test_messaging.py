@@ -26,7 +26,7 @@ import pytest_asyncio
 
 import mcp104.tools.discovery as discovery_mod
 from tests.conftest import load_fixture
-from mcp104.browser.api_client import ENDPOINTS, RawResponse
+from mcp104.browser.api_client import RawResponse
 from mcp104.browser.session import SessionInfo, SessionPool
 from mcp104.browser.throttle import ThrottleAbort
 from mcp104.config import get_config
@@ -237,7 +237,6 @@ TOOLS, TOOL_DESCRIPTIONS = _register_tools()
 read_messages = TOOLS["read_messages"]
 get_conversation = TOOLS["get_conversation"]
 send_message = TOOLS["send_message"]
-list_templates = TOOLS["list_templates"]
 check_already_contacted = TOOLS["check_already_contacted"]
 
 
@@ -1061,11 +1060,6 @@ def test_no_dialog_detail_or_message_item_or_msgmaster_selectors_remain():
     assert not hits, f"stale DOM-scraping selector reference(s) found: {hits}"
 
 
-def test_no_endpoint_declares_a_method_outside_get_post_or_put():
-    for key, ep in ENDPOINTS.items():
-        assert ep.method in {"GET", "POST", "PUT"}, f"{key}: unexpected method {ep.method!r}"
-
-
 # ═════════════════════════════════════════════════════════════════════════════════
 # outbound-contact — T-1..T-16, T-18..T-54
 #
@@ -1315,115 +1309,6 @@ async def test_T48_candidate_status_write_rules(tmp_path, monkeypatch):
 
 
 
-# ── list_templates — T-50..T-54 ─────────────────────────────────────────────────
-
-_TEMPLATE_ROW_A = {
-    "id": "tpl-syn-1", "title": "詢問意願-合成範本A", "description": "測試範本內容-合成A",
-    "typeId": "1", "typeDesc": "詢問意願",
-}
-
-
-@pytest.mark.asyncio
-async def test_T50_list_templates_params_carry_page_and_optional_type_id(tmp_path, monkeypatch):
-    ctx, _info, _db = await _new_session(tmp_path)
-    body = {"data": [_TEMPLATE_ROW_A], "metadata": {"page": 1, "totalPage": 1, "total": 1}}
-
-    spy = _install_fake_fetch(monkeypatch, _raw_from_body(body))
-    await list_templates(ctx=ctx)
-    _endpoint, params, _body = spy.calls[0]
-    assert any(k == "page" for k, _ in params)
-    assert not any(k == "typeId" for k, _ in params)
-
-    spy2 = _install_fake_fetch(monkeypatch, _raw_from_body(body))
-    await list_templates(ctx=ctx, type_id="1")
-    _endpoint2, params2, _body2 = spy2.calls[0]
-    assert any(k == "page" for k, _ in params2)
-    assert any((k, v) == ("typeId", "1") for k, v in params2)
-
-
-@pytest.mark.asyncio
-async def test_T51_list_templates_rows_are_allow_listed_and_envelope_is_fixed_shape(tmp_path, monkeypatch):
-    ctx, _info, _db = await _new_session(tmp_path)
-    row = dict(_TEMPLATE_ROW_A)
-    row["files"] = ["synthetic-file-marker"]
-    row["createDate"] = "2026-01-01"
-    body = {"data": [row], "metadata": {"page": 1, "totalPage": 1, "total": 1}}
-    _install_fake_fetch(monkeypatch, _raw_from_body(body))
-
-    result = await list_templates(ctx=ctx)
-
-    assert set(result.keys()) == {"results", "pagination", "browse_limit", "warnings"}
-    assert result["browse_limit"] is None
-    assert len(result["results"]) == 1
-    assert set(result["results"][0].keys()) == {"id", "title", "description", "type_id", "type_desc"}
-    text = json.dumps(result, ensure_ascii=False)
-    assert "synthetic-file-marker" not in text
-    assert "createDate" not in text
-
-
-@pytest.mark.asyncio
-async def test_T52_list_templates_pagination_and_more_pages_warning(tmp_path, monkeypatch):
-    ctx, _info, _db = await _new_session(tmp_path)
-    body = {"data": [_TEMPLATE_ROW_A], "metadata": {"page": 1, "totalPage": 3, "total": 65}}
-    _install_fake_fetch(monkeypatch, _raw_from_body(body))
-
-    result = await list_templates(ctx=ctx)
-
-    assert result["pagination"] == {"page": 1, "total_pages": 3, "total": 65}
-    assert len(result["warnings"]) == 1
-    assert "3" in result["warnings"][0]
-
-
-@pytest.mark.asyncio
-async def test_T53_list_templates_missing_metadata_and_upstream_error_both_fail_without_results(tmp_path, monkeypatch):
-    ctx, _info, _db = await _new_session(tmp_path)
-    _install_fake_fetch(monkeypatch, _raw_from_body({"data": []}))
-    result = await list_templates(ctx=ctx)
-    assert "error" in result
-    assert "results" not in result
-
-    ctx2, _info2, _db2 = await _new_session(tmp_path)
-    _install_fake_fetch(monkeypatch, _raw(403, "text/html; charset=utf-8", "blocked", None))
-    result2 = await list_templates(ctx=ctx2)
-    assert "error" in result2
-    assert "results" not in result2
-
-
-@pytest.mark.asyncio
-async def test_T54_list_templates_requires_login_and_goes_through_the_real_throttle_gate(tmp_path, monkeypatch):
-    pool = SessionPool()
-    database = Database(str(tmp_path / f"db_{uuid4().hex}.sqlite"))
-    await database.init()
-    _OPENED_DATABASES.append(database)
-    ctx = FakeCtx(pool, database)  # no session activated -> not logged in
-    _install_never_called_fetch(monkeypatch)
-
-    result = await list_templates(ctx=ctx)
-    assert result == {"error": "請先呼叫 login()"}
-
-    ctx2, info2, _db2 = await _new_session(tmp_path)
-    _install_never_called_fetch(monkeypatch)
-    import mcp104.tools.helpers as helpers_mod
-    real_enforce_throttle = helpers_mod.enforce_throttle
-
-    async def rejecting_throttle(*args, **kwargs):
-        return ThrottleAbort(kind="throttled", payload={"error": "節流測試", "retry_after_seconds": 7}, detail="")
-
-    monkeypatch.setattr("mcp104.tools.helpers.enforce_throttle", rejecting_throttle)
-    result2 = await list_templates(ctx=ctx2)
-    assert "error" in result2
-    assert result2.get("retry_after_seconds") == 7
-    monkeypatch.setattr("mcp104.tools.helpers.enforce_throttle", real_enforce_throttle)
-
-    ctx3, info3, _db3 = await _new_session(tmp_path)
-    body = {"data": [_TEMPLATE_ROW_A], "metadata": {"page": 1, "totalPage": 1, "total": 1}}
-    _install_fake_fetch(monkeypatch, _raw_from_body(body))
-    before = len(info3.throttle.request_timestamps)
-    await list_templates(ctx=ctx3)
-    after = len(info3.throttle.request_timestamps)
-    assert after == before + 1
-
-
 # Round I1 Smell B: this file used to carry its own
 # test_endpoint_construction_with_delete_method_raises, but it passed
 # family_b_shape=None alongside family="B" — the ValueError it caught could
@@ -1453,14 +1338,3 @@ async def test_send_message_accepted_marks_a_blank_candidate_contacted_and_keeps
     await send_message(ctx=ctx2, job_id="12355016", candidate_id="017425", message=_SYNTHETIC_LETTER)
     row2 = await db2.get_candidate("017425", "message", info2.account_label)
     assert row2["status"] == "interested"
-
-
-# ── list_templates description after this round — T-76 (R10.3) ─────────────────────
-
-def test_list_templates_description_no_longer_claims_one_event_route_or_future_events():
-    """design T-76: the list_templates description states the current five-route situation,
-    not the single-route wording of the previous round."""
-    description = TOOL_DESCRIPTIONS["list_templates"]
-    assert description
-    assert "只有一條事件路由" not in description
-    assert "未來量到其他招募事件" not in description

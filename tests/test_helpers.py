@@ -1419,3 +1419,174 @@ async def test_projection_on_an_object_data_kind_still_projects(monkeypatch):
         )
 
     assert projected["data"] == {"x": 1}
+
+
+# ── Template management, Phase 1 (design Testing Strategy T-71, T-74, T-75) ─────────
+
+_TEMPLATE_CHALLENGE_TEXT = "vip.104.com.tw 正在執行安全驗證\n此網站使用安全服務抵禦惡意機器人。"
+
+
+# T-71 (interface): DELETE reaches the wire as DELETE with no body, and the guard refuses a body on it.
+
+@pytest.mark.asyncio
+async def test_T71_fetch_sends_a_delete_with_no_body(monkeypatch):
+    from urllib.parse import urlsplit, urlunsplit
+
+    from aiohttp import web
+    from aiohttp.test_utils import TestServer
+
+    from mcp104.browser import api_client as api_client_mod
+
+    received: list[dict] = []
+
+    async def handler(request):
+        raw = await request.read()
+        received.append({"method": request.method, "raw": raw})
+        return web.json_response({"data": True, "metadata": {}})
+
+    app = web.Application()
+    app.router.add_route("*", "/{tail:.*}", handler)
+
+    async with TestServer(app) as server:
+        base = urlsplit(f"http://{server.host}:{server.port}")
+        real_build_url = api_client_mod.build_url
+
+        def _build_url_on_local_server(*args, **kwargs):
+            parts = urlsplit(real_build_url(*args, **kwargs))
+            return urlunsplit((base.scheme, base.netloc, parts.path, parts.query, parts.fragment))
+
+        monkeypatch.setattr(api_client_mod, "build_url", _build_url_on_local_server)
+        response = await api_client_mod.fetch(
+            ENDPOINTS["delete_template"], cookie_header="c=1",
+            params=[("template_id", "800001")], body=None,
+        )
+
+    assert len(received) == 1
+    assert received[0]["method"] == "DELETE"
+    assert received[0]["raw"] == b""
+    assert response.status == 200
+
+
+@pytest.mark.asyncio
+async def test_T71_guard_refuses_a_body_on_a_delete_endpoint_before_any_request(monkeypatch):
+    ctx, _info = _new_api_ctx_and_session()
+    spy = _SeqFetchSpy([])
+    _patch_fetch(monkeypatch, spy)
+
+    with pytest.raises((ToolAbort, GuardAbort)) as exc_info:
+        async with guarded_sequence(ctx, slots_needed=1) as (request, _info2):
+            await request(ENDPOINTS["delete_template"], params=[("template_id", "800001")],
+                          body={"unexpected": True})
+
+    assert exc_info.value.kind == "internal_config"
+    assert spy.calls == []
+
+
+# T-74 (interface): GuardAbort carries the 104 envelope's code, top-level detail and top-level message.
+
+@pytest.mark.asyncio
+async def test_T74_a_104_error_envelope_on_a_refusal_carries_code_detail_and_message(monkeypatch):
+    ctx, _info = _new_api_ctx_and_session()
+    detail = [{"jobNo": "12355016", "jobName": "合成職缺甲"}]
+    _patch_fetch(monkeypatch, _SeqFetchSpy([
+        _resp({"code": "00803", "message": "SYNTH-IN-USE", "detail": detail}, status=400),
+    ]))
+
+    with pytest.raises(GuardAbort) as exc_info:
+        async with guarded_sequence(ctx, slots_needed=1) as (request, _info2):
+            await request(ENDPOINTS["delete_template"], params=[("template_id", "800001")])
+
+    assert exc_info.value.code == "00803"
+    assert exc_info.value.envelope_detail == detail
+    assert exc_info.value.envelope_message == "SYNTH-IN-USE"
+
+
+@pytest.mark.asyncio
+async def test_T74_a_403_envelope_is_still_a_block_and_keeps_the_code_and_fields(monkeypatch):
+    ctx, _info = _new_api_ctx_and_session()
+    detail = [{"jobNo": "12355016", "jobName": "合成職缺甲"}]
+    _patch_fetch(monkeypatch, _SeqFetchSpy([
+        _resp({"code": "00803", "message": "SYNTH-IN-USE", "detail": detail}, status=403),
+    ]))
+
+    with pytest.raises(GuardAbort) as exc_info:
+        async with guarded_sequence(ctx, slots_needed=1) as (request, _info2):
+            await request(ENDPOINTS["delete_template"], params=[("template_id", "800001")])
+
+    assert exc_info.value.kind == "blocked"
+    assert exc_info.value.code == "00803"
+    assert exc_info.value.envelope_detail == detail
+    assert exc_info.value.envelope_message == "SYNTH-IN-USE"
+
+
+@pytest.mark.asyncio
+async def test_T74_a_challenge_page_carries_none_for_all_three_envelope_fields(monkeypatch):
+    ctx, _info = _new_api_ctx_and_session()
+    challenge = RawResponse(status=200, location=None, content_type="text/html; charset=utf-8",
+                            body=_TEMPLATE_CHALLENGE_TEXT,
+                            body_bytes=_TEMPLATE_CHALLENGE_TEXT.encode("utf-8"), parsed_json=None)
+    _patch_fetch(monkeypatch, _SeqFetchSpy([challenge]))
+
+    with pytest.raises((GuardAbort, ToolAbort)) as exc_info:
+        async with guarded_sequence(ctx, slots_needed=1) as (request, _info2):
+            await request(ENDPOINTS["delete_template"], params=[("template_id", "800001")])
+
+    assert getattr(exc_info.value, "code", None) is None
+    assert getattr(exc_info.value, "envelope_detail", None) is None
+    assert getattr(exc_info.value, "envelope_message", None) is None
+
+
+@pytest.mark.asyncio
+async def test_T74_a_transport_failure_carries_none_for_all_three_envelope_fields(monkeypatch):
+    ctx, _info = _new_api_ctx_and_session()
+    _patch_fetch(monkeypatch, _SeqFetchSpy([RuntimeError("SYNTH-TRANSPORT")]))
+
+    with pytest.raises((GuardAbort, ToolAbort)) as exc_info:
+        async with guarded_sequence(ctx, slots_needed=1) as (request, _info2):
+            await request(ENDPOINTS["delete_template"], params=[("template_id", "800001")])
+
+    assert getattr(exc_info.value, "code", None) is None
+    assert getattr(exc_info.value, "envelope_detail", None) is None
+    assert getattr(exc_info.value, "envelope_message", None) is None
+
+
+# T-75 (interface): field projection on a template endpoint whose data_kind is not "object" is an
+# internal configuration error before any request; the one object-kind template endpoint still projects.
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("key, params, body", [
+    ("list_template_types", [("withoutPaging", "1")], None),
+    ("template_delete_check", [("template_id", "800001")], None),
+    ("update_template", [("template_id", "800001")],
+     {"title": "合成", "description": "合成", "typeId": "1", "files": []}),
+    ("create_template", [], {"title": "合成", "description": "合成", "typeId": "1", "files": []}),
+    ("delete_template", [("template_id", "800001")], None),
+])
+async def test_T75_projection_on_a_non_object_template_endpoint_is_refused_before_any_request(
+        monkeypatch, key, params, body):
+    ctx, _info = _new_api_ctx_and_session()
+    spy = _SeqFetchSpy([])
+    _patch_fetch(monkeypatch, spy)
+
+    with pytest.raises(ToolAbort) as exc_info:
+        async with guarded_sequence(ctx, slots_needed=1) as (request, _info2):
+            await request(ENDPOINTS[key], params=params, body=body, pick_data=("x",))
+
+    assert exc_info.value.kind == "internal_config"
+    assert exc_info.value.payload != ERROR_API_REQUEST_FAILED
+    assert spy.calls == []
+
+
+@pytest.mark.asyncio
+async def test_T75_get_template_is_the_object_kind_and_still_projects(monkeypatch):
+    ctx, _info = _new_api_ctx_and_session()
+    _patch_fetch(monkeypatch, _SeqFetchSpy([
+        _resp({"data": {"id": "800001", "title": "合成", "description": "合成",
+                        "typeId": "1", "files": []}, "metadata": {}}),
+    ]))
+
+    async with guarded_sequence(ctx, slots_needed=1) as (request, _info2):
+        projected = await request(ENDPOINTS["get_template"], params=[("template_id", "800001")],
+                                  pick_data=("title",))
+
+    assert projected["data"] == {"title": "合成"}

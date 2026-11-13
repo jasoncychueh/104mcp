@@ -128,6 +128,9 @@
 - `send_start_date_reminder(job_id, candidate_id, message, start_time, location, contact_name, contact_phone, reply_days, include_recruiters, template_id)` — 送出「到職日期提醒」，通知已錄取者報到時間與地點
 - `send_personality_test_invite(job_id, candidate_id, message, reply_days, template_id)` — 送出「邀性格測驗」（104 職業適性測驗）
 - `list_templates(type_id, page)` — 列出帳號裡存好的罐頭信範本
+- `create_template(title, description, type_id)` — 新增一則罐頭信範本（只存在帳號裡，不會送給任何人），標題 16 字內、內容 1000 字內
+- `update_template(template_id, title, description, type_id)` — 修改一則範本，只改有給的欄位；帶附件的範本不修改，請到 104 後台
+- `delete_template(template_id)` — 刪除一則範本。無法復原；被職缺使用的範本 104 不讓刪，會列出使用它的職缺
 
 **候選人狀態（存在本機，與 104 無關）**
 - `get_candidate_status(candidate_id, id_source)` — 讀回本機對一位候選人記下的紀錄（狀態、名字、時間）；同一個人在履歷 id 與訊息 id 下的紀錄都會一起列出

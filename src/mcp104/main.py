@@ -28,6 +28,7 @@ from mcp104.tools.messaging import register_messaging_tools
 from mcp104.tools.resume_files import register_resume_file_tools, sweep_expired_files
 from mcp104.tools.search import register_search_tools
 from mcp104.tools.status import register_status_tools
+from mcp104.tools.templates import register_template_tools
 from mcp104.web.auth_server import AuthEndpoint, resolve_auth_binding
 
 log = logging.getLogger("104-mcp.main")
@@ -231,6 +232,7 @@ def register_all_tools(mcp: FastMCP) -> None:
     register_resume_file_tools(mcp)
     register_messaging_tools(mcp)
     register_event_tools(mcp)
+    register_template_tools(mcp)
     register_status_tools(mcp)
     register_discovery_tools(mcp)
 

@@ -29,12 +29,13 @@ raising:
   route someone happened to check first" (docs/104-site-facts.md §6b.3h,
   corrected 2026-08-14 — see the comment above ENDPOINTS for how the
   earlier, narrower conclusion arose).
-- method: a construction-time whitelist ({"GET", "POST", "PUT"}) is the only
-  thing standing between "an endpoint declaration" and "an endpoint that
-  can delete a real conversation" — docs/104-site-facts.md §6b.9-2 records
-  two DELETE routes on the same messaging API surface this module talks
-  to, and the whitelist makes them unconstructible rather than merely
-  undocumented.
+- method: a construction-time whitelist ({"GET", "POST", "PUT", "DELETE"})
+  keeps out any other verb. DELETE is allowed for exactly one route, the
+  template delete; docs/104-site-facts.md §6b.9-2 records two DELETE routes
+  on the messaging surface that delete real conversation history, and those
+  stay out of ENDPOINTS — an endpoint that is not declared cannot be called.
+  A test pins the set of DELETE endpoints, so declaring another one is a
+  deliberate act, never a side effect.
 - body_encoding: a POST or PUT route takes either a JSON body or a form body
   (the older `/api/*` write routes are form posts), and which one is a fact
   about the route, so it is declared beside host and method and checked at
@@ -90,17 +91,19 @@ _ASSET_HOST = "asset"
 REFERER_SITE_ROOT = "https://vip.104.com.tw/"
 
 # The only HTTP methods any Endpoint may declare — enforced in
-# Endpoint.__post_init__, not merely documented. This is what makes the two
-# DELETE routes recorded in docs/104-site-facts.md §6b.9-2
-# (deleteMessage/deleteMessageList) unconstructible: a caller cannot build
-# an Endpoint("DELETE", ...) at all, which is a stronger guarantee than a
-# comment asking people not to add them.
-_ALLOWED_METHODS = frozenset({"GET", "POST", "PUT"})
+# Endpoint.__post_init__, not merely documented. DELETE is in the set for the
+# template delete alone. The two conversation DELETE routes recorded in
+# docs/104-site-facts.md §6b.9-2 (deleteMessage/deleteMessageList) are kept
+# unreachable a different way: they are not in ENDPOINTS, and the tests pin the
+# DELETE endpoints to the template delete, so adding another is a decision
+# somebody has to make out loud.
+_ALLOWED_METHODS = frozenset({"GET", "POST", "PUT", "DELETE"})
 
 # The methods that carry a request body (JSON or form, per
 # Endpoint.body_encoding). fetch() dispatches on this and tools/helpers.py's
 # `_issue_one` reads it for the call-shape check, so "which methods take a
-# body" is decided here and nowhere else.
+# body" is decided here and nowhere else. DELETE is not in it: a DELETE route
+# sends no body, so the call-shape check refuses one.
 BODY_METHODS = frozenset({"POST", "PUT"})
 
 # The two ways a body can be encoded — enforced in Endpoint.__post_init__.
@@ -255,7 +258,7 @@ class Endpoint:
     key: str
     host: str  # "vip" | "auth"
     path: str  # may contain `{name}` placeholders filled from build_url's params
-    method: str  # "GET" | "POST" | "PUT" — see _ALLOWED_METHODS
+    method: str  # "GET" | "POST" | "PUT" | "DELETE" — see _ALLOWED_METHODS
     body_encoding: str | None  # "json" | "form" for a BODY_METHODS endpoint, None for every other — enforced below
     family: str  # "A" | "B" | "envelope" — dispatches classify(); "opaque" names a route measured to answer outside either JSON envelope (e.g. logout_session) — classify() is never reached for it in practice, see that endpoint's own comment
     extra_headers: tuple[tuple[str, str], ...]  # NAME/VALUE pairs sent verbatim, beyond the always-sent baseline (User-Agent, Accept-Language, Cookie)
@@ -654,12 +657,7 @@ ENDPOINTS: dict[str, Endpoint] = {
     # family B. extra_headers=() on all four for the same "not measured,
     # not measured unnecessary" reason as the three messaging routes
     # above — this table has never extended the vip-only Referer
-    # measurement to this host. get_template (GET
-    # /bc-comm/template/{id}) is deliberately NOT declared here: nothing
-    # in this project calls it (list_templates' rows already carry the
-    # full template body; send_inquiry sends template_id verbatim without
-    # looking it up) and an endpoint with no call site is a standing
-    # invitation for the next reader to assume one exists.
+    # measurement to this host.
     "list_templates": Endpoint(
         key="list_templates",
         host="auth",
@@ -669,6 +667,95 @@ ENDPOINTS: dict[str, Endpoint] = {
         family="B",
         extra_headers=(),
         family_b_shape=FamilyBShape(data_kind="list", inner_key=None, sibling_keys=()),
+        throttle_gated=True,
+    ),
+    # ── Template management (tools/templates.py). All on the auth host,
+    # all family B, extra_headers=() for the same reason as above. Every
+    # `{template_id}` is filled through build_url's placeholder mechanism.
+    #
+    # list_template_types: measured (§8.15, §8.33). Always called with
+    # `withoutPaging=1` — that is the shape that was measured; whether the
+    # route pages without it is unmeasured.
+    "list_template_types": Endpoint(
+        key="list_template_types",
+        host="auth",
+        path="/bc-comm/template-type",
+        method="GET",
+        body_encoding=None,
+        family="B",
+        extra_headers=(),
+        family_b_shape=FamilyBShape(data_kind="list", inner_key=None, sibling_keys=()),
+        throttle_gated=True,
+    ),
+    # get_template: measured (§8.15, §8.33). `data` is one template with a
+    # `files` array and no `typeDesc`; a missing id answers 404 `00802`.
+    "get_template": Endpoint(
+        key="get_template",
+        host="auth",
+        path="/bc-comm/template/{template_id}",
+        method="GET",
+        body_encoding=None,
+        family="B",
+        extra_headers=(),
+        family_b_shape=FamilyBShape(data_kind="object", inner_key=None, sibling_keys=()),
+        throttle_gated=True,
+    ),
+    # create_template: front-end code only, nothing measured (§8.36).
+    # data_kind="any": the
+    # success body has not been seen and the tool never reads it — the
+    # outcome comes from re-reading the list.
+    "create_template": Endpoint(
+        key="create_template",
+        host="auth",
+        path="/bc-comm/template",
+        method="POST",
+        body_encoding="json",
+        family="B",
+        extra_headers=(),
+        family_b_shape=FamilyBShape(data_kind="any", inner_key=None, sibling_keys=()),
+        throttle_gated=True,
+    ),
+    # update_template: measured on one UI session (§8.18, six PUTs of a
+    # template without attachments): the response is `{"data": true,
+    # "metadata": {}}`. What `data: false` would mean is unmeasured.
+    "update_template": Endpoint(
+        key="update_template",
+        host="auth",
+        path="/bc-comm/template/{template_id}",
+        method="PUT",
+        body_encoding="json",
+        family="B",
+        extra_headers=(),
+        family_b_shape=FamilyBShape(data_kind="bool", inner_key=None, sibling_keys=()),
+        throttle_gated=True,
+    ),
+    # template_delete_check: measured for a template that may be deleted
+    # (§8.33): HTTP 200 `{"data": true, "metadata": {}}`. The answer for a
+    # template that jobs still use (front-end code: error code `00803`) has
+    # not been seen.
+    "template_delete_check": Endpoint(
+        key="template_delete_check",
+        host="auth",
+        path="/bc-comm/template/delete-check/{template_id}",
+        method="GET",
+        body_encoding=None,
+        family="B",
+        extra_headers=(),
+        family_b_shape=FamilyBShape(data_kind="bool", inner_key=None, sibling_keys=()),
+        throttle_gated=True,
+    ),
+    # delete_template: front-end code only, nothing measured (§8.36). The
+    # only DELETE endpoint; no body. data_kind="any" for the same reason as
+    # create_template — the tool confirms by re-reading the template.
+    "delete_template": Endpoint(
+        key="delete_template",
+        host="auth",
+        path="/bc-comm/template/{template_id}",
+        method="DELETE",
+        body_encoding=None,
+        family="B",
+        extra_headers=(),
+        family_b_shape=FamilyBShape(data_kind="any", inner_key=None, sibling_keys=()),
         throttle_gated=True,
     ),
     # resolve_candidate_idno: the reverse bridge the event sends' (send_event
@@ -1186,8 +1273,8 @@ async def fetch(
     params: Sequence[tuple[str, str]] | None = None,
     body: dict | Sequence[tuple[str, str]] | None = None,
 ) -> RawResponse:
-    """Issue exactly one HTTP request for `endpoint` — GET, POST or PUT per
-    `endpoint.method`. Redirects are NOT followed: following one into an
+    """Issue exactly one HTTP request for `endpoint` — GET, POST, PUT or DELETE
+    per `endpoint.method`. Redirects are NOT followed: following one into an
     HTML login page and parsing it as JSON is exactly the silent
     substitution this whole design exists to prevent. The unfollowed 3xx
     body is empty, so the redirect's Location header (read by
@@ -1229,8 +1316,13 @@ async def fetch(
             request_cm = session.post(url, headers=headers, allow_redirects=False, **_body_kwargs(endpoint, body))
         elif endpoint.method == "PUT":
             request_cm = session.put(url, headers=headers, allow_redirects=False, **_body_kwargs(endpoint, body))
-        else:
+        elif endpoint.method == "DELETE":
+            request_cm = session.delete(url, headers=headers, allow_redirects=False)
+        elif endpoint.method == "GET":
             request_cm = session.get(url, headers=headers, allow_redirects=False)
+        else:
+            # Unreachable: Endpoint.__post_init__ admits only the four methods above.
+            raise ValueError(f"Endpoint {endpoint.key!r}: no transport for method {endpoint.method!r}")
         async with request_cm as response:
             status = response.status
             content_type = response.headers.get("Content-Type")

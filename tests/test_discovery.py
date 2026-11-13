@@ -31,6 +31,12 @@ from mcp104.tools.discovery import (
 from mcp104.tools.filters import CONDITIONS, VALID_FILTER_KEYS, Condition
 
 from tests.test_contract_docs import _all_tool_descriptions, _normalize_ws
+# Autouse fixtures from tests/test_jobs.py. Importing them applies them to every test in this
+# module; listing them in __all__ marks the imports as used for pyflakes and ruff.
+from tests.test_jobs import _close_opened_databases, deterministic_throttle
+import tests.test_jobs as _tj
+
+__all__ = ["_close_opened_databases", "deterministic_throttle"]
 
 
 
@@ -964,13 +970,6 @@ def test_job_describer_covers_every_allow_listed_field_under_its_row_name():
 # ── T-26 (R6.1): describe_result_fields covers every key a real list row carries ──────
 # applicants-and-job-reads Phase 2 task 7. The harness (session, fetch spy, fixtures) is
 # tests/test_jobs.py's; the rows come from the tools, not from a hand-written key list.
-
-from tests.test_jobs import (  # noqa: E402,F401
-    _close_opened_databases,
-    deterministic_throttle,
-)
-import tests.test_jobs as _tj  # noqa: E402
-
 
 @pytest.mark.asyncio
 async def test_applicant_fields_cover_every_key_a_list_applicants_row_carries(tmp_path, monkeypatch):

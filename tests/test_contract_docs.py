@@ -428,8 +428,8 @@ def test_no_ctx_param_module_uses_future_annotations():
 # test_no_registered_tool_exposes_ctx_as_a_caller_field /
 # test_no_ctx_param_module_uses_future_annotations (above) -- all three sweep the
 # live registry / tools/*.py directory rather than a hard-coded tool list, so
-# send_inquiry and list_templates (registered inside messaging.py's
-# register_messaging_tools) are covered automatically the moment they exist, with
+# send_inquiry and list_templates (list_templates is registered inside
+# templates.py's register_template_tools) are covered automatically the moment they exist, with
 # no new test needed for either case.
 
 _WS_RUN_RE = re.compile(r"\s+")
@@ -695,3 +695,35 @@ def test_register_all_tools_registers_all_five_event_tools():
     counting = _CountingMCP()
     register_all_tools(counting)
     assert _EVENT_AND_ASSET_TOOLS <= set(counting.counts)
+
+
+# ── Template management (T-55, T-77) ─────────────────────────────────────────────────
+
+def test_T55_template_module_shipping_strings_never_name_the_account_holder():
+    import mcp104.tools.templates as templates_mod
+
+    tree = ast.parse(Path(templates_mod.__file__).read_text(encoding="utf-8"))
+    strings = [node.value for node in ast.walk(tree)
+               if isinstance(node, ast.Constant) and isinstance(node.value, str)]
+    assert strings, "sanity: no string constants found in templates.py"
+    assert not [text for text in strings if "帳號持有人" in text]
+    descriptions = _all_tool_descriptions()
+    for name in ("create_template", "update_template", "delete_template", "list_templates"):
+        assert "帳號持有人" not in descriptions[name], name
+
+
+def test_T77_register_all_tools_registers_the_four_template_tools_once_each():
+    counting = _CountingMCP()
+    register_all_tools(counting)
+    for name in ("list_templates", "create_template", "update_template", "delete_template"):
+        assert counting.counts.get(name) == 1, (
+            f"{name} must be registered exactly once: {counting.counts.get(name)}"
+        )
+
+
+@pytest.mark.asyncio
+async def test_T77_the_served_registry_publishes_the_four_template_tools():
+    mcp = FastMCP("contract-test-template-tools")
+    register_all_tools(mcp)
+    published = {tool.name for tool in await mcp.list_tools()}
+    assert {"list_templates", "create_template", "update_template", "delete_template"} <= published

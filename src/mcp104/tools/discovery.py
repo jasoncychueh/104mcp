@@ -604,8 +604,8 @@ def _describe_message_fields() -> dict:
 # `list_templates` row field gloss — keyed on the DELIVERED name already (`type_id`/
 # `type_desc`, not `typeId`/`typeDesc`), unlike RESUME/INBOX/MESSAGE_ROW_FIELD_GLOSS
 # above which are keyed raw-camelCase because tools/search.py and tools/messaging.py
-# filter the RAW pre-conversion dict against those two. `tools/messaging.py`'s row
-# conversion for `list_templates` has no such raw-filtering step to share a key-space
+# filter the RAW pre-conversion dict against those two. `tools/templates.py`'s row
+# conversion for the template tools has no such raw-filtering step to share a key-space
 # with, so there is nothing gained by keying this one raw too — this table's keys
 # must already be the published names.
 #
@@ -631,7 +631,8 @@ TEMPLATE_ROW_FIELD_GLOSS: dict[str, str] = {
     "type_id": "帳號自己整理的歸檔分類代碼，不是 104 的事件路由——六個已知代碼："
                + "、".join(f"{code}={label}" for code, label in TEMPLATE_TYPE_LABELS.items())
                + "。送出哪一種事件由所呼叫的事件工具決定，與範本的類別無關",
-    "type_desc": "type_id 對應的中文標籤，由 104 自己回傳",
+    "type_desc": "type_id 對應的中文標籤，由 104 自己回傳；update_template 回傳的範本這一欄是空的"
+                 "（單筆讀取的路由不回類別名稱），要類別名稱請呼叫 list_templates",
 }
 
 
@@ -639,7 +640,7 @@ def _describe_template_fields() -> dict:
     """`list_templates` rows are already keyed on their delivered names
     (`TEMPLATE_ROW_FIELD_GLOSS`'s own keys) — no `_row_facing_key`-style rename step,
     unlike `_describe_resume_fields`/`_describe_inbox_fields`/`_describe_message_fields`
-    above, because `tools/messaging.py`'s template-row conversion has nothing raw to
+    above, because `tools/templates.py`'s template-row conversion has nothing raw to
     filter against (see this table's own comment)."""
     return {"fields": dict(TEMPLATE_ROW_FIELD_GLOSS)}
 
