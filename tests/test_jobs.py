@@ -2525,3 +2525,91 @@ def test_a_refused_batch_is_reread_only_when_it_holds_more_than_one_job(kind):
 @pytest.mark.parametrize("kind", ["expired", "blocked", "challenge", "header_fault", "throttled"])
 def test_session_and_gate_failures_are_raised_not_reread(kind):
     assert _jobs().write_failure_disposition(_failure(kind), batch_size=2) == "raise"
+
+
+# ── job-edit-create, Phase 2 (design Testing Strategy T-59) ─────────────────────
+# permit_state, JobList.add_on_tables and JobList.add_ons. The jobList result is the
+# job-switch synthesiser above (_switch_result / _switch_row); the four add-on tables
+# arrive as overrides, never from a fixture. Cases named here are job-edit-create's T-59;
+# the T-59 comments above belong to a different spec.
+
+_ADD_ON_TABLES = ("hotOrder", "selectJob", "priority", "jobSort")
+
+
+def test_permit_state_is_allowed_denied_or_unknown_and_never_guesses():
+    jobs = _jobs()
+    allowed = jobs.permit_state({"job__4": {"result": True, "message": ""}}, "job__4")
+    assert allowed.state == "allowed"
+
+    denied = jobs.permit_state({"job__4": {"result": False, "message": "SYNTH-DENIED-REASON"}}, "job__4")
+    assert denied.state == "denied"
+    assert denied.message == "SYNTH-DENIED-REASON"
+
+    denied_without_text = jobs.permit_state({"job__4": {"result": False}}, "job__4")
+    assert denied_without_text.state == "denied"
+    assert denied_without_text.message is None
+
+    unknown = [
+        ({"job__5": {"result": True}}, "job__4"),
+        ({"job__4": {"result": "true", "message": ""}}, "job__4"),
+        ({"job__4": {"result": 1, "message": ""}}, "job__4"),
+        ({"job__4": "SYNTH-NOT-AN-OBJECT"}, "job__4"),
+        (["SYNTH-PERMIT-LIST"], "job__4"),
+        (None, "job__4"),
+    ]
+    for permit, name in unknown:
+        assert jobs.permit_state(permit, name).state == "unknown", (permit, name)
+
+
+def test_parse_job_list_keeps_the_four_add_on_tables_as_given_and_accepts_a_string_table():
+    jobs = _jobs()
+    rows = [_switch_row("1000001"), _switch_row("1000002")]
+    parsed = jobs.parse_job_list(_switch_result(rows, overrides={
+        "hotOrder": {"1000001": 2},
+        "selectJob": {"1000002": 1},
+        "priority": [],
+        "jobSort": {"1000001": 1},
+    }))
+    tables = parsed.add_on_tables
+    assert tables.hot_order == {"1000001": 2}
+    assert tables.select_job == {"1000002": 1}
+    assert tables.priority == []
+    assert tables.job_sort == {"1000001": 1}
+
+    parsed = jobs.parse_job_list(_switch_result(
+        [_switch_row("1000001")],
+        overrides={"hotOrder": "SYNTH-STRING-TABLE"},
+        omit=("selectJob", "priority", "jobSort"),
+    ))
+    assert parsed.add_on_tables.hot_order == "SYNTH-STRING-TABLE"
+    assert parsed.add_on_tables.select_job is None
+    assert parsed.add_on_tables.priority is None
+    assert parsed.add_on_tables.job_sort is None
+
+
+def test_add_ons_returns_this_jobnos_entries_as_kind_and_value_and_refuses_string_tables():
+    jobs = _jobs()
+    parsed = jobs.parse_job_list(_switch_result(
+        [_switch_row("1000001"), _switch_row("1000002")],
+        overrides={
+            "hotOrder": {"1000001": 2, "1000003": 9},
+            "selectJob": {"1000002": 1},
+            "priority": {"1000001": 3},
+            "jobSort": {},
+        },
+    ))
+    assert parsed.add_ons("1000001") == {"focus": 2, "priority": 3}
+    assert parsed.add_ons("1000002") == {"pick_up": 1}
+
+    empty = jobs.parse_job_list(_switch_result(
+        [_switch_row("1000001")], overrides={table: [] for table in _ADD_ON_TABLES}))
+    assert empty.add_ons("1000001") == {}
+
+    absent = jobs.parse_job_list(_switch_result([_switch_row("1000001")], omit=_ADD_ON_TABLES))
+    assert absent.add_ons("1000001") == {}
+
+    for table in _ADD_ON_TABLES:
+        string_table = jobs.parse_job_list(_switch_result(
+            [_switch_row("1000001")], overrides={table: "SYNTH-STRING-TABLE"}))
+        with pytest.raises(helpers.MalformedResponseError):
+            string_table.add_ons("1000001")

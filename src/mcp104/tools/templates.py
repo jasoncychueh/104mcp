@@ -33,10 +33,12 @@ from mcp104.tools.helpers import (
     convert_keys,
     guarded_api,
     guarded_sequence,
+    malformed_response_payload,
     normalise_jobno,
     require_login,
 )
-from mcp104.tools.messaging import _malformed_response_payload, _more_pages_warning, _send_verdict
+from mcp104.tools.registration import register_tool
+from mcp104.tools.messaging import _more_pages_warning, _send_verdict
 
 log = logging.getLogger("104-mcp.templates")
 
@@ -433,7 +435,7 @@ def _is_not_found(exc: GuardAbort) -> bool:
 
 # ── Tool descriptions ────────────────────────────────────────────────────
 #
-# Each becomes the tool's actual __doc__ (see _register_tool) and has to fit the
+# Each becomes the tool's actual __doc__ (see register_tool) and has to fit the
 # 2,048-character slice Claude Code shows the model.
 
 _CREATE_TEMPLATE_DESCRIPTION = """新增一則罐頭信件範本到這個帳號（走 JSON API；寫入，不會送到任何求職者）。新增後 list_templates 看得到，回傳的 template.id 也可以當事件送出工具的 template_id。
@@ -482,13 +484,6 @@ Args:
 """
 
 
-def _register_tool(mcp: FastMCP, fn, doc: str) -> None:
-    """Register `fn` with `doc` as its actual __doc__ — set before `require_login`'s
-    `functools.wraps` copies it onto the wrapper FastMCP reads as the description."""
-    fn.__doc__ = doc
-    mcp.tool()(require_login(fn))
-
-
 def register_template_tools(mcp: FastMCP) -> None:
 
     @mcp.tool()
@@ -524,7 +519,7 @@ def register_template_tools(mcp: FastMCP) -> None:
             return e.payload
         except MalformedResponseError as exc:
             log.error("list_templates: 回應結構異常: %s", exc.detail)
-            return _malformed_response_payload(exc)
+            return malformed_response_payload(exc)
 
     async def create_template(ctx: Context, title: str, description: str, type_id: str) -> dict:
         problem = text_errors(title=title, description=description)
@@ -578,7 +573,7 @@ def register_template_tools(mcp: FastMCP) -> None:
             return e.payload
         except MalformedResponseError as exc:
             log.error("create_template: 回應結構異常: %s", exc.detail)
-            return _malformed_response_payload(exc)
+            return malformed_response_payload(exc)
         except Exception:
             log.error("create_template: 非預期例外 (post_attempted=%s)", tracker.sent, exc_info=True)
             if tracker.sent:
@@ -590,7 +585,7 @@ def register_template_tools(mcp: FastMCP) -> None:
                 }
             return {"error": "內部錯誤，這是程式問題，請回報 —— 沒有送出新增"}
 
-    _register_tool(mcp, create_template, _CREATE_TEMPLATE_DESCRIPTION)
+    register_tool(mcp, create_template, _CREATE_TEMPLATE_DESCRIPTION)
 
     async def update_template(
         ctx: Context, template_id: str, title: str | None = None,
@@ -676,7 +671,7 @@ def register_template_tools(mcp: FastMCP) -> None:
             return e.payload
         except MalformedResponseError as exc:
             log.error("update_template: 回應結構異常: %s", exc.detail)
-            return _malformed_response_payload(exc)
+            return malformed_response_payload(exc)
         except Exception:
             log.error("update_template: 非預期例外 (put_attempted=%s)", tracker.sent, exc_info=True)
             if tracker.sent:
@@ -688,7 +683,7 @@ def register_template_tools(mcp: FastMCP) -> None:
                 }
             return {"error": "內部錯誤，這是程式問題，請回報 —— 沒有送出修改"}
 
-    _register_tool(mcp, update_template, _UPDATE_TEMPLATE_DESCRIPTION)
+    register_tool(mcp, update_template, _UPDATE_TEMPLATE_DESCRIPTION)
 
     async def delete_template(ctx: Context, template_id: str) -> dict:
         error = template_id_error(template_id)
@@ -744,7 +739,7 @@ def register_template_tools(mcp: FastMCP) -> None:
             return e.payload
         except MalformedResponseError as exc:
             log.error("delete_template: 回應結構異常: %s", exc.detail)
-            return _malformed_response_payload(exc)
+            return malformed_response_payload(exc)
         except Exception:
             log.error("delete_template: 非預期例外 (delete_attempted=%s)", tracker.sent, exc_info=True)
             if tracker.sent:
@@ -756,7 +751,7 @@ def register_template_tools(mcp: FastMCP) -> None:
                 }
             return {"error": "內部錯誤，這是程式問題，請回報 —— 沒有送出刪除"}
 
-    _register_tool(mcp, delete_template, _DELETE_TEMPLATE_DESCRIPTION)
+    register_tool(mcp, delete_template, _DELETE_TEMPLATE_DESCRIPTION)
 
 
 def _in_use_error(exc: GuardAbort) -> dict:

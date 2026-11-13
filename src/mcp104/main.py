@@ -22,6 +22,7 @@ from mcp104.tools.auth import (
 )
 from mcp104.tools.discovery import register_discovery_tools
 from mcp104.tools.events import register_event_tools
+from mcp104.tools.job_edit import register_job_edit_tools
 from mcp104.tools.job_switch import register_job_switch_tools
 from mcp104.tools.jobs import register_job_tools
 from mcp104.tools.messaging import register_messaging_tools
@@ -229,6 +230,7 @@ def register_all_tools(mcp: FastMCP) -> None:
     register_search_tools(mcp)
     register_job_tools(mcp)
     register_job_switch_tools(mcp)
+    register_job_edit_tools(mcp)
     register_resume_file_tools(mcp)
     register_messaging_tools(mcp)
     register_event_tools(mcp)

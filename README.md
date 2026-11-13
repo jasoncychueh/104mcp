@@ -111,6 +111,8 @@
 - `close_jobs(jobnos, reasons, other_reason, return_add_ons, allow_pausing_company_ads)` — 關閉開放中的職缺。立刻生效、求職者看得到；關閉前要給原因代碼，有加值廣告要歸還或會暫停公司廣告時要明確確認，逐筆回報是否已確認
 - `open_jobs(jobnos, cancel_add_ons)` — 開啟已關閉的職缺。立刻生效、求職者看得到；會使用職務刊登額度，有會被取消的加值廣告時要明確確認，逐筆回報是否已確認
 - `delete_job(jobno)` — 刪除一個已關閉的職缺。無法復原，會一併刪除這個職缺的應徵履歷與聯絡紀錄；一次只刪一個，只接受 104 標示可刪除的職缺，逐筆回報是否已確認
+- `update_job(jobno, changes, confirm, accept_forbidden_word_warnings, accept_progress_reset)` — 修改一個職缺的刊登內容。儲存立刻生效、求職者看得到、無法撤回；預設只預覽「改前→改後」與 104 的禁用詞檢查，真人看過才帶 `confirm=true` 送出。有加值廣告、自動關閉日、預約開啟日的職缺請到 104 後台修改；是否儲存成功以重讀職缺的全欄比對為準
+- `create_job(source_jobno, changes, confirm, accept_forbidden_word_warnings)` — 以一個既有職缺為底稿複製新增職缺（不能從空白表單新增）。預設只預覽；新職缺開不開放以 104 回報為準（`new_job_switch`），可能用掉職務數額度。逾時後不要重送，先用 `list_jobs` 確認新職缺有沒有出現
 - `get_candidate_photo(candidate_id)` — 把候選人的大頭照下載到本機並回傳路徑（沒放照片時回 `photo: null`，那是正常狀態）
 - `get_resume_attachment(candidate_id, sort)` — 把履歷附件（作品集、證照掃描檔、另一版履歷 PDF……）下載到本機並回傳路徑
 

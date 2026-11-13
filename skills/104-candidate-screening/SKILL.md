@@ -1,6 +1,6 @@
 ---
 name: 104-candidate-screening
-description: 用 mcp104（104人力銀行 MCP server）替職缺找人、篩人，並把候選人整理成一份可離線閱讀的 HTML 履歷報表（含照片、履歷附件、完整履歷原文）。Use this for ANY step of working with 104 candidates, not only the first one — 看推薦履歷或配對人選、幫某個職缺找人、依條件篩履歷、抓候選人的大頭照與履歷附件、比較幾個人選的經歷與期望薪資、把已經篩好的名單做成 HTML 報表給主管看。It applies when the request is small（「看一下今天的推薦履歷」）, and also mid-workflow, when the user already has a shortlist and never repeats the word「104」because the candidates obviously came from there — 例如「把那四十個人做成一個 html，完整履歷都要在裡面」或「這幾個人選幫我比一下經歷跟期望薪資」。Not for editing mcp104's own code or config, posting a job, or messaging candidates. Carries the quota-safe call order (only get_resume_detail costs the 300/day budget), the résumé record schema, the screening-group method, and a bundled renderer.
+description: 用 mcp104（104人力銀行 MCP server）替職缺找人、篩人，把候選人整理成一份可離線閱讀的 HTML 履歷報表（含照片、履歷附件、完整履歷原文），並在使用者拍板後聯絡人選：先查誰已聯繫過、先從帳號的罐頭範本找合適文字、逐位讓真人看過全文再送出。Use this for ANY step of working with 104 candidates, not only the first one — 看推薦履歷或配對人選、幫某個職缺找人、依條件篩履歷、抓大頭照與履歷附件、比較人選的經歷與期望薪資、做成 HTML 報表給主管看、查某人聯絡過沒有、挑或存罐頭訊息範本、送詢問意願／面試邀約／感謝函。It applies when the request is small（「看一下今天的推薦履歷」）, and also mid-workflow, when the user already has a shortlist and never repeats the word「104」because the candidates obviously came from there — 例如「把那四十個人做成一個 html，完整履歷都要在裡面」或「這幾個人選幫我比一下經歷跟期望薪資」。職缺管理（更新、關閉、開啟、刪除、修改、複製新增）只給入口與確認規則。Not for editing mcp104's own code or config. Carries the quota-safe call order (only get_resume_detail costs the 300/day budget), the résumé record schema, the screening-group method, the template-first contact step with human sign-off on every send, and a bundled renderer.
 compatibility: 需要已設定並登入的 mcp104 MCP server；產生報表需要 Python 3 與 Pillow。
 ---
 
@@ -51,7 +51,7 @@ compatibility: 需要已設定並登入的 mcp104 MCP server；產生報表需�
 
 ⚠ **關閉中的職缺，兩條路由行為不一樣**：`switch="off"` 的職缺在**配對**路由回 404、
 在**推薦**路由回成功加空陣列。所以某個職缺配對查不到時，先確認它是不是已經關了，
-不要當成「今天沒人」。
+不要當成「今天沒人」。職缺本身要不要重新開，見底下「職缺本身出問題時」，那是要使用者拍板的事。
 
 這四條都**不扣履歷瀏覽配額**（repo 的 `docs/104-site-facts.md` §6b.4 有單一變因的對照
 實驗，而且推翻過一次相反的結論，值得一讀）。要全部就翻完所有頁，不要只抓第一頁然後說
@@ -131,6 +131,100 @@ python scripts/build_report.py --config report_config.json
 做完務必自己開一次確認版面沒壞（headless 瀏覽器截圖即可）。這個腳本是用字串替換把設定塞進
 模板的，語法錯誤不會讓它失敗，只會讓頁面靜靜地渲染不出來。
 
+### 7. 提名要聯絡的人之前，先查誰已經聯絡過
+
+`check_already_contacted(candidate_id, id_source)` 回 True／False；要看是哪一筆、什麼狀態、
+何時記下，用 `get_candidate_status`；`list_tracked_candidates(status=…)` 列出本機記下狀態的
+人。這三個查的是**本機 SQLite**：零個 104 請求、不扣配額、不佔節流名額，所以對整份短名單逐位
+查沒有理由省。
+
+`id_source` 看 id 從哪來：履歷列的 `candidate_id`（idNo）填 `"resume"`，訊息系統的 `p_id` 填
+`"message"`。兩個 id 拿哪一個查都行：104 把兩個 id 放在同一筆資料上交出時（履歷列、應徵者列、
+履歷詳情），本機會記下這組對應，所以拿 `candidate_id` 查，也找得到當初用 `p_id` 寫下的狀態。
+
+⚠ 「沒有紀錄」只代表**這個 Agent 沒記過**。本機只記經由這些工具送出、或你用
+`update_candidate_status` 寫下的狀態，同事在 104 後台直接發的訊息不在裡面；一組對應還沒被觀察到
+（還沒讀過任何同時帶兩個 id 的資料）時，另一個 id 底下的紀錄也找不到。要確認 104 那一側有沒有
+對話，用 `read_messages(job_nos=[jobno])`。
+
+狀態值是 `contacted`、`replied`、`interested`、`not_interested`、`scheduled`。送出工具會自己
+寫（詢問意願等寫 `contacted`、邀約面試寫 `scheduled`），`replied` 之類要靠
+`update_candidate_status` 記——記使用者告訴你的結果，不要自己猜。
+
+### 8. 聯絡人選：範本優先，逐位由真人確認
+
+誰要聯絡、用什麼措辭，是使用者的決定。你負責備好選項，他說發哪幾位，然後**逐位**讓他看過
+完整文字再送：一次呼叫恰好一位，沒有批次。每一次送出都**立刻到真人手上、收不回來、沒有
+dry-run**。
+
+先選工具。事件種類由工具決定，不是由範本決定：
+
+| 要做的事 | 工具 | 範本 `type_id` |
+|---|---|---|
+| 問有沒有意願 | `send_inquiry` | `"1"` |
+| 約面試（另需 `meeting_time`、`location`、`phase`、`contact_name`、`contact_phone`） | `send_interview_invite` | `"2"` |
+| 感謝函（通常用於婉拒） | `send_thank_you_letter` | `"3"` |
+| 通知報到（另需 `start_time`、`location`、聯絡人） | `send_start_date_reminder` | `"4"` |
+| 邀性格測驗 | `send_personality_test_invite` | `"5"` |
+| 一般文字訊息（沒有 `template_id` 參數，範本文字要自己貼進 `message`） | `send_message` | `"0"` 不分類，或任何一類 |
+
+**寫之前先看帳號裡有沒有現成的範本。** 呼叫 `list_templates(type_id=…)`（用上表的對應，沒有合適
+分類就省略 `type_id` 看全部）。每筆的 `description` 就是完整信件本文，不必另外查。這個呼叫不扣
+履歷配額，但是一個真的 104 請求、佔一個節流名額。挑得到合適的就拿它當底稿，不要重寫；
+都不合適才從頭寫。
+
+⚠ **`#jname#` 要自己換。** 範本本文裡可能有 `#jname#`，代表職缺名稱。送出工具把文字原樣
+送出，104 會不會在伺服器端替換它**沒有量測過**。所以由你把 `#jname#` 換成真正的職缺名稱
+（`list_jobs` 那一列的 `job`），**換好的文字**拿給真人看，也用換好的文字送。賭 104 會替你換，
+賭輸的後果是候選人收到一封裡面寫著 `#jname#` 的信。
+
+送出時：
+
+- `message` 放最後確認過的全文（≤ 1000 字元），`template_id` 放範本的 id（選填，挑同類別的）。
+  ⚠ 送出的永遠是 `message`，**不是**範本的 description——工具不會把範本當成預設內容，所以真人
+  看到的和實際送出的必須是同一段文字。
+- `job_id` 用 `list_jobs` 的 `jobno`；`candidate_id` 用履歷列或應徵者列的 **`p_id`**，不是
+  idNo（位數 ≥ 12 的會在送出前被擋下）。
+- 時間用 `YYYY-MM-DD HH:mm`（台北時間）。邀約面試與到職提醒**再呼叫一次是送出第二封**，不是
+  改期也不是取消前一封；改期請到 104 後台。
+- 回傳的 `sent` 只有 `"confirmed"` 與 `"unconfirmed"`，照值判斷。`unconfirmed` 很可能已經
+  送達，**不要重送**。
+- **逾時也不要重送。** 用戶端逾時時信可能已經到了；先用 `read_messages(job_nos=[jobno])` 或
+  104 後台確認。
+- 成本：每封事件信佔 3 個節流名額（每小時上限 300 個請求）；每日發送上限預設 50 則，五個
+  事件工具與 `send_message` 共用。
+
+**使用者想把這次的措辭留給下次用**，用 `create_template(title, description, type_id)`（標題
+≤ 16 字、內容 ≤ 1000 字、`type_id` 必填；新範本沒有附件），改現有的用
+`update_template`，不要的用 `delete_template`。這三個**不會送任何東西給候選人**，但都是對帳號的
+寫入，要先讓真人確認：`delete_template` 無法復原，而且被職缺使用的範本 104 不讓刪；
+`update_template` 遇到帶附件的範本會在送出前拒絕，那種請使用者到 104 後台改。回傳的
+`created`／`updated`／`deleted` 若是 `"unconfirmed"`，不代表失敗，去後台確認，不要重送
+（重送 `create_template` 會產生重複的範本）。
+
+## 職缺本身出問題時
+
+篩人的時候會撞見職缺本身的問題：職缺已關閉（`switch="off"`，步驟 2 的 ⚠）、刊登內容
+和使用者要找的人對不上、想更新職缺日期。這時你可以指路，但**由使用者決定做不做**：
+
+| 工具 | 做什麼 |
+|---|---|
+| `get_job_detail(jobno)` | 唯讀，讀刊登內容（說明、薪資、地點、條件） |
+| `list_refreshable_jobs()` → `refresh_jobs(jobnos)` | 更新職缺日期；只接受前一個工具列出的職缺，沒有「全部更新」 |
+| `close_jobs(jobnos, reasons)`／`open_jobs(jobnos)` | 關閉（`reasons` 必填）／重新開啟。開啟會用掉刊登額度，並取消加值廣告預約 |
+| `delete_job(jobno)` | 只限**已關閉**的職缺，一次一個 |
+| `update_job(jobno, changes)`／`create_job(source_jobno)` | 改刊登內容／以既有職缺為底稿複製新增；先不帶 `confirm` 取得預覽，真人看過差異再帶 `confirm=True` |
+
+共通的規則：**這些都立刻生效、求職者看得到、無法撤回，呼叫前必須先讓真人確認**（要動哪些
+職缺、改成什麼）。回傳的 `refreshed`／`closed`／`opened`／`deleted`／`saved`／`created` 都是靠
+寫入後重讀來判斷，`"unconfirmed"` 不代表失敗，用 `list_jobs` 或 104 後台確認，不要重送。
+
+⚠ `delete_job` 會連這個職缺的**應徵履歷與聯絡紀錄**一起刪（依 104 介面的確認文字）。你為這個
+職缺篩過的應徵者就在裡面——刪之前先確認報表與檔案都已經交給使用者。
+
+⚠ `create_job` 逾時後**絕對不要重送**：儲存可能已經送出，重送會多出第二個公開職缺。先用
+`list_jobs` 看新職缺有沒有出現。新職缺開不開放以 104 回報的 `new_job_switch` 為準。
+
 ## 候選人資料怎麼處理
 
 這些是真人的姓名、電話、Email、照片和完整工作史。
@@ -142,13 +236,17 @@ python scripts/build_report.py --config report_config.json
 
 ## 不屬於這個 skill 的事
 
-發訊息與送出招募事件（`send_message`、`send_inquiry`、`send_interview_invite`、
-`send_thank_you_letter`、`send_start_date_reminder`、`send_personality_test_invite`）**不在範圍內**。它送出去收不回來、沒有 dry-run、
-而且會消耗每日發送上限。人選名單出來之後，要不要聯絡、聯絡誰、用什麼措辭，是使用者的決定
-——把名單和建議給他，讓他說要發哪幾位，然後逐位確認再送。
+- **自動群發。**發訊息與送出招募事件（`send_message`、`send_inquiry`、`send_interview_invite`、
+  `send_thank_you_letter`、`send_start_date_reminder`、`send_personality_test_invite`）在範圍內，
+  但只能是步驟 8 那個形狀：使用者決定聯絡誰，逐位看過完整文字，一次一位。它送出去收不回來、
+  沒有 dry-run、而且會消耗每日發送上限；使用者沒點名的人不要送，「幫我全部發出去」也不是
+  可以直接照辦的指令——先把名單和文字列給他。
+- **職缺文案與刊登策略。**`update_job`、`create_job` 等工具只是入口，寫什麼內容、開關哪個職缺是
+  使用者的判斷；這個 skill 只負責讓你知道有這些工具、以及呼叫前要讓真人確認。
+- **mcp104 自己的程式或設定。**那是維護這個 MCP server 的工作，不是用它找人。
 
 ## 參考檔案
 
 - `references/screening-method.md` — 怎麼把「我要什麼樣的人」變成可重現的篩選規則
 - `references/record-schema.md` — 履歷記錄的 JSON 格式與 `report_config.json` 設定
-- `references/mcp104-notes.md` — 配額、ID 種類、已知地雷。**第一次用這個 skill 一定要讀**
+- `references/mcp104-notes.md` — 配額、ID 種類、已知地雷，含聯絡紀錄、範本與職缺寫入工具的陷阱。**第一次用這個 skill 一定要讀**

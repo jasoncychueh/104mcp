@@ -524,18 +524,18 @@ class MalformedResponseError(Exception):
     purpose (a response whose `metadata` is absent — both messaging
     routes are recorded carrying `metadata` with all four keys, so its
     absence is a departure worth raising on, not a shape nobody has
-    seen). A second class with an identical meaning — alongside the
-    identical Chinese string already duplicated between
-    search._malformed_response_payload and helpers._error_malformed —
-    is the duplication this repo has been bitten by twice; the
-    alternative (messaging importing a leading-underscore helper out of
-    search.py) would instead couple two tool modules that otherwise
-    share nothing.
+    seen). A second class with an identical meaning is the duplication
+    this repo has been bitten by twice, so the class and the payload
+    formatter below live here for every tool module to share.
     """
 
     def __init__(self, detail: str):
         self.detail = detail
         super().__init__(detail)
+
+
+def malformed_response_payload(exc: MalformedResponseError) -> dict:
+    return _error_malformed(exc.detail)
 
 
 # A job number is a run of ASCII digits. `[0-9]` rather than `str.isdigit`:

@@ -352,8 +352,8 @@ def _module_has_ctx_param_function(tree: ast.AST) -> bool:
 
 
 def _module_registers_tools(tree: ast.AST) -> bool:
-    """True iff the module's source calls `<something>.tool(...)` or
-    `<something>.add_tool(...)` anywhere -- i.e. it registers at least one MCP tool
+    """True iff the module's source calls `<something>.tool(...)`,
+    `<something>.add_tool(...)` or `register_tool(...)` anywhere -- i.e. it registers at least one MCP tool
     on a FastMCP instance. A module can define a helper that merely takes a `ctx`
     parameter (e.g. tools/helpers.py's `get_session_id`/`resolve_session`/
     `guarded_api`) without itself ever being handed to FastMCP for schema
@@ -363,11 +363,12 @@ def _module_registers_tools(tree: ast.AST) -> bool:
     auto-injection (see the module-level comment above the other test in this
     section)."""
     for node in ast.walk(tree):
-        if (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr in ("tool", "add_tool")
-        ):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, ast.Attribute) and func.attr in ("tool", "add_tool", "register_tool"):
+            return True
+        if isinstance(func, ast.Name) and func.id == "register_tool":
             return True
     return False
 
@@ -375,7 +376,7 @@ def _module_registers_tools(tree: ast.AST) -> bool:
 def test_no_ctx_param_module_uses_future_annotations():
     """White-box counterpart to test_no_registered_tool_exposes_ctx_as_a_caller_field:
     AST-scans every src/mcp104/tools/*.py module and fails if a module both (a)
-    registers at least one MCP tool (calls `.tool(...)`/`.add_tool(...)`) and (b)
+    registers at least one MCP tool (calls `.tool(...)`/`.add_tool(...)`/`register_tool(...)`) and (b)
     defines any function taking a `ctx` parameter, while also (c) carrying `from
     __future__ import annotations` -- that combination is exactly what silently
     breaks FastMCP's issubclass()-based auto-injection detection (see the

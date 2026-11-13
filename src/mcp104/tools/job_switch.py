@@ -37,13 +37,13 @@ from mcp104.tools.helpers import (
     convert_keys,
     guarded_sequence,
     jobno_error,
-    require_login,
+    malformed_response_payload,
 )
+from mcp104.tools.registration import register_tool
 from mcp104.tools.jobs import (
     JobList,
     JobListAccount,
     JobListRow,
-    _malformed_response_payload,
     parse_job_list,
     write_failure_disposition,
 )
@@ -58,7 +58,7 @@ ATSP_TIP = "此功能請至【104 招募管理 Pro】進行操作"
 _STATUS_OFF = "限刊登中會員使用"
 _STATUS_PAUSE = "暫停徵才中，目前無法開啟"
 _OUT_ENSURE = "保障方案延長期間不得開啟職務"
-_WEB_NO_MORE_MENU = "此帳號在 104 網頁上沒有這個操作，請到 104 後台"
+WEB_NO_MORE_MENU = "此帳號在 104 網頁上沒有這個操作，請到 104 後台"
 
 # Close reasons the front end's questionnaire offers; the request carries their sum.
 CLOSE_REASON_CODES: dict[int, str] = {
@@ -109,7 +109,7 @@ _OPEN_MESSAGE_OUTCOMES: dict[str, str] = {
 # ── JavaScript-flavoured reads of front-end flags ────────────────────────
 
 
-def _truthy(value: object) -> bool:
+def truthy(value: object) -> bool:
     """JavaScript truthiness of a value 104 sent, which is how the front end reads its flags:
     absent, null, false, 0 and "" are not set; every other value — an empty array or object
     included — is."""
@@ -127,7 +127,7 @@ def _truthy(value: object) -> bool:
 _NUMERIC_TEXT = re.compile(r"-?[0-9]+(\.[0-9]+)?")
 
 
-def _no_job_points(po_num: object) -> bool:
+def no_job_points(po_num: object) -> bool:
     """The front end's `poNum <= 0`: true only for a number, or a numeric string, that is at
     most zero. An absent value is `undefined <= 0`, which is false."""
     if isinstance(po_num, bool):
@@ -167,7 +167,7 @@ def preflight_rows(requested: Sequence[str], job_list: JobList) -> list[JobListR
 
 def _verifying(row: JobListRow) -> bool:
     """A job 104 is still verifying: the row's `switch` is "new" or `isInVerify` is set."""
-    return row.switch == "new" or _truthy(row.is_in_verify)
+    return row.switch == "new" or truthy(row.is_in_verify)
 
 
 def _verifying_multi(row: JobListRow) -> bool:
@@ -191,7 +191,7 @@ def switch_gate(
     verb = "開啟" if opening else "關閉"
     permit = account.permit
 
-    if len(rows) == 1 and not _truthy(account.is_web):
+    if len(rows) == 1 and not truthy(account.is_web):
         row = rows[0]
         if _verifying(row):
             return f"職缺確認中，目前無法{verb}"
@@ -199,7 +199,7 @@ def switch_gate(
             return _STATUS_OFF
         if opening and account.co_status == "pause":
             return _STATUS_PAUSE
-        if opening and _truthy(account.is_out_ensure):
+        if opening and truthy(account.is_out_ensure):
             return _OUT_ENSURE
         # The button reads `permit[key].result` without asking whether the key exists, so an
         # absent key leaves the button disabled (job__10 opens, job__11 closes).
@@ -209,7 +209,7 @@ def switch_gate(
         entry = permit.get(key)
         if not isinstance(entry, Mapping) or entry.get("result") is not True:
             return NO_PERMISSION
-        if opening and _truthy(account.is_new_model) and _no_job_points(account.po_num):
+        if opening and truthy(account.is_new_model) and no_job_points(account.po_num):
             return NO_POINT
         return None
 
@@ -220,7 +220,7 @@ def switch_gate(
         return _STATUS_OFF
     if account.co_status == "pause":
         return _STATUS_PAUSE
-    if opening and _truthy(account.is_out_ensure):
+    if opening and truthy(account.is_out_ensure):
         return _OUT_ENSURE
     if not isinstance(permit, Mapping):
         return NO_PERMISSION
@@ -228,9 +228,9 @@ def switch_gate(
     # (`i.job__5 && !i.job__5.result`; close: `!o.job__11 || o.job__11.result`).
     key = "job__5" if opening else "job__11"
     entry = permit.get(key)
-    if _truthy(entry) and (not isinstance(entry, Mapping) or entry.get("result") is not True):
+    if truthy(entry) and (not isinstance(entry, Mapping) or entry.get("result") is not True):
         return NO_PERMISSION
-    if opening and _truthy(account.is_new_model) and _no_job_points(account.po_num):
+    if opening and truthy(account.is_new_model) and no_job_points(account.po_num):
         return NO_POINT
     return None
 
@@ -244,7 +244,7 @@ _HUNTER_OPEN_REFUSAL = (
 def hunter_open_gate(account: JobListAccount) -> str | None:
     """The refusal for a hunter or dispatch account on the new job-point model, where the
     front end opens a confirmation dialog before opening (AJL@406322), else None."""
-    if (_truthy(account.is_hunter) or _truthy(account.is_dispatch)) and _truthy(account.is_new_model):
+    if (truthy(account.is_hunter) or truthy(account.is_dispatch)) and truthy(account.is_new_model):
         return _HUNTER_OPEN_REFUSAL
     return None
 
@@ -254,7 +254,7 @@ def delete_gate(more_permit: object, is_atsp: object) -> str | None:
     enabled (AJL@205509): enabled needs the single job's `job__6` permit granted and the
     account not an ATS-plan (招募管理 Pro) account. `more_permit` is `result.permit` of the
     single-job "more" read, not the job list's `permit`. An absent `is_atsp` is not set."""
-    atsp = _truthy(is_atsp)
+    atsp = truthy(is_atsp)
     granted = (
         isinstance(more_permit, Mapping)
         and isinstance(more_permit.get("job__6"), Mapping)
@@ -407,7 +407,7 @@ _AD_PAUSE_KEYS = (
 def build_ad_pause(metadata: object) -> dict | None:
     """The company-ad pause information of a close response's `metadata`: its eight keys,
     snake_case, None for a key 104 left out — when `lastJob` is set; otherwise None."""
-    if not isinstance(metadata, dict) or not _truthy(metadata.get("lastJob")):
+    if not isinstance(metadata, dict) or not truthy(metadata.get("lastJob")):
         return None
     return convert_keys({key: metadata.get(key) for key in _AD_PAUSE_KEYS})
 
@@ -419,7 +419,7 @@ def ad_pause_warning(ad_pause: dict) -> str:
     remaining = ad_period.get("remaining_days") if isinstance(ad_period, dict) else None
     if isinstance(remaining, (int, float)) and not isinstance(remaining, bool) and remaining <= 0:
         text = "已關閉全部職缺，因為目前是刊登最後一天，公司廣告持續刊登中"
-    elif _truthy(ad_pause.get("no_pause_days")):
+    elif truthy(ad_pause.get("no_pause_days")):
         text = "已關閉全部職缺，因為沒有暫停天數，公司廣告持續刊登中"
     else:
         text = (
@@ -427,7 +427,7 @@ def ad_pause_warning(ad_pause: dict) -> str:
             f"（暫停 {ad_pause.get('pause_startdate')} 至 {ad_pause.get('pause_enddate')}，"
             f"恢復刊登日 {ad_pause.get('ad_open_date')}）"
         )
-    if _truthy(ad_pause.get("return_extra")):
+    if truthy(ad_pause.get("return_extra")):
         text += "；加值廣告已取消"
     return text
 
@@ -553,13 +553,6 @@ def _write_note(disposition: str, abort: GuardAbort, verb: str) -> str:
     if disposition == "reread_ambiguous":
         return f"{verb}請求逾時或回應無法辨識，結果以重讀職缺清單為準"
     return f"104 拒絕了這批{verb}（{abort.payload.get('error')}）；一批裡是否有部分已生效未量測，結果以重讀職缺清單為準"
-
-
-def _register_tool(mcp: FastMCP, fn, doc: str) -> None:
-    """Register `fn` with `doc` as its actual __doc__ — set before `require_login`'s
-    `functools.wraps` copies it onto the wrapper FastMCP reads as the description."""
-    fn.__doc__ = doc
-    mcp.tool()(require_login(fn))
 
 
 # ── Tool descriptions ────────────────────────────────────────────────────
@@ -726,7 +719,7 @@ def register_job_switch_tools(mcp: FastMCP) -> None:
         except MalformedResponseError as exc:
             if not write_attempted:
                 log.error("close_jobs: 回應結構異常: %s", exc.detail)
-                return _malformed_response_payload(exc)
+                return malformed_response_payload(exc)
             log.error("close_jobs: 寫入之後的結構異常: %s", exc.detail)
             return _unconfirmed_after_failure(requested, "closed", "關閉", warnings, "ad_pause")
         except Exception:
@@ -735,7 +728,7 @@ def register_job_switch_tools(mcp: FastMCP) -> None:
                 return _unconfirmed_after_failure(requested, "closed", "關閉", warnings, "ad_pause")
             return {"error": "內部錯誤，這是程式問題，請回報 —— 沒有送出職缺關閉"}
 
-    _register_tool(mcp, close_jobs, _CLOSE_JOBS_DESCRIPTION)
+    register_tool(mcp, close_jobs, _CLOSE_JOBS_DESCRIPTION)
 
     async def open_jobs(jobnos: list[str], ctx: Context, cancel_add_ons: bool = False) -> dict:
         error = _jobnos_error(jobnos)
@@ -785,7 +778,7 @@ def register_job_switch_tools(mcp: FastMCP) -> None:
 
                 # The toolbar always sends "multi", even for one job (AJL@238004), and an account
                 # without per-row switch buttons can only use the toolbar.
-                one_job_button = len(requested) == 1 and not _truthy(job_list.account.is_web)
+                one_job_button = len(requested) == 1 and not truthy(job_list.account.is_web)
                 form = [
                     ("jobno", ",".join(str(raw) for raw in raw_jobnos)),
                     ("ignoreOrdinance", "1"),
@@ -839,7 +832,7 @@ def register_job_switch_tools(mcp: FastMCP) -> None:
         except MalformedResponseError as exc:
             if not write_attempted:
                 log.error("open_jobs: 回應結構異常: %s", exc.detail)
-                return _malformed_response_payload(exc)
+                return malformed_response_payload(exc)
             log.error("open_jobs: 寫入之後的結構異常: %s", exc.detail)
             return _unconfirmed_after_failure(requested, "opened", "開啟", warnings, "refusal")
         except Exception:
@@ -848,7 +841,7 @@ def register_job_switch_tools(mcp: FastMCP) -> None:
                 return _unconfirmed_after_failure(requested, "opened", "開啟", warnings, "refusal")
             return {"error": "內部錯誤，這是程式問題，請回報 —— 沒有送出職缺開啟"}
 
-    _register_tool(mcp, open_jobs, _OPEN_JOBS_DESCRIPTION)
+    register_tool(mcp, open_jobs, _OPEN_JOBS_DESCRIPTION)
 
     async def delete_job(jobno: str, ctx: Context) -> dict:
         error = jobno_error(jobno)
@@ -870,8 +863,8 @@ def register_job_switch_tools(mcp: FastMCP) -> None:
                 if isinstance(rows, str):
                     return {"error": rows}
                 row = rows[0]
-                if _truthy(job_list.account.is_web):
-                    return {"error": f"{_WEB_NO_MORE_MENU}，沒有送出刪除"}
+                if truthy(job_list.account.is_web):
+                    return {"error": f"{WEB_NO_MORE_MENU}，沒有送出刪除"}
                 if row.switch != "off":
                     return {
                         "error": (
@@ -946,7 +939,7 @@ def register_job_switch_tools(mcp: FastMCP) -> None:
         except MalformedResponseError as exc:
             if not write_attempted:
                 log.error("delete_job: 回應結構異常: %s", exc.detail)
-                return _malformed_response_payload(exc)
+                return malformed_response_payload(exc)
             log.error("delete_job: 寫入之後的結構異常: %s", exc.detail)
             return _unconfirmed_after_failure(requested, "deleted", "刪除", warnings, "")
         except Exception:
@@ -955,7 +948,7 @@ def register_job_switch_tools(mcp: FastMCP) -> None:
                 return _unconfirmed_after_failure(requested, "deleted", "刪除", warnings, "")
             return {"error": "內部錯誤，這是程式問題，請回報 —— 沒有送出職缺刪除"}
 
-    _register_tool(mcp, delete_job, _DELETE_JOB_DESCRIPTION)
+    register_tool(mcp, delete_job, _DELETE_JOB_DESCRIPTION)
 
 
 def _close_reasons_error(reasons: Sequence[int], other_reason: str | None) -> str | None:

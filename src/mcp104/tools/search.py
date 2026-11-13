@@ -40,8 +40,9 @@ from mcp104.tools.helpers import (
     convert_keys,
     extract_browse_limit as _extract_browse_limit,
     guarded_api,
-    require_login,
+    malformed_response_payload,
 )
+from mcp104.tools.registration import register_tool
 from mcp104.tools.status import id_link_pairs, remember_id_links
 
 log = logging.getLogger("104-mcp.search")
@@ -401,10 +402,6 @@ def _filter_error_payload(exc: filters_mod.FilterError) -> dict:
     return {"error": str(exc)}
 
 
-def _malformed_response_payload(exc: MalformedResponseError) -> dict:
-    return {"error": f"104 回應結構異常（{exc.detail}），可能是介面已變更，請回報"}
-
-
 class DroppedFiltersError(Exception):
     """A compared condition's echo disagreed with what was sent — raised by
     _build_search_response, never returned as an empty result.
@@ -549,9 +546,9 @@ def _build_resume_detail_response(envelope: dict) -> dict:
 # ── Docstrings, generated from tools/filters.py's CONDITIONS so the filter-key ─────
 # ── reference never restates (and so drifts from) the single source of the table. ──
 #
-# These become each tool's ACTUAL __doc__ (via _register_tool, below the tool
+# These become each tool's ACTUAL __doc__ (via register_tool, below the tool
 # definitions) — never a parallel description= argument the docstring itself doesn't
-# carry; see _register_tool's docstring for why that distinction is the point, not a
+# carry; see register_tool's docstring for why that distinction is the point, not a
 # style preference. They cannot be written as literal `"""..."""` docstrings in the
 # function bodies themselves because a docstring Python recognises must be a
 # compile-time string constant — the first statement in a function body — and this
@@ -721,33 +718,6 @@ browse_limit/warnings 同層」的形狀一致，同時更貼近 104 自己的�
 """
 
 
-def _register_tool(mcp: FastMCP, fn, doc: str) -> None:
-    """Register one tool with `doc` as its ACTUAL __doc__ — never as a parallel
-    `description=` argument the function's own docstring doesn't carry.
-
-    steering/structure.md's Documentation Standards rule is that the docstring is the
-    ONLY text the Agent reads when choosing a tool. A `description=` override is
-    technically read by FastMCP too (`Tool.from_function`: `description or fn.__doc__`),
-    but a check written against `fn.__doc__` — the natural, framework-independent way to
-    assert "does this tool's docstring say X" — would silently miss content that only
-    ever lived in a `description=` argument, and the two channels agreeing today gives no
-    guarantee they keep agreeing after an edit to only one of them. Binding the
-    requirement to `fn.__doc__` itself, not to whichever channel happens to also carry
-    the text, is what makes the rule enforceable rather than merely usually-true.
-
-    Some of these tools' full text (search_resumes') is generated from
-    tools/filters.py's CONDITIONS table at import time, so it cannot be written as a
-    literal triple-quoted docstring — Python only recognises a compile-time string
-    constant in that position, never an f-string or any other runtime expression. `doc`
-    is therefore assigned here, as a plain attribute, before `require_login`'s
-    `@functools.wraps` copies `__doc__` onto the wrapper this actually hands to
-    `mcp.tool()` — which is the object whose `__doc__` ends up as `Tool.description`
-    once no `description=` argument is given to override it.
-    """
-    fn.__doc__ = doc
-    mcp.tool()(require_login(fn))
-
-
 async def _remember_row_links(ctx: Context, info, rows: list[dict]) -> None:
     """Remember the (candidate_id, p_id) pairs of a résumé list page. Taken from the built
     response rather than 104's raw envelope: those two values are what the Agent will later
@@ -796,12 +766,12 @@ def register_search_tools(mcp: FastMCP):
             return e.payload
         except MalformedResponseError as exc:
             log.error("search_resumes: 回應結構異常: %s", exc.detail)
-            return _malformed_response_payload(exc)
+            return malformed_response_payload(exc)
         except DroppedFiltersError as exc:
             log.warning("search_resumes: 104 未套用下列篩選條件: %s", exc.dropped)
             return _dropped_filters_payload(exc)
 
-    _register_tool(mcp, search_resumes, _SEARCH_RESUMES_DESCRIPTION)
+    register_tool(mcp, search_resumes, _SEARCH_RESUMES_DESCRIPTION)
 
     async def list_recommended_resumes(jobno: str, ctx: Context, page: int = 1) -> dict:
         params = [("jobno", jobno), ("page", str(page))]
@@ -814,9 +784,9 @@ def register_search_tools(mcp: FastMCP):
             return e.payload
         except MalformedResponseError as exc:
             log.error("list_recommended_resumes: 回應結構異常: %s", exc.detail)
-            return _malformed_response_payload(exc)
+            return malformed_response_payload(exc)
 
-    _register_tool(mcp, list_recommended_resumes, _LIST_RECOMMENDED_DESCRIPTION)
+    register_tool(mcp, list_recommended_resumes, _LIST_RECOMMENDED_DESCRIPTION)
 
     async def list_matched_resumes(
         jobno: str, ctx: Context, page: int = 1, update_date_type: str | None = None
@@ -835,9 +805,9 @@ def register_search_tools(mcp: FastMCP):
             return e.payload
         except MalformedResponseError as exc:
             log.error("list_matched_resumes: 回應結構異常: %s", exc.detail)
-            return _malformed_response_payload(exc)
+            return malformed_response_payload(exc)
 
-    _register_tool(mcp, list_matched_resumes, _LIST_MATCHED_DESCRIPTION)
+    register_tool(mcp, list_matched_resumes, _LIST_MATCHED_DESCRIPTION)
 
     async def get_resume_detail(candidate_id: str, ctx: Context) -> dict:
         app = ctx.request_context.lifespan_context
@@ -863,4 +833,4 @@ def register_search_tools(mcp: FastMCP):
         except GuardAbort as e:
             return e.payload
 
-    _register_tool(mcp, get_resume_detail, _GET_RESUME_DETAIL_DESCRIPTION)
+    register_tool(mcp, get_resume_detail, _GET_RESUME_DETAIL_DESCRIPTION)

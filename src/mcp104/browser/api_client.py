@@ -110,7 +110,7 @@ BODY_METHODS = frozenset({"POST", "PUT"})
 # A route that takes no body (every GET) declares None instead.
 _BODY_ENCODINGS = frozenset({"json", "form"})
 
-# The only four values Endpoint.family may declare — enforced in
+# The only five values Endpoint.family may declare — enforced in
 # Endpoint.__post_init__, the same construction-time whitelist as
 # _ALLOWED_METHODS above. "A" and "B" dispatch classify() to the two JSON
 # envelope shapes; "envelope" is the older {status, message, result, url,
@@ -119,8 +119,10 @@ _BODY_ENCODINGS = frozenset({"json", "form"})
 # only on SUCCESS); "opaque" names a route measured to answer outside
 # any envelope (currently only logout_session) and gets its own
 # explicit branch in classify() rather than falling through into either
-# family's shape-specific parsing.
-_ALLOWED_FAMILIES = frozenset({"A", "B", "envelope", "opaque"})
+# family's shape-specific parsing; "text_check" is the forbidden-words check,
+# whose body is a bare array of strings and whose verdict is the HTTP status
+# (200 pass or warn, 400 block) — see _classify_text_check.
+_ALLOWED_FAMILIES = frozenset({"A", "B", "envelope", "opaque", "text_check"})
 
 # What a family-B response's `data` must be — FamilyBShape.data_kind.
 _DATA_KINDS = frozenset({"list", "object", "bool", "any"})
@@ -260,7 +262,7 @@ class Endpoint:
     path: str  # may contain `{name}` placeholders filled from build_url's params
     method: str  # "GET" | "POST" | "PUT" | "DELETE" — see _ALLOWED_METHODS
     body_encoding: str | None  # "json" | "form" for a BODY_METHODS endpoint, None for every other — enforced below
-    family: str  # "A" | "B" | "envelope" — dispatches classify(); "opaque" names a route measured to answer outside either JSON envelope (e.g. logout_session) — classify() is never reached for it in practice, see that endpoint's own comment
+    family: str  # "A" | "B" | "envelope" | "text_check" — dispatches classify(); "opaque" names a route measured to answer outside either JSON envelope (e.g. logout_session) — classify() is never reached for it in practice, see that endpoint's own comment
     extra_headers: tuple[tuple[str, str], ...]  # NAME/VALUE pairs sent verbatim, beyond the always-sent baseline (User-Agent, Accept-Language, Cookie)
     family_b_shape: FamilyBShape | None  # required (non-None) iff family == "B" — enforced below, not merely documented
     throttle_gated: bool  # whether this route passes through enforce_throttle's judgment gate (tools/helpers.py's guarded_api/guarded_sequence) — every row must answer this explicitly; the sole False today is logout_session (see ENDPOINTS below for why it qualifies for the exemption)
@@ -594,6 +596,76 @@ ENDPOINTS: dict[str, Endpoint] = {
         key="delete_job",
         host="auth",
         path="/api/job/jobDelete",
+        method="POST",
+        body_encoding="form",
+        family="envelope",
+        extra_headers=(("Referer", REFERER_SITE_ROOT), ("X-Requested-With", "XMLHttpRequest")),
+        family_b_shape=None,
+        throttle_gated=True,
+    ),
+    # ── Job editor: copy prefill, forbidden-words check, the two save routes.
+    # Offsets are UTF-8 character indexes into the same bundles as above.
+    #
+    # job_insert: the editor's copy prefill (`getInsertData`, JE@135650, host
+    # JE@135073), consumed by the same code as the job_update read (JE@365235).
+    # `act=copy`, `name` and `jobno` are query parameters. [M §8.34, 2026-11-13,
+    # read-only probe]: HTTP 200, the same old envelope as get_job_detail with
+    # status SUCCESS and an object `result`, succeeds without a Referer; hence
+    # family A and no extra headers. The family is a measurement, not a guess.
+    "job_insert": Endpoint(
+        key="job_insert",
+        host="auth",
+        path="/api/job/jobInsert",
+        method="GET",
+        body_encoding=None,
+        family="A",
+        extra_headers=(),
+        family_b_shape=None,
+        throttle_gated=True,
+    ),
+    # forbidden_words_check: the editor's check before a save (JE@401050, a
+    # JSON POST to an absolute auth-host URL). Front-end code is the only
+    # evidence. The response is a bare array of strings, one per submitted
+    # text, and 104 states its verdict in the HTTP status: 200 is pass or
+    # warn, 400 is block, both with the same body shape (JE@401050 `M`:
+    # `statusCode === BadRequest` is BLOCK). No envelope family can hand a 400
+    # verdict to the tool, hence "text_check".
+    "forbidden_words_check": Endpoint(
+        key="forbidden_words_check",
+        host="auth",
+        path="/job-api/forbidden-words/check",
+        method="POST",
+        body_encoding="json",
+        family="text_check",
+        extra_headers=(),
+        family_b_shape=None,
+        throttle_gated=True,
+    ),
+    # update_job: the editor's save for `act=edit` (CC@636617, host ENT@471852);
+    # new_job: its save for `act=copy` (CC@636262, same host). Form POSTs
+    # answering the old envelope, handed to the tool whole. Front-end code is
+    # the only evidence, and no response body of either route has been
+    # measured. The Referer and X-Requested-With headers are NOT a measured
+    # requirement: the tool reads ACCESS_DENIED on these routes as "no
+    # permission", and on the vip routes that status was measured to mean
+    # "Referer missing" (§6b.3h), so the headers the front end sends are sent
+    # here to keep the two readings from competing. new_job's `fast` is a
+    # query parameter (axios `params`, JE@358268) the caller supplies.
+    "update_job": Endpoint(
+        key="update_job",
+        host="auth",
+        path="/api/job/updateJob",
+        method="POST",
+        body_encoding="form",
+        family="envelope",
+        extra_headers=(("Referer", REFERER_SITE_ROOT), ("X-Requested-With", "XMLHttpRequest")),
+        family_b_shape=None,
+        throttle_gated=True,
+    ),
+    "new_job": Endpoint(
+        key="new_job",
+        host="auth",
+        path="/api/job/newJob",
         method="POST",
         body_encoding="form",
         family="envelope",
@@ -1561,6 +1633,8 @@ def classify(endpoint: Endpoint, raw: RawResponse) -> Verdict:
         return _classify_family_a(raw)
     if endpoint.family == "envelope":
         return _classify_envelope(raw)
+    if endpoint.family == "text_check":
+        return _classify_text_check(raw)
     if endpoint.family == "opaque":
         # In practice this branch is never reached at all: `_issue_one`'s
         # auth-host redirect check intercepts logout_session's 302 before
@@ -1656,6 +1730,37 @@ def _classify_envelope(raw: RawResponse) -> Verdict:
     if not isinstance(raw.parsed_json, dict):
         return Verdict(False, kind="malformed", detail="body is not an object")
     return Verdict(True, payload=raw.parsed_json)
+
+
+def _classify_text_check(raw: RawResponse) -> Verdict:
+    """Pure. The "text_check" family: a bare JSON array of strings, one per
+    checked text (empty string = no hit), whose verdict 104 carries in the
+    HTTP status — 200 for pass or warn, 400 for block, both with the same
+    body shape.
+
+    Neither envelope family can hand the 400 to the tool: family A and B
+    read an object, and "envelope" files a 400 under `validation`. So HTTP
+    200 and 400 are both `ok` here when the body is the array, with the status
+    kept in the payload; a 400 whose body is an object is an ordinary
+    validation refusal. The expiry and 403 checks ran in the prologue.
+    """
+    if raw.status in (200, 400):
+        if raw.parsed_json is None:
+            return Verdict(False, kind="non_json", detail=raw.content_type or "")
+        body = raw.parsed_json
+        if isinstance(body, list) and all(isinstance(item, str) for item in body):
+            return Verdict(True, payload={"http_status": raw.status, "texts": list(body)})
+        if raw.status == 400 and isinstance(body, dict):
+            return Verdict(False, kind="validation", detail=_family_b_error_detail(body))
+        return Verdict(False, kind="malformed", detail="body is not an array of strings")
+    if raw.status == 401:
+        return Verdict(False, kind="expired")
+    if raw.status == 404:
+        if isinstance(raw.parsed_json, dict):
+            return Verdict(False, kind="not_found", detail=_family_b_error_detail(raw.parsed_json))
+        return Verdict(False, kind="wrong_host", detail=raw.content_type or "")
+    detail = _family_b_error_detail(raw.parsed_json)
+    return Verdict(False, kind="unrecognised_status", detail=f"HTTP {raw.status}: {detail}".rstrip(": "))
 
 
 def _envelope_error_detail(parsed_json: object) -> str:

@@ -147,3 +147,70 @@ id 反查特定的人。
 > 說明描述的是**mcp104 轉出什麼**，這兩者從 0.2.2 起就在刻意分岔。照 facts doc 寫 skill
 > 會一直撿到工具其實丟掉的欄位——`master_url` 就是我自己踩到的那一個。**講到列上有什麼
 > 欄位時，權威是工具說明，不是 facts doc。**
+
+## 9. 本機聯絡紀錄（狀態工具）
+
+`check_already_contacted`、`get_candidate_status`、`list_tracked_candidates`、
+`update_candidate_status` 都只碰本機 SQLite，不呼叫 104。
+
+- **`id_source` 看 id 從哪來**：履歷列／履歷詳情的 `candidate_id`（idNo）是 `"resume"`，
+  `read_messages` 列的 `candidate_id`、履歷列與應徵者列的 `p_id`（pId）是 `"message"`。填錯
+  不會報錯，只是查不到。
+- **拿哪一個 id 查都行，但對應要先被觀察到。** 本機只在 104 把兩個 id 放在同一筆資料上交出時
+  （履歷列、應徵者列、履歷詳情、事件工具的反向換算）才記下這組對應。還沒讀過任何帶兩個 id 的
+  資料就拿 `candidate_id` 查，找不到當初用 `p_id` 寫下的狀態。
+- **「沒有紀錄」不是「沒聯絡過」。** 它只反映這個 Agent 經由工具送出、或用
+  `update_candidate_status` 寫下的狀態；別人在 104 後台發的訊息不會出現。要看 104 那一側，
+  用 `read_messages(job_nos=[jobno])`。
+- **`unknown` 來源的紀錄**是早期版本記下的，當時沒記 id 來自哪個系統；它是靠 id 字串相同被
+  找到的，不保證是同一個人。`warnings` 會點名有幾筆。
+- **同一個人的紀錄狀態不同時**，工具照列並在 `warnings` 附各筆的狀態與時間，不替你挑。
+  從 `contacted` 走到 `scheduled` 是正常進展，看 `status_updated_at` 判斷哪筆較新。
+- **`list_tracked_candidates` 的一列是一筆紀錄，不是一個人。**同一個人在兩個 id 下各有狀態會
+  出現兩次；用 `status` 篩選時，要看每列 `linked_ids` 裡對方 id 的 `status`——他可能在另一個
+  id 下已經走得更遠。一頁固定 50 筆。
+- 時間都是台北時間（ISO 8601，帶 `+08:00`）；`status_updated_at` 為 `null` 是狀態寫下的時間
+  不可考。
+
+## 10. 範本與送出
+
+- **`#jname#`** 是 104 唯一的佔位符（職缺名稱）。送出工具原樣送出文字，104 會不會在伺服器端替換
+  **沒量測過**，所以送出前由 Agent 自己換成真正的職缺名稱，真人看的也是換好的文字。
+- **`list_templates` 回的 `description` 就是完整本文**，不需要另外查單則範本。回傳是分頁的，
+  `total_pages` 大於 `page` 時 `warnings` 會提醒。
+- **範本的 `type_id` 只是歸檔分類，不換路由。**事件種類由呼叫哪個送出工具決定；範本類別與工具
+  不符時 104 怎麼處理沒量測，所以挑同類別的範本。送出的永遠是 `message`，不是範本本文。
+- **`update_template` 回傳的 `template.type_desc` 恆為 `null`**（單筆讀取的路由不回類別名稱），
+  要類別名稱請用 `list_templates`。
+- **`create_template` 在該類別的範本已滿一頁（或超過一頁）時會在送出前拒絕**，請使用者到 104
+  後台新增；標題可以與既有範本重複，104 不檢查。標題 ≤ 16 字、內容 ≤ 1000 字，以 UTF-16 編碼
+  單位計，emoji 算 2。
+- **`update_template` 不改帶附件的範本**（送錯會讓附件消失且無法復原）；104 存下的文字與送出的
+  只差空白或換行時結果是 `unconfirmed`。
+- **`delete_template` 被職缺使用的範本 104 不讓刪**，錯誤會附 `used_by_jobs`（有的話）。
+- 三個範本寫入工具寫的是帳號自己的文字，**不送給任何求職者、不寫發送計數與候選人狀態、不受每日
+  訊息上限管**。結果一律由寫入後重讀決定，`unconfirmed` 時去後台確認、不要重送。
+
+## 11. 職缺寫入工具
+
+`refresh_jobs`、`close_jobs`、`open_jobs`、`delete_job`、`update_job`、`create_job` 都是**立刻
+生效、求職者看得到、無法撤回**的寫入，呼叫前先讓真人確認。
+
+- **成本是請求名額**（每小時上限 300 個請求，不扣履歷配額）：`refresh_jobs` 3、`close_jobs`／
+  `open_jobs` 至多 4、`delete_job` 至多 5、`update_job` 預覽 3／送出 5、`create_job` 預覽 4／
+  送出 6。預覽也是真的 104 請求。
+- **寫入請求本身的回應大多沒量測過**，所以「成功」只看寫入後重讀：`"confirmed"` 是重讀對上了，
+  `"unconfirmed"` 是看不出來，兩者都不是叫你重送的理由。
+- **`update_job` 的 `saved: "mismatch"`**：`mismatched_fields.damaged` 非空代表沒要改的欄位也
+  變了，也就是 104 把職缺改壞了，**立刻請使用者到 104 後台檢查**。禁用詞的「提醒」可以經真人確認
+  後用 `accept_forbidden_word_warnings` 放行，「封鎖」不能略過。有加值廣告、自動關閉日、預約開啟
+  日或「職務確認中」的職缺，請到後台改。
+- **`close_jobs`** 的 `reasons` 必填；關閉前若預檢查回報有加值廣告，關閉會一併歸還並結束它們，
+  要真人確認後才給 `return_add_ons=true`。關掉最後一個開放中的職缺會讓公司廣告刊期暫停，同樣
+  要真人確認後才給 `allow_pausing_company_ads=true`。
+- **`open_jobs`** 會用掉刊登額度並取消加值廣告預約（額度怎麼扣沒量測）；只開一個職缺而被拒絕
+  時回的 `refusal` 會說是內容驗證、保障方案、沒有剩餘職務數還是數量上限。
+- **`delete_job`** 只限已關閉（`switch="off"`）且 `list_jobs` 標示可刪除的職缺，一併刪除應徵
+  履歷與聯絡紀錄。
+- **`create_job`** 只能從既有職缺複製；**逾時後不要重送**，先用 `list_jobs` 看新職缺有沒有出現，
+  不然會多出第二個公開職缺。新職缺的開關以回傳的 `new_job_switch` 為準。

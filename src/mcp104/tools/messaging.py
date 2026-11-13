@@ -36,23 +36,11 @@ from mcp104.tools.helpers import (
     ToolAbort,
     convert_keys,
     guarded_api,
+    malformed_response_payload,
     require_login,
 )
 
 log = logging.getLogger("104-mcp.messaging")
-
-
-def _malformed_response_payload(exc: MalformedResponseError) -> dict:
-    # Same Chinese string as tools/search.py's own copy and
-    # tools/helpers.py's `_error_malformed` — kept as a per-module function
-    # rather than a shared import, matching the precedent search.py already
-    # set for this exact string (see MalformedResponseError's own
-    # docstring in helpers.py for why the CLASS moved but this small
-    # formatter did not: messaging.py importing a leading-underscore
-    # helper out of search.py would couple two tool modules that
-    # otherwise share nothing, and helpers.py already owns the class both
-    # modules raise).
-    return {"error": f"104 回應結構異常（{exc.detail}），可能是介面已變更，請回報"}
 
 
 # ── Inbox request body (§6b.8-1) ─────────────────────────────────────────
@@ -660,7 +648,7 @@ def register_messaging_tools(mcp: FastMCP):
             return e.payload
         except MalformedResponseError as exc:
             log.error("read_messages: 回應結構異常: %s", exc.detail)
-            return _malformed_response_payload(exc)
+            return malformed_response_payload(exc)
 
     async def get_conversation(ctx: Context, job_id: str, candidate_id: str, page: int = 1) -> dict:
         """展開與特定候選人的完整對話紀錄（走 JSON API；一次呼叫一個請求，且不再
@@ -703,7 +691,7 @@ def register_messaging_tools(mcp: FastMCP):
             return e.payload
         except MalformedResponseError as exc:
             log.error("get_conversation: 回應結構異常: %s", exc.detail)
-            return _malformed_response_payload(exc)
+            return malformed_response_payload(exc)
 
     async def send_message(ctx: Context, job_id: str, candidate_id: str, message: str) -> dict:
         """發送一則純文字訊息給候選人，會立刻送到一位真實求職者手上、無法撤回，

@@ -37,20 +37,15 @@ from mcp104.tools.helpers import (
     guarded_api,
     guarded_sequence,
     jobno_error,
+    malformed_response_payload,
     normalise_jobno,
-    require_login,
 )
+from mcp104.tools.registration import register_tool
 from mcp104.tools.messaging import _send_verdict
 from mcp104.tools.search import html_to_text
 from mcp104.tools.status import id_link_pairs, remember_id_links
 
 log = logging.getLogger("104-mcp.jobs")
-
-
-def _malformed_response_payload(exc: MalformedResponseError) -> dict:
-    # Same wording as the other tool modules' copies; see MalformedResponseError's own
-    # docstring for why the class is shared and this small formatter is per-module.
-    return {"error": f"104 回應結構異常（{exc.detail}），可能是介面已變更，請回報"}
 
 
 # ── Applicant list ───────────────────────────────────────────────────────
@@ -318,13 +313,52 @@ class JobListAccount:
 
 
 @dataclass(frozen=True)
+class JobListAddOns:
+    """The four paid-exposure tables of jobList's `result` (`hotOrder`, `selectJob`,
+    `priority`, `jobSort`), each keyed by jobno on 104's side — 104's values as given, None
+    when the key is absent. Nothing here is type-checked: `JobList.add_ons` reads them."""
+
+    hot_order: object
+    select_job: object
+    priority: object
+    job_sort: object
+
+
+# JobListAddOns attribute -> the name `JobList.add_ons` reports it under.
+_ADD_ON_KINDS = (
+    ("hot_order", "focus"),
+    ("select_job", "pick_up"),
+    ("priority", "priority"),
+    ("job_sort", "job_sort"),
+)
+
+
+@dataclass(frozen=True)
 class JobList:
-    """GET /api/job/jobList's `result`, parsed once: the rows in list order and the
-    account-level keys. The whole `result` is not kept."""
+    """GET /api/job/jobList's `result`, parsed once: the rows in list order, the
+    account-level keys and the four paid-exposure tables. The whole `result` is not kept."""
 
     rows: tuple[JobListRow, ...]
     account: JobListAccount
     page_total: object  # pageInfo.total_page as 104 gave it; None when absent
+    add_on_tables: JobListAddOns
+
+    def add_ons(self, jobno: str) -> dict[str, object]:
+        """The paid-exposure entries of this job: `focus`, `pick_up`, `priority` and
+        `job_sort`, each present only when its table has an entry for `jobno` (the entry as
+        104 gave it). The tables are keyed by jobno; an empty table arrives as an empty
+        array (a PHP empty associative array) and, like an absent one, has no entries. Any
+        other type raises MalformedResponseError."""
+        found: dict[str, object] = {}
+        for attribute, name in _ADD_ON_KINDS:
+            table = getattr(self.add_on_tables, attribute)
+            if table is None or (isinstance(table, list) and not table):
+                continue
+            if not isinstance(table, dict):
+                raise MalformedResponseError(f"jobList 的加值廣告表 {name} 不是物件")
+            if jobno in table:
+                found[name] = table[jobno]
+        return found
 
     def total_page(self) -> int:
         """The list's page count. Raises MalformedResponseError unless 104 gave an
@@ -339,7 +373,8 @@ def parse_job_list(result: object) -> JobList:
     shared by list_jobs' date merge and the open/close/delete tools. Raises
     MalformedResponseError when `result` is not an object, `jobDataAry` not an array, a row
     not an object, or a jobno not a job number. A missing `pageInfo` is not an error here
-    (only `JobList.total_page()` needs it)."""
+    (only `JobList.total_page()` needs it), and the four paid-exposure tables are kept as
+    given, unchecked (only `JobList.add_ons` reads them)."""
     if not isinstance(result, dict):
         raise MalformedResponseError("jobList 的 result 缺失或非物件")
     raw_rows = result.get("jobDataAry")
@@ -375,7 +410,43 @@ def parse_job_list(result: object) -> JobList:
         rows=tuple(rows),
         account=account,
         page_total=page_info.get("total_page") if isinstance(page_info, dict) else None,
+        add_on_tables=JobListAddOns(
+            hot_order=result.get("hotOrder"),
+            select_job=result.get("selectJob"),
+            priority=result.get("priority"),
+            job_sort=result.get("jobSort"),
+        ),
     )
+
+
+@dataclass(frozen=True)
+class Permit:
+    """One entry of a 104 `permit` object, read: `allowed`, `denied` (with 104's own
+    `message` when it gave a string) or `unknown` (the entry is absent or not the measured
+    shape)."""
+
+    state: Literal["allowed", "denied", "unknown"]
+    message: str | None = None
+
+
+def permit_state(permit: object, name: str) -> Permit:
+    """Pure. Read `permit[name]` of a jobList or job/more `permit`: each entry is
+    {result: bool, message: str}. `allowed` only when `result is True`, `denied` only when
+    `result is False`; a `permit` that is not an object, a missing `name`, an entry that is
+    not an object or a `result` that is not a boolean is `unknown` — never guessed into
+    either of the other two."""
+    if not isinstance(permit, dict):
+        return Permit("unknown")
+    entry = permit.get(name)
+    if not isinstance(entry, dict):
+        return Permit("unknown")
+    result = entry.get("result")
+    if result is True:
+        return Permit("allowed")
+    if result is False:
+        message = entry.get("message")
+        return Permit("denied", message if isinstance(message, str) else None)
+    return Permit("unknown")
 
 
 def parse_job_dates(result: object) -> dict[str, dict]:
@@ -675,7 +746,7 @@ def build_job_detail(result: object, *, requested_jobno: str) -> dict:
 
 # ── Tool descriptions ────────────────────────────────────────────────────
 #
-# Each becomes the tool's actual __doc__ (see _register_tool). Field meanings live in
+# Each becomes the tool's actual __doc__ (see register_tool). Field meanings live in
 # describe_result_fields, not here: Claude Code cuts a tool description to 2,048
 # characters (see CLAUDE.md) and `tests/test_contract_docs.py` holds each to 1,948.
 
@@ -787,13 +858,6 @@ unconfirmed：重讀時仍在清單上，或重讀失敗；這不代表失敗，
 """
 
 
-def _register_tool(mcp: FastMCP, fn, doc: str) -> None:
-    """Register `fn` with `doc` as its actual __doc__ — set before `require_login`'s
-    `functools.wraps` copies it onto the wrapper FastMCP reads as the description."""
-    fn.__doc__ = doc
-    mcp.tool()(require_login(fn))
-
-
 def register_job_tools(mcp: FastMCP) -> None:
 
     async def list_applicants(jobno: str, ctx: Context, page: int = 1) -> dict:
@@ -828,9 +892,9 @@ def register_job_tools(mcp: FastMCP) -> None:
             return e.payload
         except MalformedResponseError as exc:
             log.error("list_applicants: 回應結構異常: %s", exc.detail)
-            return _malformed_response_payload(exc)
+            return malformed_response_payload(exc)
 
-    _register_tool(mcp, list_applicants, _LIST_APPLICANTS_DESCRIPTION)
+    register_tool(mcp, list_applicants, _LIST_APPLICANTS_DESCRIPTION)
 
     async def list_refreshable_jobs(ctx: Context) -> dict:
         try:
@@ -840,9 +904,9 @@ def register_job_tools(mcp: FastMCP) -> None:
             return e.payload
         except MalformedResponseError as exc:
             log.error("list_refreshable_jobs: 回應結構異常: %s", exc.detail)
-            return _malformed_response_payload(exc)
+            return malformed_response_payload(exc)
 
-    _register_tool(mcp, list_refreshable_jobs, _LIST_REFRESHABLE_JOBS_DESCRIPTION)
+    register_tool(mcp, list_refreshable_jobs, _LIST_REFRESHABLE_JOBS_DESCRIPTION)
 
     async def refresh_jobs(jobnos: list[str], ctx: Context) -> dict:
         if not jobnos:
@@ -910,7 +974,7 @@ def register_job_tools(mcp: FastMCP) -> None:
             return e.payload
         except MalformedResponseError as exc:
             log.error("refresh_jobs: 回應結構異常: %s", exc.detail)
-            return _malformed_response_payload(exc)
+            return malformed_response_payload(exc)
         except Exception:
             log.error("refresh_jobs: 非預期例外 (put_attempted=%s)", put_attempted, exc_info=True)
             if put_attempted:
@@ -922,7 +986,7 @@ def register_job_tools(mcp: FastMCP) -> None:
                 }
             return {"error": "內部錯誤，這是程式問題，請回報 —— 沒有送出職缺更新"}
 
-    _register_tool(mcp, refresh_jobs, _REFRESH_JOBS_DESCRIPTION)
+    register_tool(mcp, refresh_jobs, _REFRESH_JOBS_DESCRIPTION)
 
     async def get_job_detail(jobno: str, ctx: Context) -> dict:
         error = jobno_error(jobno)
@@ -940,9 +1004,9 @@ def register_job_tools(mcp: FastMCP) -> None:
             return e.payload
         except MalformedResponseError as exc:
             log.error("get_job_detail: 回應結構異常: %s", exc.detail)
-            return _malformed_response_payload(exc)
+            return malformed_response_payload(exc)
 
-    _register_tool(mcp, get_job_detail, _GET_JOB_DETAIL_DESCRIPTION)
+    register_tool(mcp, get_job_detail, _GET_JOB_DETAIL_DESCRIPTION)
 
     async def list_jobs(ctx: Context, page: int = 1) -> dict:
         params = [("page", str(page))]
@@ -967,7 +1031,7 @@ def register_job_tools(mcp: FastMCP) -> None:
             return e.payload
         except MalformedResponseError as exc:
             log.error("list_jobs: 回應結構異常: %s", exc.detail)
-            return _malformed_response_payload(exc)
+            return malformed_response_payload(exc)
 
         batches = match_number_batches([row["jobno"] for row in job_page["results"]])
         if not batches:
@@ -1001,4 +1065,4 @@ def register_job_tools(mcp: FastMCP) -> None:
                 f"配對數回應結構異常（{exc.detail}），today_match_count / total_match_count 為 null",
             )
 
-    _register_tool(mcp, list_jobs, _LIST_JOBS_DESCRIPTION)
+    register_tool(mcp, list_jobs, _LIST_JOBS_DESCRIPTION)

@@ -1844,3 +1844,113 @@ def test_T73_list_and_object_kinds_keep_their_shape_rules():
     assert classify(_kind_probe("list"), _jobswitch_json_raw(200, {"data": {}, "metadata": {}})).kind == "malformed"
     assert classify(_kind_probe("object"), _jobswitch_json_raw(200, {"data": {"a": 1}, "metadata": {}})).ok is True
     assert classify(_kind_probe("object"), _jobswitch_json_raw(200, {"data": [1], "metadata": {}})).kind == "malformed"
+
+
+# ── job-edit-create, Phase 2 (design Testing Strategy T-56, T-57, T-58) ────────────
+# The four declarations are read by key; ENDPOINTS is never counted. Written from
+# design.md §C1 only. The text_check rows follow the §C1 classify() rules.
+
+_JOB_EDIT_REFERER = "https://vip.104.com.tw/"
+_JOB_EDIT_WRITE_HEADERS = {"Referer": _JOB_EDIT_REFERER, "X-Requested-With": "XMLHttpRequest"}
+
+
+# T-56 (interface): the four job-edit declarations, read by key.
+
+def test_job_edit_declarations_carry_the_designed_host_method_path_family_and_headers():
+    expected = {
+        "job_insert": ("GET", "/api/job/jobInsert", "A", None, {}),
+        "forbidden_words_check": ("POST", "/job-api/forbidden-words/check", "text_check", "json", {}),
+        "update_job": ("POST", "/api/job/updateJob", "envelope", "form", _JOB_EDIT_WRITE_HEADERS),
+        "new_job": ("POST", "/api/job/newJob", "envelope", "form", _JOB_EDIT_WRITE_HEADERS),
+    }
+    for key, (method, path, family, body_encoding, headers) in expected.items():
+        ep = ENDPOINTS[key]
+        assert ep.host == "auth", key
+        assert ep.method == method, key
+        assert ep.path == path, key
+        assert ep.family == family, key
+        assert ep.body_encoding == body_encoding, key
+        assert dict(ep.extra_headers) == headers, key
+        assert ep.throttle_gated is True, key
+
+
+# T-57 (interface): classify() on the text_check family hands the HTTP 400 verdict to the tool.
+
+def test_text_check_family_keeps_the_http_400_verdict_and_guards_every_other_shape():
+    ep = ENDPOINTS["forbidden_words_check"]
+    json_ct = "application/json; charset=utf-8"
+    ok_texts = ["", "SYNTH-HIT", "", "", "", "", ""]
+    obj_400 = {"status": "FAILED", "message": "SYNTH-REJECTED"}
+    not_found = {"status": "DATA_NOT_FOUND"}
+    rows = [
+        ("200 string array", _raw(200, json_ct, json.dumps(ok_texts), ok_texts),
+         "ok", {"http_status": 200, "texts": ok_texts}),
+        ("400 string array", _raw(400, json_ct, json.dumps(ok_texts), ok_texts),
+         "ok", {"http_status": 400, "texts": ok_texts}),
+        ("400 object", _raw(400, json_ct, json.dumps(obj_400), obj_400), "validation", None),
+        ("200 object", _raw(200, json_ct, json.dumps({"x": 1}), {"x": 1}), "malformed", None),
+        ("200 array holding a number", _raw(200, json_ct, json.dumps(["", 1]), ["", 1]),
+         "malformed", None),
+        ("200 non-JSON", _raw(200, "text/html", "<html>SYNTH</html>", None), "non_json", None),
+        ("401", _raw(401, json_ct, '{"message": "x"}', {"message": "x"}), "expired", None),
+        ("403", _raw(403, "text/html", "<html>SYNTH forbidden</html>", None), "blocked", None),
+        ("404 JSON", _raw(404, json_ct, json.dumps(not_found), not_found), "not_found", None),
+        ("404 non-JSON", _raw(404, "text/html", "<html>SYNTH missing</html>", None),
+         "wrong_host", None),
+        ("500", _raw(500, "text/html", "<html>SYNTH boom</html>", None), "unrecognised_status", None),
+        ("company switch marker", _raw(200, json_ct, _COMPANY_SWITCH_RAW,
+                                       json.loads(_COMPANY_SWITCH_RAW)), "expired", None),
+        ("company switch marker, JSON-escaped",
+         _raw(200, json_ct, _COMPANY_SWITCH_ESCAPED, json.loads(_COMPANY_SWITCH_ESCAPED)),
+         "expired", None),
+    ]
+    for label, raw, expected_kind, expected_payload in rows:
+        verdict = classify(ep, raw)
+        if expected_kind == "ok":
+            assert verdict.ok is True, label
+            assert verdict.payload == expected_payload, f"{label}: payload {verdict.payload!r}"
+        else:
+            assert verdict.ok is False, label
+            assert verdict.kind == expected_kind, f"{label}: got kind {verdict.kind!r}"
+
+
+# T-58 (interface): fetch() sends a form body with repeated bracket keys, in order, to a real
+# local HTTP server. build_url is redirected to that server; the probe path is not a 104 route.
+
+@pytest.mark.asyncio
+async def test_form_body_keeps_repeated_bracket_keys_in_order_and_the_values_intact(monkeypatch):
+    from aiohttp import web
+    from aiohttp.test_utils import TestServer
+    from urllib.parse import parse_qsl, urlsplit, urlunsplit
+    from mcp104.browser import api_client as api_client_mod
+
+    received: list[dict] = []
+
+    async def handler(request):
+        raw = await request.read()
+        received.append({"content_type": request.content_type, "raw": raw.decode("utf-8")})
+        return web.json_response({"status": "SUCCESS", "message": "", "result": {}})
+
+    app = web.Application()
+    app.router.add_route("*", "/{tail:.*}", handler)
+    pairs = [("a[]", "1"), ("a[]", "2"), ("b", "x y")]
+    form_ep = _jobswitch_envelope_probe(key="t58_form_probe", path="/t58/probe")
+
+    async with TestServer(app) as server:
+        base = urlsplit(f"http://{server.host}:{server.port}")
+        real_build_url = api_client_mod.build_url
+
+        def _build_url_on_local_server(*args, **kwargs):
+            parts = urlsplit(real_build_url(*args, **kwargs))
+            return urlunsplit((base.scheme, base.netloc, parts.path, parts.query, parts.fragment))
+
+        monkeypatch.setattr(api_client_mod, "build_url", _build_url_on_local_server)
+        await api_client_mod.fetch(form_ep, cookie_header="c=1", params=[], body=pairs)
+
+    assert len(received) == 1
+    record = received[0]
+    assert record["content_type"] == "application/x-www-form-urlencoded"
+    decoded = parse_qsl(record["raw"], keep_blank_values=True)
+    assert [value for key, value in decoded if key == "a[]"] == ["1", "2"]
+    assert [value for key, value in decoded if key == "b"] == ["x y"]
+    assert decoded == pairs
