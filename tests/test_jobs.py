@@ -1393,7 +1393,7 @@ async def test_register_all_tools_registers_the_job_tools_once_within_budget_and
     register_all_tools(served_mcp)
     served = {tool.name: tool for tool in await served_mcp.list_tools()}
     for name in job_tool_names:
-        assert name in served
+        assert name in served, f"{name} is not published"
         assert len(served[name].description or "") <= 1948, f"{name} description exceeds the budget"
         assert "ctx" not in served[name].inputSchema.get("properties", {}), f"{name} exposes ctx to the caller"
 
@@ -2352,3 +2352,176 @@ async def test_with_only_two_slots_left_the_whole_refresh_is_refused_before_any_
     assert "error" in result and "retry_after_seconds" in result
     assert "results" not in result
     assert spy.calls == []
+
+
+# ── job-switch-delete, Phase 1 (design Testing Strategy T-59, T-60, T-61) ───────
+# The jobList result is synthesised here in the measured key set (design §C2,
+# docs/104-site-facts.md §8.31): rows carry jobno, switch, canDelete, isInVerify,
+# job_setting; the account level carries permit, coStatus, isHunter, isDispatch,
+# isNewModel, poNum, isWeb; the operator identity fields are present so the
+# tests can prove they never reach the parsed value.
+
+_SWITCH_OPERATOR_EMAIL = "SYNTH-SWITCH-OPERATOR@example.invalid"
+_SWITCH_OPERATOR_LOGIN = "SYNTH-SWITCH-LOGIN"
+
+
+def _switch_result(rows, *, omit=(), overrides=None, page_info=True, total_page=1):
+    result = {
+        "jobDataAry": rows,
+        "permit": {"job__5": {"result": True, "message": ""},
+                   "job__10": {"result": True, "message": ""},
+                   "job__11": {"result": True, "message": ""}},
+        "poNum": 0,
+        "onJobCnt": 1,
+        "coStatus": "on",
+        "isHunter": False,
+        "isDispatch": False,
+        "isNewModel": False,
+        "isWeb": False,
+        "email": _SWITCH_OPERATOR_EMAIL,
+        "loginNo": _SWITCH_OPERATOR_LOGIN,
+        "nccPayload": {"web": "vip_new", "ext": {"Buserid": "SYNTH-SWITCH-BUSERID", "custno": "1"}},
+    }
+    if page_info:
+        result["pageInfo"] = {"curPage": "1", "total_page": total_page, "total": len(rows)}
+    for key in omit:
+        result.pop(key, None)
+    if overrides:
+        result.update(overrides)
+    return result
+
+
+def _switch_row(jobno, *, switch="on", can_delete=True, in_verify=0, job_setting="SYNTH-SETTING"):
+    return {"jobno": jobno, "job": f"SYNTH-JOB-{jobno}", "switch": switch,
+            "canDelete": can_delete, "isInVerify": in_verify, "job_setting": job_setting}
+
+
+# T-59 (interface): parse_job_list reads the measured list and refuses departures from it.
+
+def test_parse_job_list_reads_each_row_with_its_normalised_and_raw_fields_in_list_order():
+    rows = [_switch_row("1000002", switch="off", can_delete=True, in_verify=0, job_setting="SYNTH-A"),
+            _switch_row("1000001", switch="on", can_delete=False, in_verify=1, job_setting="SYNTH-B")]
+    parsed = _jobs().parse_job_list(_switch_result(rows))
+
+    assert [row.jobno for row in parsed.rows] == ["1000002", "1000001"]
+    first = parsed.rows[0]
+    assert first.raw_jobno == "1000002"
+    assert first.switch == "off"
+    assert first.can_delete is True
+    assert first.is_in_verify == 0
+    assert first.job_setting == "SYNTH-A"
+    second = parsed.rows[1]
+    assert second.can_delete is False
+    assert second.is_in_verify == 1
+    assert second.job_setting == "SYNTH-B"
+
+
+def test_parse_job_list_carries_the_account_level_values_as_given():
+    parsed = _jobs().parse_job_list(_switch_result([_switch_row("1000001")], overrides={"poNum": "0"}))
+
+    account = parsed.account
+    assert account.permit == {"job__5": {"result": True, "message": ""},
+                              "job__10": {"result": True, "message": ""},
+                              "job__11": {"result": True, "message": ""}}
+    assert account.co_status == "on"
+    assert account.is_hunter is False
+    assert account.is_dispatch is False
+    assert account.is_new_model is False
+    assert account.po_num == "0"
+    assert account.is_web is False
+
+
+def test_parse_job_list_leaves_absent_account_keys_as_none():
+    parsed = _jobs().parse_job_list(_switch_result([_switch_row("1000001")],
+                                                   omit=("isWeb", "isOutEnsure")))
+    assert parsed.account.is_web is None
+    assert parsed.account.is_out_ensure is None
+
+
+def test_parse_job_list_reads_is_out_ensure_when_present():
+    parsed = _jobs().parse_job_list(_switch_result([_switch_row("1000001")],
+                                                   overrides={"isOutEnsure": True}))
+    assert parsed.account.is_out_ensure is True
+
+
+def test_job_list_total_page_is_the_integer_page_info_reports():
+    parsed = _jobs().parse_job_list(_switch_result([_switch_row("1000001")], total_page=2))
+    assert parsed.total_page() == 2
+
+
+@pytest.mark.parametrize("bad", ["SYNTH-NOT-AN-OBJECT", ["SYNTH"], None],
+                         ids=["string", "list", "none"])
+def test_parse_job_list_refuses_a_result_that_is_not_an_object(bad):
+    with pytest.raises(helpers.MalformedResponseError):
+        _jobs().parse_job_list(bad)
+
+
+def test_parse_job_list_refuses_a_job_data_ary_that_is_not_a_list():
+    with pytest.raises(helpers.MalformedResponseError):
+        _jobs().parse_job_list(_switch_result([], overrides={"jobDataAry": {"jobno": "1000001"}}))
+
+
+def test_parse_job_list_refuses_a_row_that_is_not_an_object():
+    with pytest.raises(helpers.MalformedResponseError):
+        _jobs().parse_job_list(_switch_result(["SYNTH-ROW"]))
+
+
+def test_parse_job_list_with_no_page_info_parses_and_total_page_refuses():
+    parsed = _jobs().parse_job_list(_switch_result([_switch_row("1000001")], page_info=False))
+    assert [row.jobno for row in parsed.rows] == ["1000001"]
+    with pytest.raises(helpers.MalformedResponseError):
+        parsed.total_page()
+
+
+def test_parsed_job_list_never_keeps_the_operator_identity():
+    parsed = _jobs().parse_job_list(_switch_result([_switch_row("1000001")]))
+    rendered = repr(parsed)
+    assert _SWITCH_OPERATOR_EMAIL not in rendered
+    assert _SWITCH_OPERATOR_LOGIN not in rendered
+    assert "SYNTH-SWITCH-BUSERID" not in rendered
+
+
+# T-60 (interface): parse_job_dates, rebuilt on parse_job_list, keeps its output and
+# does not require pageInfo or poNum.
+
+def test_parse_job_dates_still_returns_each_jobs_dates_when_page_info_and_po_num_are_absent():
+    jobnos = ["1000001", "1000002"]
+    rows = []
+    for jn in jobnos:
+        row = _switch_row(jn)
+        for field in discovery_mod.JOB_DATE_FIELDS:
+            row[field] = f"SYNTH-{field}-{jn}"
+        rows.append(row)
+    result = _switch_result(rows, omit=("poNum",), page_info=False)
+
+    dates = _jobs().parse_job_dates(result)
+
+    assert set(dates) == set(jobnos)
+    for jn in jobnos:
+        assert set(dates[jn]) == set(discovery_mod.JOB_DATE_FIELDS)
+        for field in discovery_mod.JOB_DATE_FIELDS:
+            assert dates[jn][field] == f"SYNTH-{field}-{jn}"
+
+
+# T-61 (interface): one decision function for "does a failed write need a reread".
+
+def _failure(kind: str):
+    return helpers.GuardAbort({"error": f"SYNTH-{kind}"}, kind=kind)
+
+
+@pytest.mark.parametrize("kind", ["transport", "malformed", "non_json", "unrecognised_status",
+                                  "a_kind_added_later"])
+def test_ambiguous_write_failures_are_reread_whatever_the_batch_size(kind):
+    assert _jobs().write_failure_disposition(_failure(kind), batch_size=1) == "reread_ambiguous"
+    assert _jobs().write_failure_disposition(_failure(kind), batch_size=2) == "reread_ambiguous"
+
+
+@pytest.mark.parametrize("kind", ["validation", "not_found"])
+def test_a_refused_batch_is_reread_only_when_it_holds_more_than_one_job(kind):
+    assert _jobs().write_failure_disposition(_failure(kind), batch_size=2) == "reread_refused"
+    assert _jobs().write_failure_disposition(_failure(kind), batch_size=1) == "raise"
+
+
+@pytest.mark.parametrize("kind", ["expired", "blocked", "challenge", "header_fault", "throttled"])
+def test_session_and_gate_failures_are_raised_not_reread(kind):
+    assert _jobs().write_failure_disposition(_failure(kind), batch_size=2) == "raise"

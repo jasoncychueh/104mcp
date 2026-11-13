@@ -648,7 +648,7 @@ async def _issue_one(
     info: SessionInfo,
     target: Endpoint | AssetRoute,
     params: Sequence[tuple[str, str]] | None,
-    body: dict | None,
+    body: dict | Sequence[tuple[str, str]] | None,
     *,
     session_id: str,
     throttle_state_path: Path,
@@ -849,7 +849,7 @@ async def _issue_one(
                 "_issue_one: request blocked (403) for session %s calling %s (status=%s)",
                 session_id, target.key, raw.status,
             )
-            raise SessionUnavailable(payload, kind="blocked")
+            raise SessionUnavailable(payload, kind="blocked", code=_envelope_code(raw.parsed_json))
         # ── Dispatch point 4 of 4: which kind -> payload + abort class ───
         # The asset table handles only its own four kinds and delegates
         # every other one back to _api_error_for_kind, so a shared kind
@@ -876,13 +876,27 @@ async def _issue_one(
 
 
 def _envelope_code(parsed_json: object) -> str | None:
-    """The `code` of a 104 error envelope (`{"code": "00305", "message":
-    ...}`), or None when the body carries none — a non-JSON page, a
-    non-object, or an envelope without a string `code`."""
+    """The `code` of a 104 error envelope, or None when the body carries
+    none — a non-JSON page, a non-object, or an envelope without one.
+
+    Two shapes carry it: a top-level string `code` (`{"code": "00305",
+    "message": ...}`), and a `code` inside an `error` object, where the
+    job-close route puts an integer (`{"error": {"code": 57, ...}}`) that
+    is returned here as its decimal string. A top-level code wins when both
+    are present. A boolean is not a code."""
     if not isinstance(parsed_json, dict):
         return None
     code = parsed_json.get("code")
-    return code if isinstance(code, str) and code else None
+    if isinstance(code, str) and code:
+        return code
+    error = parsed_json.get("error")
+    if isinstance(error, dict):
+        inner = error.get("code")
+        if isinstance(inner, str) and inner:
+            return inner
+        if isinstance(inner, int) and not isinstance(inner, bool):
+            return str(inner)
+    return None
 
 
 def _project_field(which: str, obj: object, keys: tuple[str, ...] | None) -> dict:
@@ -959,7 +973,7 @@ async def guarded_api(
     endpoint: Endpoint,
     *,
     params: Sequence[tuple[str, str]] | None = None,
-    body: dict | None = None,
+    body: dict | Sequence[tuple[str, str]] | None = None,
     before_request: Callable[[SessionInfo], Awaitable[None]] | None = None,
 ) -> AsyncIterator[tuple[object, SessionInfo]]:
     """Resolve the session, hold its lock for the whole region, issue
@@ -1137,9 +1151,9 @@ async def guarded_sequence(
     this needs no new handler at any call site's `except GuardAbort` —
     the instant a named key turns out absent. Projection is refused up
     front, before `_issue_one` (and therefore before fetch()'s own
-    try/except) is ever reached, for an endpoint whose family_b_shape is
-    `is_list=True` (its `data` is a list with no keys to pick from) or has
-    no family_b_shape at all — ToolAbort(kind="internal_config"), the same
+    try/except) is ever reached, for an endpoint whose family_b_shape is not
+    `data_kind="object"` (its `data` is a list, a boolean or unconstrained,
+    with no keys to pick from) or has no family_b_shape at all — ToolAbort(kind="internal_config"), the same
     "this is a program bug, please report it" family guarded_api already
     uses for a caller's own method/body mismatch.
     """
@@ -1183,7 +1197,7 @@ async def guarded_sequence(
             endpoint: Endpoint | AssetRoute,
             *,
             params: Sequence[tuple[str, str]] | None = None,
-            body: dict | None = None,
+            body: dict | Sequence[tuple[str, str]] | None = None,
             asset_url: str | None = None,
             before_request: Callable[[SessionInfo], Awaitable[None]] | None = None,
             pick_data: tuple[str, ...] | None = None,
@@ -1213,11 +1227,11 @@ async def guarded_sequence(
                         kind="internal_config",
                     )
                 shape = endpoint.family_b_shape
-                if shape is None or shape.is_list:
+                if shape is None or shape.data_kind != "object":
                     raise ToolAbort(
                         _error_internal_config(
                             f"{endpoint.key} 不支援欄位投影（pick_data/pick_metadata 只能用在 "
-                            "is_list=False 的端點）"
+                            "data_kind 為 object 的端點）"
                         ),
                         kind="internal_config",
                     )

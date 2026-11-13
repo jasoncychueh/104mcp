@@ -18,9 +18,11 @@ Wire facts: docs/104-site-facts.md §8.28–§8.31.
 import copy
 import logging
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
+from types import MappingProxyType
+from typing import Literal
 
 from mcp.server.fastmcp import Context, FastMCP
 
@@ -282,23 +284,110 @@ def build_job_page(envelope: object) -> dict:
     }
 
 
-def parse_job_dates(result: object) -> dict[str, dict]:
-    """GET /api/job/jobList's `result` -> {jobno: {the six JOB_DATE_FIELDS, 104's values
-    as given, None for a key 104 left out}}. Reads `jobDataAry` only: the rest of
-    `result` carries the operator's own identity and is never touched. A `result` that
-    is not an object, a `jobDataAry` that is not an array, or a row that is not an
-    object raises MalformedResponseError."""
+@dataclass(frozen=True)
+class JobListRow:
+    """One row of GET /api/job/jobList's `jobDataAry`. `jobno` is the normalised string;
+    `raw_jobno` is 104's own value, kept so a write sends it back exactly as 104 gave it.
+    Every other field is 104's value as given, None when 104 left the key out. `fields`
+    is the whole row as 104 sent it (read-only)."""
+
+    jobno: str
+    raw_jobno: object
+    switch: object
+    can_delete: object
+    is_in_verify: object
+    job_setting: object
+    fields: Mapping[str, object]
+
+
+@dataclass(frozen=True)
+class JobListAccount:
+    """The account-level keys of jobList's `result` that decide whether 104's own front
+    end lets an open, close or delete happen — 104's values as given, None when the key
+    is absent. Nothing here is type-checked: how each is read belongs to the caller. The
+    operator's identity keys (`email`, `loginNo`, `nccPayload`) are never read."""
+
+    permit: object
+    co_status: object
+    is_hunter: object
+    is_dispatch: object
+    is_new_model: object
+    is_out_ensure: object
+    po_num: object
+    is_web: object
+
+
+@dataclass(frozen=True)
+class JobList:
+    """GET /api/job/jobList's `result`, parsed once: the rows in list order and the
+    account-level keys. The whole `result` is not kept."""
+
+    rows: tuple[JobListRow, ...]
+    account: JobListAccount
+    page_total: object  # pageInfo.total_page as 104 gave it; None when absent
+
+    def total_page(self) -> int:
+        """The list's page count. Raises MalformedResponseError unless 104 gave an
+        integer — a caller that needs the whole list on one page cannot go on without it."""
+        if not _is_int(self.page_total):
+            raise MalformedResponseError("jobList 的 pageInfo.total_page 缺失或不是整數")
+        return self.page_total
+
+
+def parse_job_list(result: object) -> JobList:
+    """GET /api/job/jobList's `result` -> a JobList. The one structural check of this list,
+    shared by list_jobs' date merge and the open/close/delete tools. Raises
+    MalformedResponseError when `result` is not an object, `jobDataAry` not an array, a row
+    not an object, or a jobno not a job number. A missing `pageInfo` is not an error here
+    (only `JobList.total_page()` needs it)."""
     if not isinstance(result, dict):
         raise MalformedResponseError("jobList 的 result 缺失或非物件")
-    rows = result.get("jobDataAry")
-    if not isinstance(rows, list):
+    raw_rows = result.get("jobDataAry")
+    if not isinstance(raw_rows, list):
         raise MalformedResponseError("jobList 的 jobDataAry 缺失或非陣列")
-    dates: dict[str, dict] = {}
-    for raw in rows:
+    rows = []
+    for raw in raw_rows:
         if not isinstance(raw, dict):
             raise MalformedResponseError("jobList 的職缺列不是物件")
-        dates[normalise_jobno(raw.get("jobno"))] = {name: raw.get(name) for name in discovery_mod.JOB_DATE_FIELDS}
-    return dates
+        rows.append(
+            JobListRow(
+                jobno=normalise_jobno(raw.get("jobno")),
+                raw_jobno=raw.get("jobno"),
+                switch=raw.get("switch"),
+                can_delete=raw.get("canDelete"),
+                is_in_verify=raw.get("isInVerify"),
+                job_setting=raw.get("job_setting"),
+                fields=MappingProxyType(dict(raw)),
+            )
+        )
+    page_info = result.get("pageInfo")
+    account = JobListAccount(
+        permit=result.get("permit"),
+        co_status=result.get("coStatus"),
+        is_hunter=result.get("isHunter"),
+        is_dispatch=result.get("isDispatch"),
+        is_new_model=result.get("isNewModel"),
+        is_out_ensure=result.get("isOutEnsure"),
+        po_num=result.get("poNum"),
+        is_web=result.get("isWeb"),
+    )
+    return JobList(
+        rows=tuple(rows),
+        account=account,
+        page_total=page_info.get("total_page") if isinstance(page_info, dict) else None,
+    )
+
+
+def parse_job_dates(result: object) -> dict[str, dict]:
+    """GET /api/job/jobList's `result` -> {jobno: {the six JOB_DATE_FIELDS, 104's values
+    as given, None for a key 104 left out}}. Reads `jobDataAry` only (through
+    `parse_job_list`): the rest of `result` carries the operator's own identity and is
+    never touched. A `result` that is not an object, a `jobDataAry` that is not an array,
+    or a row that is not an object raises MalformedResponseError."""
+    return {
+        row.jobno: {name: row.fields.get(name) for name in discovery_mod.JOB_DATE_FIELDS}
+        for row in parse_job_list(result).rows
+    }
 
 
 def merge_job_dates(page: dict, dates_by_jobno: dict[str, dict]) -> dict:
@@ -468,6 +557,27 @@ def build_refreshable_jobs(payload: object) -> dict:
 
 
 # ── Refreshing job dates ─────────────────────────────────────────────────
+
+
+def write_failure_disposition(
+    abort: GuardAbort, *, batch_size: int
+) -> Literal["reread_ambiguous", "reread_refused", "raise"]:
+    """What a job write that aborted should do next — the one rule every job write tool
+    (refresh, open, close, delete) shares.
+
+    "reread_ambiguous": the write may have reached 104 and taken effect (a timeout, a
+    dropped connection, a response that is not 104's JSON, and any kind the classifier
+    learns later that `NOT_SENT` does not list) — read the list back and say the result
+    follows it. "reread_refused": 104 refused a batch of more than one job (`validation`,
+    `not_found`); whether part of the batch took effect is unmeasured, so read back and
+    report per job. "raise": 104 did not take the write (session expired, blocked,
+    challenged, a single job refused, a header or parameter fault, the throttle) — return
+    the abort's payload."""
+    if _send_verdict(abort.kind) == "ambiguous":
+        return "reread_ambiguous"
+    if abort.kind in ("validation", "not_found") and batch_size > 1:
+        return "reread_refused"
+    return "raise"
 
 
 def refresh_preflight(requested: Sequence[str], entries: Sequence[RefreshableJob], permit: bool) -> str | None:
@@ -772,11 +882,12 @@ def register_job_tools(mcp: FastMCP) -> None:
                         before_request=_before_put,
                     )
                 except GuardAbort as e:
-                    if _send_verdict(e.kind) == "ambiguous":
+                    disposition = write_failure_disposition(e, batch_size=len(requested))
+                    if disposition == "reread_ambiguous":
                         # The PUT may have taken effect: only the list says. A timeout is
                         # the likeliest case of exactly that.
                         warnings.append("更新請求（PUT）逾時或回應無法辨識，結果以重讀可更新清單為準")
-                    elif e.kind in ("validation", "not_found") and len(requested) > 1:
+                    elif disposition == "reread_refused":
                         # Whether part of a refused batch took effect is unmeasured.
                         warnings.append(
                             f"104 拒絕了這批更新（{e.payload.get('error')}）；一批裡是否有職缺已部分生效未量測，"

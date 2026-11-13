@@ -108,6 +108,9 @@
 - `get_job_detail(jobno)` — 讀一個職缺的刊登內容（說明、薪資、地點、條件；唯讀，不含公司同仁的聯絡資料）
 - `list_refreshable_jobs()` — 列出 104 目前標示為可更新的職缺（只讀，不會真的更新職缺）
 - `refresh_jobs(jobnos)` — 更新職缺日期。會立即改變職缺在求職者搜尋中的排序、無法撤回，只接受 `list_refreshable_jobs` 列出的職缺，逐筆回報是否已確認
+- `close_jobs(jobnos, reasons, other_reason, return_add_ons, allow_pausing_company_ads)` — 關閉開放中的職缺。立刻生效、求職者看得到；關閉前要給原因代碼，有加值廣告要歸還或會暫停公司廣告時要明確確認，逐筆回報是否已確認
+- `open_jobs(jobnos, cancel_add_ons)` — 開啟已關閉的職缺。立刻生效、求職者看得到；會使用職務刊登額度，有會被取消的加值廣告時要明確確認，逐筆回報是否已確認
+- `delete_job(jobno)` — 刪除一個已關閉的職缺。無法復原，會一併刪除這個職缺的應徵履歷與聯絡紀錄；一次只刪一個，只接受 104 標示可刪除的職缺，逐筆回報是否已確認
 - `get_candidate_photo(candidate_id)` — 把候選人的大頭照下載到本機並回傳路徑（沒放照片時回 `photo: null`，那是正常狀態）
 - `get_resume_attachment(candidate_id, sort)` — 把履歷附件（作品集、證照掃描檔、另一版履歷 PDF……）下載到本機並回傳路徑
 

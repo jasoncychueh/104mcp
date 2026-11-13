@@ -312,14 +312,14 @@ def test_classify_family_selected_by_endpoint_declaration_not_body_shape():
     raw_b = _raw(200, "application/json; charset=utf-8",
                  json.dumps(family_b_body, ensure_ascii=False), family_b_body)
 
-    ep_a = Endpoint(key="t46_probe_a", host="vip", path="/api/probe", method="GET", family="A",
+    ep_a = Endpoint(key="t46_probe_a", host="vip", path="/api/probe", method="GET", body_encoding=None, family="A",
                      extra_headers=(), family_b_shape=None, throttle_gated=True)
-    # inner_key="resume", is_list=False mirrors resume_unrestricted.json's
+    # inner_key="resume", data_kind="object" mirrors resume_unrestricted.json's
     # real shape ({"data": {"resume": {...}, ...}, "metadata": {...}}) and the
     # real get_resume_detail endpoint's own declared shape.
-    ep_b = Endpoint(key="t46_probe_b", host="vip", path="/api/probe", method="GET", family="B",
+    ep_b = Endpoint(key="t46_probe_b", host="vip", path="/api/probe", method="GET", body_encoding=None, family="B",
                      extra_headers=(),
-                     family_b_shape=FamilyBShape(is_list=False, inner_key="resume", sibling_keys=()), throttle_gated=True)
+                     family_b_shape=FamilyBShape(data_kind="object", inner_key="resume", sibling_keys=()), throttle_gated=True)
 
     # Correct family declared for each body: both succeed.
     assert classify(ep_a, raw_a).ok is True
@@ -357,13 +357,13 @@ def test_endpoint_construction_enforces_family_b_shape_invariant():
     # kind of construction-time guard that quietly becomes optional if a
     # later refactor drops the check and nothing goes red.
     with pytest.raises(ValueError):
-        Endpoint(key="probe_b_missing_shape", host="vip", path="/api/probe", method="GET", family="B",
+        Endpoint(key="probe_b_missing_shape", host="vip", path="/api/probe", method="GET", body_encoding=None, family="B",
                  extra_headers=(), family_b_shape=None, throttle_gated=True)
 
     with pytest.raises(ValueError):
-        Endpoint(key="probe_a_with_shape", host="vip", path="/api/probe", method="GET", family="A",
+        Endpoint(key="probe_a_with_shape", host="vip", path="/api/probe", method="GET", body_encoding=None, family="A",
                  extra_headers=(),
-                 family_b_shape=FamilyBShape(is_list=False, inner_key="resume", sibling_keys=()), throttle_gated=True)
+                 family_b_shape=FamilyBShape(data_kind="object", inner_key="resume", sibling_keys=()), throttle_gated=True)
 
 
 def test_opaque_family_endpoint_classifies_a_bare_redirect_as_ok():
@@ -373,9 +373,9 @@ def test_opaque_family_endpoint_classifies_a_bare_redirect_as_ok():
     # declared the same shape logout_session uses (family_b_shape=None,
     # throttle_gated=False), must classify a plain 302 with no body and a
     # non-JSON content-type as success without ever touching family B's
-    # is_list/inner_key shape logic (there is none to touch: family_b_shape
+    # data_kind/inner_key shape logic (there is none to touch: family_b_shape
     # is None for this endpoint).
-    ep = Endpoint(key="probe_opaque", host="vip", path="/api/probe", method="POST", family="opaque",
+    ep = Endpoint(key="probe_opaque", host="vip", path="/api/probe", method="POST", body_encoding="json", family="opaque",
                   extra_headers=(), family_b_shape=None, throttle_gated=False)
     raw = _raw(302, "text/html", "", None, location="https://vip.104.com.tw/rms/index")
 
@@ -390,11 +390,11 @@ def test_endpoint_construction_rejects_unknown_family():
     # must both be rejected at construction, alongside the existing method
     # whitelist case's ValueError-on-construction pattern.
     with pytest.raises(ValueError):
-        Endpoint(key="probe_family_c", host="vip", path="/api/probe", method="GET", family="C",
+        Endpoint(key="probe_family_c", host="vip", path="/api/probe", method="GET", body_encoding=None, family="C",
                  extra_headers=(), family_b_shape=None, throttle_gated=True)
 
     with pytest.raises(ValueError):
-        Endpoint(key="probe_family_old_name", host="vip", path="/api/probe", method="GET", family="non_json",
+        Endpoint(key="probe_family_old_name", host="vip", path="/api/probe", method="GET", body_encoding=None, family="non_json",
                  extra_headers=(), family_b_shape=None, throttle_gated=True)
 
 
@@ -753,14 +753,14 @@ def test_endpoint_method_has_no_default_and_is_required():
 def test_endpoint_construction_rejects_a_method_outside_get_post_or_put(method):
     with pytest.raises(ValueError):
         Endpoint(key="probe_bad_method", host="auth", path="/bc-comm/message/{job_no}-{p_id}",
-                 method=method, family="B", extra_headers=(),
-                 family_b_shape=FamilyBShape(is_list=True, inner_key=None, sibling_keys=()), throttle_gated=True)
+                 method=method, body_encoding=None, family="B", extra_headers=(),
+                 family_b_shape=FamilyBShape(data_kind="list", inner_key=None, sibling_keys=()), throttle_gated=True)
 
 
 def test_endpoint_construction_accepts_put():
-    ep = Endpoint(key="probe_put", host="auth", path="/api/probe", method="PUT", family="B",
+    ep = Endpoint(key="probe_put", host="auth", path="/api/probe", method="PUT", body_encoding="json", family="B",
                   extra_headers=(),
-                  family_b_shape=FamilyBShape(is_list=False, inner_key=None, sibling_keys=()),
+                  family_b_shape=FamilyBShape(data_kind="object", inner_key=None, sibling_keys=()),
                   throttle_gated=True)
     assert ep.method == "PUT"
 
@@ -846,7 +846,7 @@ async def test_fetch_emits_every_declared_extra_header_verbatim_and_nothing_unde
     from mcp104.browser import api_client as api_client_mod
     monkeypatch.setattr(api_client_mod.aiohttp, "ClientSession", _FakeAiohttpSession)
 
-    declared = Endpoint(key="probe_headers", host="vip", path="/api/probe", method="GET",
+    declared = Endpoint(key="probe_headers", host="vip", path="/api/probe", method="GET", body_encoding=None,
                          family="A", extra_headers=(("X-Test-Header", "test-value"),),
                          family_b_shape=None, throttle_gated=True)
     await api_client_mod.fetch(declared, cookie_header="c=1", params=[])
@@ -854,7 +854,7 @@ async def test_fetch_emits_every_declared_extra_header_verbatim_and_nothing_unde
     _method, _url, headers, _body = _FakeAiohttpSession.calls[0]
     assert headers.get("X-Test-Header") == "test-value"
 
-    undeclared = Endpoint(key="probe_no_headers", host="vip", path="/api/probe", method="GET",
+    undeclared = Endpoint(key="probe_no_headers", host="vip", path="/api/probe", method="GET", body_encoding=None,
                            family="A", extra_headers=(), family_b_shape=None, throttle_gated=True)
     await api_client_mod.fetch(undeclared, cookie_header="c=1", params=[])
     _method, _url, headers2, _body = _FakeAiohttpSession.calls[1]
@@ -919,19 +919,17 @@ def test_classify_family_b_404_with_only_error_key_still_behaves_as_before():
 def test_all_declared_endpoints_construct_without_error():
     # ENDPOINTS itself is built at module import time — reaching this line at all
     # already proves every entry constructs cleanly under the required fields.
-    # Fourteen today: the ten pinned pre-this-round (five pre-existing + three
-    # messaging endpoints + the two prior additions verify_session,
-    # logout_session) + this round's four new endpoints (list_templates,
-    # resolve_candidate_idno, event_last_info, send_willingness_event).
-    # get_template is deliberately NOT among them - see the test below that
-    # pins it as an intentional omission.
-    # The four event-route endpoints (send_interview_event, send_thank_event,
-    # send_inquire_event, send_exam_event) raise the count to eighteen.
-    # applicants-and-job-reads adds three more routes (list_applicants, match_number,
-    # list_refreshable_jobs); list_jobs keeps its key and changes only its path.
-    # The job-dates change adds three more: refresh_jobs (the PUT on the refreshable
-    # list's path), job_list and get_job_detail.
-    assert len(ENDPOINTS) == 24
+    # Asserted by key, not by count, so a feature that adds routes does not touch
+    # this test. get_template is deliberately NOT declared - see the test below.
+    for key in (
+        "verify_session", "logout_session", "search_resumes", "get_resume_detail",
+        "send_message", "list_jobs",
+        "resolve_candidate_idno", "event_last_info", "send_willingness_event",
+        "send_interview_event", "send_thank_event", "send_inquire_event", "send_exam_event",
+        "list_applicants", "match_number", "list_refreshable_jobs",
+        "refresh_jobs", "job_list", "get_job_detail",
+    ):
+        assert key in ENDPOINTS, f"{key!r} is not declared in ENDPOINTS"
 
 
 # =========================================================================
@@ -966,8 +964,8 @@ def test_the_four_new_c7_endpoints_are_declared_exactly_per_the_table():
         assert ep.method == method, f"{path}: expected method={method!r}, got {ep.method!r}"
         assert ep.throttle_gated is True, f"{path}: expected throttle_gated=True"
         assert ep.family_b_shape is not None, f"{path}: expected a family_b_shape"
-        assert ep.family_b_shape.is_list == is_list, (
-            f"{path}: expected is_list={is_list!r}, got {ep.family_b_shape.is_list!r}"
+        assert (ep.family_b_shape.data_kind == "list") == is_list, (
+            f"{path}: expected is_list={is_list!r}, got data_kind={ep.family_b_shape.data_kind!r}"
         )
         assert ep.family_b_shape.inner_key == inner_key, (
             f"{path}: expected inner_key={inner_key!r}, got {ep.family_b_shape.inner_key!r}"
@@ -998,9 +996,9 @@ def test_get_template_endpoint_is_not_declared():
 
 def test_classify_copies_declared_sibling_keys_only_when_present_and_never_undeclared_ones():
     ep = Endpoint(
-        key="t69_probe", host="auth", path="/api/probe", method="POST", family="B",
+        key="t69_probe", host="auth", path="/api/probe", method="POST", body_encoding="json", family="B",
         extra_headers=(),
-        family_b_shape=FamilyBShape(is_list=True, inner_key=None, sibling_keys=("failed",)),
+        family_b_shape=FamilyBShape(data_kind="list", inner_key=None, sibling_keys=("failed",)),
         throttle_gated=True,
     )
 
@@ -1042,16 +1040,16 @@ def test_classify_copies_declared_sibling_keys_only_when_present_and_never_undec
 # =========================================================================
 # T-70 (api_client.FamilyBShape, interface) - declaring "data" or "metadata"
 # as a sibling key is a __post_init__ construction error: those two keys
-# already have their own extraction path (is_list/inner_key), so letting
+# already have their own extraction path (data_kind/inner_key), so letting
 # them in as siblings too would give each a second route into payload.
 # =========================================================================
 
 def test_family_b_shape_rejects_data_or_metadata_as_a_sibling_key():
     with pytest.raises(Exception):
-        FamilyBShape(is_list=True, inner_key=None, sibling_keys=("data",))
+        FamilyBShape(data_kind="list", inner_key=None, sibling_keys=("data",))
 
     with pytest.raises(Exception):
-        FamilyBShape(is_list=True, inner_key=None, sibling_keys=("metadata",))
+        FamilyBShape(data_kind="list", inner_key=None, sibling_keys=("metadata",))
 
 
 # =========================================================================
@@ -1063,9 +1061,9 @@ def test_family_b_shape_rejects_data_or_metadata_as_a_sibling_key():
 def test_resolve_candidate_idno_response_missing_idno_classifies_as_malformed():
     ep = Endpoint(
         key="t71_probe_resolve_candidate_idno", host="auth",
-        path="/bc-comm/message/resume/{job_no}-{p_id}", method="GET", family="B",
+        path="/bc-comm/message/resume/{job_no}-{p_id}", method="GET", body_encoding=None, family="B",
         extra_headers=(),
-        family_b_shape=FamilyBShape(is_list=False, inner_key="idNo", sibling_keys=()),
+        family_b_shape=FamilyBShape(data_kind="object", inner_key="idNo", sibling_keys=()),
         throttle_gated=True,
     )
     body = {"data": {}, "metadata": {}}  # data present, but idNo missing entirely
@@ -1085,9 +1083,9 @@ def test_resolve_candidate_idno_response_missing_idno_classifies_as_malformed():
 
 def test_classify_does_not_assemble_payload_for_a_failed_verdict_even_with_a_sibling_key_present():
     ep = Endpoint(
-        key="t72_probe", host="auth", path="/api/probe", method="POST", family="B",
+        key="t72_probe", host="auth", path="/api/probe", method="POST", body_encoding="json", family="B",
         extra_headers=(),
-        family_b_shape=FamilyBShape(is_list=True, inner_key=None, sibling_keys=("failed",)),
+        family_b_shape=FamilyBShape(data_kind="list", inner_key=None, sibling_keys=("failed",)),
         throttle_gated=True,
     )
     body = {"error": "SYNTHETIC-NOT-FOUND", "failed": ["SYNTHETIC-SHOULD-NOT-LEAK"]}
@@ -1169,7 +1167,7 @@ def test_asset_routes_declare_the_measured_fields_verbatim():
 def test_the_two_declaration_tables_are_each_closed():
     # An Endpoint may not address the file host...
     with pytest.raises(ValueError):
-        Endpoint(key="x", host="asset", path="/p", method="GET", family="A",
+        Endpoint(key="x", host="asset", path="/p", method="GET", body_encoding=None, family="A",
                  extra_headers=(), family_b_shape=None, throttle_gated=True)
     # ...and an AssetRoute may not address a JSON host.
     with pytest.raises(ValueError):
@@ -1373,7 +1371,7 @@ def test_event_route_endpoint_is_declared_like_willingness(key, path):
     assert ep.family == "B"
     assert ep.throttle_gated is True
     assert ep.family_b_shape is not None
-    assert ep.family_b_shape.is_list is True
+    assert ep.family_b_shape.data_kind == "list"
     assert ep.family_b_shape.inner_key is None
     assert tuple(ep.family_b_shape.sibling_keys) == ("failed",)
 
@@ -1475,3 +1473,253 @@ def test_family_a_401_without_a_status_key_is_unrecognised_and_its_detail_names_
     )
     assert "401" in verdict.detail, f"{key}: detail must carry the HTTP code: {verdict.detail!r}"
     assert "None" not in verdict.detail, f"{key}: detail must not fall back to a literal None"
+
+
+# ── job-switch-delete, Phase 1 (design Testing Strategy T-55..T-58, T-75) ──────
+# Written against design.md's declared interfaces only: the seven declarations
+# are read by key, the new Endpoint/FamilyBShape keywords (body_encoding,
+# data_kind) are used as the design names them, and the envelope family is
+# exercised through classify() with nothing mocked across it.
+
+
+def _jobswitch_probe(**overrides):
+    fields = dict(key="jobswitch_probe", host="auth", path="/job-api/probe", method="POST",
+                  family="B", body_encoding="json", extra_headers=(),
+                  family_b_shape=FamilyBShape(data_kind="any", inner_key=None, sibling_keys=()),
+                  throttle_gated=True)
+    fields.update(overrides)
+    return Endpoint(**fields)
+
+
+def _jobswitch_envelope_probe(**overrides):
+    fields = dict(key="jobswitch_envelope_probe", host="auth", path="/api/probe", method="POST",
+                  family="envelope", body_encoding="form", extra_headers=(),
+                  family_b_shape=None, throttle_gated=True)
+    fields.update(overrides)
+    return Endpoint(**fields)
+
+
+def _jobswitch_json_raw(status: int, obj) -> RawResponse:
+    text = json.dumps(obj, ensure_ascii=False)
+    return _raw(status, "application/json; charset=utf-8", text, obj)
+
+
+# T-55 (interface): Endpoint refuses a body-method/encoding mismatch at construction.
+
+def test_endpoint_refuses_post_without_a_body_encoding():
+    with pytest.raises(ValueError):
+        _jobswitch_probe(method="POST", body_encoding=None)
+
+
+def test_endpoint_refuses_get_declared_with_a_json_body_encoding():
+    with pytest.raises(ValueError):
+        _jobswitch_probe(method="GET", body_encoding="json")
+
+
+def test_endpoint_refuses_an_unknown_body_encoding():
+    with pytest.raises(ValueError):
+        _jobswitch_probe(body_encoding="xml")
+
+
+def test_envelope_family_endpoint_with_a_form_body_constructs():
+    ep = _jobswitch_envelope_probe()
+    assert ep.family == "envelope"
+    assert ep.body_encoding == "form"
+
+
+def test_endpoint_body_encoding_has_no_default():
+    with pytest.raises(TypeError):
+        Endpoint(key="jobswitch_no_encoding", host="auth", path="/api/probe", method="GET",
+                 family="A", extra_headers=(), family_b_shape=None, throttle_gated=True)
+
+
+# T-56 (interface): fetch() sends a form body as urlencoded pairs (duplicates kept,
+# in order) and a json body as JSON, observed by a real local HTTP server.
+#
+# The only seam is the URL builder: fetch() asks build_url for the request URL, and that
+# URL is pointed at the local test server's address, path and query untouched. aiohttp is
+# not patched. The request bytes, headers and body encoding are what fetch() really put on
+# the wire.
+
+@pytest.mark.asyncio
+async def test_fetch_sends_form_bodies_as_urlencoded_pairs_and_json_bodies_as_json(monkeypatch):
+    from aiohttp import web
+    from aiohttp.test_utils import TestServer
+    from urllib.parse import parse_qsl, urlsplit, urlunsplit
+    from mcp104.browser import api_client as api_client_mod
+
+    received: list[dict] = []
+
+    async def handler(request):
+        raw = await request.read()
+        received.append({"content_type": request.content_type, "raw": raw.decode("utf-8")})
+        return web.json_response({"data": True, "metadata": {}})
+
+    app = web.Application()
+    app.router.add_route("*", "/{tail:.*}", handler)
+
+    async with TestServer(app) as server:
+        base = urlsplit(f"http://{server.host}:{server.port}")
+        real_build_url = api_client_mod.build_url
+
+        def _build_url_on_local_server(*args, **kwargs):
+            parts = urlsplit(real_build_url(*args, **kwargs))
+            return urlunsplit((base.scheme, base.netloc, parts.path, parts.query, parts.fragment))
+
+        monkeypatch.setattr(api_client_mod, "build_url", _build_url_on_local_server)
+
+        pairs = [("jobNos[]", "1000001"), ("jobNos[]", "1000002"), ("type", "multi")]
+        form_ep = _jobswitch_envelope_probe(key="jobswitch_form", path="/t56/form")
+        json_ep = _jobswitch_probe(key="jobswitch_json", path="/t56/json")
+
+        await api_client_mod.fetch(form_ep, cookie_header="c=1", params=[], body=pairs)
+        await api_client_mod.fetch(json_ep, cookie_header="c=1", params=[], body={"content": "x"})
+
+    form_rec, json_rec = received
+    assert form_rec["content_type"] == "application/x-www-form-urlencoded"
+    assert parse_qsl(form_rec["raw"], keep_blank_values=True) == pairs
+    assert json_rec["content_type"] == "application/json"
+    assert json.loads(json_rec["raw"]) == {"content": "x"}
+
+
+# T-57 (interface): classify() on the envelope family.
+
+_COMPANY_SWITCH_RAW = '{"status": "COMPANY_SWITCH", "url": "https://vip.104.com.tw/company/status/switchCompany"}'
+_COMPANY_SWITCH_ESCAPED = ('{"status": "COMPANY_SWITCH", '
+                           '"url": "https:\\/\\/vip.104.com.tw\\/company\\/status\\/switchCompany"}')
+
+
+def test_envelope_200_object_is_ok_and_its_payload_is_the_whole_object():
+    body = {"status": "SUCCESS", "message": "openAll", "code": "", "result": {"x": 1},
+            "data": None, "url": ""}
+    verdict = classify(_jobswitch_envelope_probe(), _jobswitch_json_raw(200, body))
+    assert verdict.ok is True
+    assert verdict.payload == body
+
+
+def test_envelope_200_with_access_denied_status_is_still_ok():
+    body = {"status": "ACCESS_DENIED", "message": "openAll"}
+    verdict = classify(_jobswitch_envelope_probe(), _jobswitch_json_raw(200, body))
+    assert verdict.ok is True
+
+
+def test_envelope_401_is_expired():
+    verdict = classify(_jobswitch_envelope_probe(), _jobswitch_json_raw(401, {"message": "x"}))
+    assert verdict.ok is False
+    assert verdict.kind == "expired"
+
+
+def test_envelope_404_json_object_is_not_found():
+    verdict = classify(_jobswitch_envelope_probe(), _jobswitch_json_raw(404, {"message": "x"}))
+    assert verdict.kind == "not_found"
+
+
+def test_envelope_404_non_json_is_wrong_host():
+    raw = _raw(404, "text/html; charset=utf-8", "<html>SYNTH-404</html>", None)
+    verdict = classify(_jobswitch_envelope_probe(), raw)
+    assert verdict.kind == "wrong_host"
+
+
+def test_envelope_400_is_validation_with_the_body_message_as_detail():
+    verdict = classify(_jobswitch_envelope_probe(),
+                       _jobswitch_json_raw(400, {"status": "USER_ERROR", "message": "SYNTH-400-MESSAGE"}))
+    assert verdict.kind == "validation"
+    assert verdict.detail == "SYNTH-400-MESSAGE"
+
+
+def test_envelope_500_is_unrecognised_status():
+    verdict = classify(_jobswitch_envelope_probe(), _jobswitch_json_raw(500, {"message": "SYNTH-500"}))
+    assert verdict.kind == "unrecognised_status"
+
+
+def test_envelope_200_non_json_is_non_json():
+    raw = _raw(200, "text/html; charset=utf-8", "<html>SYNTH-NON-JSON</html>", None)
+    verdict = classify(_jobswitch_envelope_probe(), raw)
+    assert verdict.kind == "non_json"
+
+
+def test_envelope_200_json_array_is_malformed():
+    verdict = classify(_jobswitch_envelope_probe(), _jobswitch_json_raw(200, [1, 2]))
+    assert verdict.kind == "malformed"
+
+
+@pytest.mark.parametrize("text", [_COMPANY_SWITCH_RAW, _COMPANY_SWITCH_ESCAPED],
+                         ids=["unescaped-switch-url", "json-escaped-switch-url"])
+def test_envelope_company_switch_marker_is_expired_in_either_escaping(text):
+    raw = _raw(200, "application/json; charset=utf-8", text, json.loads(text))
+    verdict = classify(_jobswitch_envelope_probe(), raw)
+    assert verdict.kind == "expired"
+
+
+def test_envelope_403_is_blocked():
+    verdict = classify(_jobswitch_envelope_probe(), _jobswitch_json_raw(403, {"message": "x"}))
+    assert verdict.kind == "blocked"
+
+
+# T-58 (interface): the seven new declarations, read by key.
+
+_JOBSWITCH_REFERER_HEADERS = (("Referer", "https://vip.104.com.tw/"), ("X-Requested-With", "XMLHttpRequest"))
+
+_JOBSWITCH_DECLARATIONS = {
+    # key: (method, path, family, data_kind, body_encoding, extra_headers)
+    "close_job_precheck": ("POST", "/vip-job/close/pre-check", "B", "object", "json", ()),
+    "close_jobs": ("POST", "/job-api/jobs/close", "B", "any", "json", ()),
+    "job_refund_points": ("GET", "/commodity-job-sort/refund-points/jobs", "B", "list", None, ()),
+    "open_jobs": ("POST", "/api/job/openJob", "envelope", None, "form", _JOBSWITCH_REFERER_HEADERS),
+    "job_more": ("GET", "/api/job/more", "A", None, None, ()),
+    "company_identity": ("GET", "/vipapi/company/profile/identity", "B", "object", None, ()),
+    "delete_job": ("POST", "/api/job/jobDelete", "envelope", None, "form", _JOBSWITCH_REFERER_HEADERS),
+}
+
+
+@pytest.mark.parametrize("key", sorted(_JOBSWITCH_DECLARATIONS))
+def test_job_switch_declaration_matches_the_design_table(key):
+    method, path, family, data_kind, body_encoding, extra_headers = _JOBSWITCH_DECLARATIONS[key]
+    ep = ENDPOINTS[key]
+    assert ep.host == "auth"
+    assert ep.method == method
+    assert ep.path == path
+    assert ep.family == family
+    assert ep.throttle_gated is True
+    if data_kind is not None:
+        assert ep.family_b_shape.data_kind == data_kind
+    assert ep.body_encoding == body_encoding
+    assert set(ep.extra_headers) == set(extra_headers)
+
+
+def test_every_declared_endpoint_has_a_body_encoding_that_matches_its_method():
+    for key, ep in ENDPOINTS.items():
+        if ep.method in ("POST", "PUT"):
+            assert ep.body_encoding in ("json", "form"), key
+        else:
+            assert ep.body_encoding is None, key
+
+
+# T-75 (interface): family B classification of error bodies and of data_kind="any".
+
+def test_family_b_400_error_object_is_validation_with_its_message_as_detail():
+    body = {"error": {"code": 57, "message": "SYNTH-X", "details": {}}}
+    verdict = classify(_jobswitch_probe(), _jobswitch_json_raw(400, body))
+    assert verdict.kind == "validation"
+    assert verdict.detail == "SYNTH-X"
+
+
+def test_family_b_500_with_the_same_error_object_is_unrecognised_and_keeps_the_text():
+    body = {"error": {"code": 57, "message": "SYNTH-X", "details": {}}}
+    verdict = classify(_jobswitch_probe(), _jobswitch_json_raw(500, body))
+    assert verdict.kind == "unrecognised_status"
+    assert "SYNTH-X" in verdict.detail
+
+
+def test_family_b_any_success_keeps_the_metadata_beside_a_boolean_data():
+    body = {"data": True, "metadata": {"lastJob": True}}
+    verdict = classify(_jobswitch_probe(), _jobswitch_json_raw(200, body))
+    assert verdict.ok is True
+    assert verdict.payload["metadata"]["lastJob"] is True
+
+
+def test_family_b_string_error_keeps_its_existing_detail():
+    body = {"error": "SYNTH-NOT-FOUND-TEXT"}
+    verdict = classify(_jobswitch_probe(), _jobswitch_json_raw(404, body))
+    assert verdict.kind == "not_found"
+    assert verdict.detail == "SYNTH-NOT-FOUND-TEXT"

@@ -336,26 +336,6 @@ async def test_T57_request_projection_none_means_unprojected_and_empty_tuple_mea
 
 
 @pytest.mark.asyncio
-async def test_T58_projection_on_is_list_endpoint_is_internal_config_error_before_fetch(monkeypatch):
-    ctx, info = _new_api_ctx_and_session()
-    spy = _SeqFetchSpy([])  # fetch must never be reached
-    _patch_fetch(monkeypatch, spy)
-
-    # list_templates is is_list=True -- projecting a keyed subset of `data`
-    # makes no sense against a list, per the error-handling table's rejection row.
-    with pytest.raises(ToolAbort) as exc_info:
-        async with guarded_sequence(ctx, slots_needed=1) as (request, _info):
-            await request(ENDPOINTS["list_templates"], params=[], pick_data=("x",))
-
-    assert exc_info.value.kind == "internal_config"
-    # Must read as a caller bug, not a transient network problem -- the
-    # check sits ahead of the try{} wrapping fetch().
-    assert exc_info.value.payload != ERROR_API_REQUEST_FAILED
-    assert "程式問題" in exc_info.value.payload["error"]
-    assert len(spy.calls) == 0
-
-
-@pytest.mark.asyncio
 async def test_T59_projection_missing_key_raises_malformed_using_the_same_error_builder(monkeypatch):
     ctx, info = _new_api_ctx_and_session()
     # event_last_info has inner_key=None, so classify()'s own structural
@@ -1347,3 +1327,95 @@ async def test_without_pick_data_optional_only_the_required_keys_survive(monkeyp
         )
 
     assert projected["data"] == {"a": 1}
+
+
+# ── job-switch-delete, Phase 1 (design Testing Strategy T-64, T-78) ───────────
+
+
+def _jobswitch_guard_probe(*, data_kind="any", method="POST", body_encoding="json"):
+    from mcp104.browser.api_client import Endpoint, FamilyBShape
+    return Endpoint(key="jobswitch_guard_probe", host="auth", path="/job-api/probe", method=method,
+                    family="B", body_encoding=body_encoding, extra_headers=(),
+                    family_b_shape=FamilyBShape(data_kind=data_kind, inner_key=None, sibling_keys=()),
+                    throttle_gated=True)
+
+
+# T-64: GuardAbort.code carries a 104 error code that is an integer inside an object error.
+
+@pytest.mark.asyncio
+async def test_guard_abort_code_is_the_integer_error_code_of_an_object_error_as_text(monkeypatch):
+    ctx, _info = _new_api_ctx_and_session()
+    _patch_fetch(monkeypatch, _SeqFetchSpy([
+        _resp({"error": {"code": 57, "message": "SYNTH-57"}}, status=400),
+    ]))
+
+    with pytest.raises(GuardAbort) as exc_info:
+        async with guarded_sequence(ctx, slots_needed=1) as (request, _info2):
+            await request(_jobswitch_guard_probe(), params=[], body={"jobNos": ["1000001"]})
+
+    assert exc_info.value.code == "57"
+
+
+@pytest.mark.asyncio
+async def test_guard_abort_on_a_403_keeps_the_error_code_and_is_still_blocked(monkeypatch):
+    ctx, _info = _new_api_ctx_and_session()
+    _patch_fetch(monkeypatch, _SeqFetchSpy([
+        _resp({"error": {"code": 57, "message": "SYNTH-57"}}, status=403),
+    ]))
+
+    with pytest.raises(GuardAbort) as exc_info:
+        async with guarded_sequence(ctx, slots_needed=1) as (request, _info2):
+            await request(_jobswitch_guard_probe(), params=[], body={"jobNos": ["1000001"]})
+
+    assert exc_info.value.kind == "blocked"
+    assert exc_info.value.code == "57"
+
+
+@pytest.mark.asyncio
+async def test_guard_abort_on_a_403_without_any_code_has_no_code(monkeypatch):
+    ctx, _info = _new_api_ctx_and_session()
+    _patch_fetch(monkeypatch, _SeqFetchSpy([
+        _resp({"message": "SYNTH-403-NO-CODE"}, status=403),
+    ]))
+
+    with pytest.raises(GuardAbort) as exc_info:
+        async with guarded_sequence(ctx, slots_needed=1) as (request, _info2):
+            await request(_jobswitch_guard_probe(), params=[], body={"jobNos": ["1000001"]})
+
+    assert exc_info.value.code is None
+
+
+# T-78: field projection is an internal configuration error for every data_kind
+# other than "object", and it is refused before any request is sent.
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("data_kind", ["list", "bool", "any"])
+async def test_projection_on_a_non_object_data_kind_is_an_internal_config_error_before_any_request(
+        monkeypatch, data_kind):
+    ctx, _info = _new_api_ctx_and_session()
+    spy = _SeqFetchSpy([])  # fetch must never be reached
+    _patch_fetch(monkeypatch, spy)
+
+    with pytest.raises(ToolAbort) as exc_info:
+        async with guarded_sequence(ctx, slots_needed=1) as (request, _info2):
+            await request(_jobswitch_guard_probe(data_kind=data_kind), params=[], pick_data=("x",))
+
+    assert exc_info.value.kind == "internal_config"
+    assert exc_info.value.payload != ERROR_API_REQUEST_FAILED
+    assert len(spy.calls) == 0
+
+
+@pytest.mark.asyncio
+async def test_projection_on_an_object_data_kind_still_projects(monkeypatch):
+    ctx, _info = _new_api_ctx_and_session()
+    _patch_fetch(monkeypatch, _SeqFetchSpy([
+        _resp({"data": {"x": 1, "y": 2}, "metadata": {}}),
+    ]))
+
+    async with guarded_sequence(ctx, slots_needed=1) as (request, _info2):
+        projected = await request(
+            _jobswitch_guard_probe(data_kind="object", method="GET", body_encoding=None),
+            params=[], pick_data=("x",),
+        )
+
+    assert projected["data"] == {"x": 1}

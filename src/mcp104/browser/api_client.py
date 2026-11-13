@@ -35,6 +35,10 @@ raising:
   two DELETE routes on the same messaging API surface this module talks
   to, and the whitelist makes them unconstructible rather than merely
   undocumented.
+- body_encoding: a POST or PUT route takes either a JSON body or a form body
+  (the older `/api/*` write routes are form posts), and which one is a fact
+  about the route, so it is declared beside host and method and checked at
+  construction rather than chosen by the caller.
 
 No field of `Endpoint` has a default. That is the mechanism that makes
 "forgot to declare a property" a construction-time TypeError instead of a
@@ -93,19 +97,30 @@ REFERER_SITE_ROOT = "https://vip.104.com.tw/"
 # comment asking people not to add them.
 _ALLOWED_METHODS = frozenset({"GET", "POST", "PUT"})
 
-# The methods that carry a JSON request body. fetch() dispatches on this and
-# tools/helpers.py's `_issue_one` reads it for the call-shape check, so "which
-# methods take a body" is decided here and nowhere else.
+# The methods that carry a request body (JSON or form, per
+# Endpoint.body_encoding). fetch() dispatches on this and tools/helpers.py's
+# `_issue_one` reads it for the call-shape check, so "which methods take a
+# body" is decided here and nowhere else.
 BODY_METHODS = frozenset({"POST", "PUT"})
 
-# The only three values Endpoint.family may declare — enforced in
+# The two ways a body can be encoded — enforced in Endpoint.__post_init__.
+# A route that takes no body (every GET) declares None instead.
+_BODY_ENCODINGS = frozenset({"json", "form"})
+
+# The only four values Endpoint.family may declare — enforced in
 # Endpoint.__post_init__, the same construction-time whitelist as
 # _ALLOWED_METHODS above. "A" and "B" dispatch classify() to the two JSON
-# envelope shapes; "opaque" names a route measured to answer outside
-# either envelope (currently only logout_session) and gets its own
+# envelope shapes; "envelope" is the older {status, message, result, url,
+# data} shape handed to the tool whole, for the write routes whose outcome
+# lives in `status`/`message`/`code` (family A would keep only `result`, and
+# only on SUCCESS); "opaque" names a route measured to answer outside
+# any envelope (currently only logout_session) and gets its own
 # explicit branch in classify() rather than falling through into either
 # family's shape-specific parsing.
-_ALLOWED_FAMILIES = frozenset({"A", "B", "opaque"})
+_ALLOWED_FAMILIES = frozenset({"A", "B", "envelope", "opaque"})
+
+# What a family-B response's `data` must be — FamilyBShape.data_kind.
+_DATA_KINDS = frozenset({"list", "object", "bool", "any"})
 
 # 15 seconds because that was page.goto's own navigation timeout on the
 # now-removed page-navigation guard (guarded_page) this value was carried
@@ -167,6 +182,13 @@ class FamilyBShape:
     further inner key and no nested `error` field to check.
     [M research/captures/resume_correct_host.json, reco_match_bodies.json]
 
+    `data_kind` says what `data` must be: "list" (an array), "object" (a
+    mapping, optionally holding `inner_key`, with no truthy nested `error`),
+    "bool", or "any" (only that the `data` key exists — for a write route
+    whose success body has not been measured and whose tool does not read
+    `data`, so a guessed shape cannot turn a healthy response into a
+    failure).
+
     No field has a default: a family-B endpoint built without one fails at
     Endpoint construction (see Endpoint.__post_init__ below), which is
     earlier and louder than failing the first time classify() happens to
@@ -181,21 +203,25 @@ class FamilyBShape:
     motivating case is `failed`, the outbound-contact event/message
     routes' own per-recipient failure list [M docs/104-site-facts.md
     §8.13/§8.17]: it is a THIRD top-level key, not a `data` or `metadata`
-    field, so neither the is_list branch nor the inner_key branch below
+    field, so neither the data_kind branch nor the inner_key branch below
     ever sees it. Declaring "data" or "metadata" here is a construction
     error (__post_init__) — those two keys already have their own,
-    single, extraction path (the is_list/inner_key branches), and letting
+    single, extraction path (the data_kind/inner_key branches), and letting
     them ALSO ride in sibling_keys would give one envelope key two
     different ways to reach the tool layer, which is exactly the kind of
     duplicate-source-of-truth this module's construction-time checks exist
     to rule out before a test ever has to catch it at runtime.
     """
 
-    is_list: bool
-    inner_key: str | None  # required key under `data` when is_list is False; ignored (must be None) when is_list is True
+    data_kind: str  # "list" | "object" | "bool" | "any" — what `data` must be; see class docstring
+    inner_key: str | None  # required key under `data`; only meaningful (non-None) when data_kind is "object"
     sibling_keys: tuple[str, ...]  # top-level envelope keys (besides data/metadata) to copy into the payload when present and the verdict is ok — never "data" or "metadata" (see class docstring)
 
     def __post_init__(self) -> None:
+        if self.data_kind not in _DATA_KINDS:
+            raise ValueError(f"FamilyBShape.data_kind must be one of {sorted(_DATA_KINDS)}, got {self.data_kind!r}")
+        if self.inner_key is not None and self.data_kind != "object":
+            raise ValueError(f"FamilyBShape.inner_key is only meaningful for data_kind 'object', got {self.data_kind!r}")
         for reserved in ("data", "metadata"):
             if reserved in self.sibling_keys:
                 raise ValueError(
@@ -212,7 +238,8 @@ class Endpoint:
     validated against `family` in __post_init__ rather than left to
     whatever classify() happens to fall back on for an endpoint it was
     never told about. `method` is validated the same way, against
-    _ALLOWED_METHODS.
+    _ALLOWED_METHODS, and `body_encoding` against `method` (a body method
+    must say how its body is encoded, a method without one must not).
 
     `extra_headers` is a name/value pair sequence, not a `frozenset[str]` of
     names: `fetch()` emits every declared pair on the wire VERBATIM, so what
@@ -229,7 +256,8 @@ class Endpoint:
     host: str  # "vip" | "auth"
     path: str  # may contain `{name}` placeholders filled from build_url's params
     method: str  # "GET" | "POST" | "PUT" — see _ALLOWED_METHODS
-    family: str  # "A" | "B" — dispatches classify(); "opaque" names a route measured to answer outside either JSON envelope (e.g. logout_session) — classify() is never reached for it in practice, see that endpoint's own comment
+    body_encoding: str | None  # "json" | "form" for a BODY_METHODS endpoint, None for every other — enforced below
+    family: str  # "A" | "B" | "envelope" — dispatches classify(); "opaque" names a route measured to answer outside either JSON envelope (e.g. logout_session) — classify() is never reached for it in practice, see that endpoint's own comment
     extra_headers: tuple[tuple[str, str], ...]  # NAME/VALUE pairs sent verbatim, beyond the always-sent baseline (User-Agent, Accept-Language, Cookie)
     family_b_shape: FamilyBShape | None  # required (non-None) iff family == "B" — enforced below, not merely documented
     throttle_gated: bool  # whether this route passes through enforce_throttle's judgment gate (tools/helpers.py's guarded_api/guarded_sequence) — every row must answer this explicitly; the sole False today is logout_session (see ENDPOINTS below for why it qualifies for the exemption)
@@ -243,6 +271,16 @@ class Endpoint:
             )
         if self.method not in _ALLOWED_METHODS:
             raise ValueError(f"Endpoint {self.key!r}: method must be one of {sorted(_ALLOWED_METHODS)}, got {self.method!r}")
+        if self.body_encoding is not None and self.body_encoding not in _BODY_ENCODINGS:
+            raise ValueError(
+                f"Endpoint {self.key!r}: body_encoding must be one of {sorted(_BODY_ENCODINGS)} or None, got {self.body_encoding!r}"
+            )
+        if (self.method in BODY_METHODS) != (self.body_encoding is not None):
+            raise ValueError(
+                f"Endpoint {self.key!r}: a {self.method} endpoint "
+                + ("must declare body_encoding" if self.method in BODY_METHODS else "must not declare body_encoding")
+                + f", got {self.body_encoding!r}"
+            )
         if self.family not in _ALLOWED_FAMILIES:
             raise ValueError(f"Endpoint {self.key!r}: family must be one of {sorted(_ALLOWED_FAMILIES)}, got {self.family!r}")
         if self.family == "B" and self.family_b_shape is None:
@@ -299,6 +337,7 @@ ENDPOINTS: dict[str, Endpoint] = {
         host="vip",
         path="/api/search/searchResult",
         method="GET",
+        body_encoding=None,
         family="A",
         extra_headers=(("Referer", REFERER_SITE_ROOT),),
         family_b_shape=None,
@@ -309,6 +348,7 @@ ENDPOINTS: dict[str, Endpoint] = {
         host="vip",
         path="/api/recommend/resumeListAll",
         method="GET",
+        body_encoding=None,
         family="A",
         extra_headers=(("Referer", REFERER_SITE_ROOT),),
         family_b_shape=None,
@@ -319,6 +359,7 @@ ENDPOINTS: dict[str, Endpoint] = {
         host="vip",
         path="/api/match/matchResult",
         method="GET",
+        body_encoding=None,
         family="A",
         extra_headers=(("Referer", REFERER_SITE_ROOT),),
         family_b_shape=None,
@@ -329,9 +370,10 @@ ENDPOINTS: dict[str, Endpoint] = {
         host="auth",
         path="/vipapi/resume/search/{idno}",
         method="GET",
+        body_encoding=None,
         family="B",
         extra_headers=(),
-        family_b_shape=FamilyBShape(is_list=False, inner_key="resume", sibling_keys=()),
+        family_b_shape=FamilyBShape(data_kind="object", inner_key="resume", sibling_keys=()),
         throttle_gated=True,
     ),
     "list_jobs": Endpoint(
@@ -339,9 +381,10 @@ ENDPOINTS: dict[str, Endpoint] = {
         host="auth",
         path="/job-api/jobs/apply",
         method="GET",
+        body_encoding=None,
         family="B",
         extra_headers=(),
-        family_b_shape=FamilyBShape(is_list=True, inner_key=None, sibling_keys=()),
+        family_b_shape=FamilyBShape(data_kind="list", inner_key=None, sibling_keys=()),
         throttle_gated=True,
     ),
     # ── Applicant and job reads (§8.28–§8.30). extra_headers=() is "not
@@ -353,6 +396,7 @@ ENDPOINTS: dict[str, Endpoint] = {
         host="auth",
         path="/api/apply/applyDetail",
         method="GET",
+        body_encoding=None,
         family="A",
         extra_headers=(),
         family_b_shape=None,
@@ -363,9 +407,10 @@ ENDPOINTS: dict[str, Endpoint] = {
         host="auth",
         path="/vipapi/search/match-number",
         method="GET",
+        body_encoding=None,
         family="B",
         extra_headers=(),
-        family_b_shape=FamilyBShape(is_list=False, inner_key=None, sibling_keys=()),
+        family_b_shape=FamilyBShape(data_kind="object", inner_key=None, sibling_keys=()),
         throttle_gated=True,
     ),
     "list_refreshable_jobs": Endpoint(
@@ -373,9 +418,10 @@ ENDPOINTS: dict[str, Endpoint] = {
         host="auth",
         path="/vipapi/job/over-seven-day-job",
         method="GET",
+        body_encoding=None,
         family="B",
         extra_headers=(),
-        family_b_shape=FamilyBShape(is_list=False, inner_key=None, sibling_keys=()),
+        family_b_shape=FamilyBShape(data_kind="object", inner_key=None, sibling_keys=()),
         throttle_gated=True,
     ),
     # The write side of the same path: refresh_jobs. The only evidence is
@@ -390,9 +436,10 @@ ENDPOINTS: dict[str, Endpoint] = {
         host="auth",
         path="/vipapi/job/over-seven-day-job",
         method="PUT",
+        body_encoding="json",
         family="B",
         extra_headers=(),
-        family_b_shape=FamilyBShape(is_list=False, inner_key=None, sibling_keys=()),
+        family_b_shape=FamilyBShape(data_kind="object", inner_key=None, sibling_keys=()),
         throttle_gated=True,
     ),
     # Measured (docs/104-site-facts.md §8.31): the old envelope
@@ -405,6 +452,7 @@ ENDPOINTS: dict[str, Endpoint] = {
         host="auth",
         path="/api/job/jobList",
         method="GET",
+        body_encoding=None,
         family="A",
         extra_headers=(),
         family_b_shape=None,
@@ -420,8 +468,133 @@ ENDPOINTS: dict[str, Endpoint] = {
         host="auth",
         path="/api/job/jobUpdate",
         method="GET",
+        body_encoding=None,
         family="A",
         extra_headers=(),
+        family_b_shape=None,
+        throttle_gated=True,
+    ),
+    # ── Job open / close / delete. The writes and their pre-checks have ONLY
+    # front-end-code evidence — no request body or success response of a
+    # write has been measured; the two reads in front of the delete
+    # (job_more, company_identity) are measured [M §8.32]. Offsets are UTF-8
+    # character indexes into 104's bundles:
+    # AJL = all-job-list.abf62d9f.js, CC = chunk-common.c6c97b14.js,
+    # ENT = vip25Entry.b29263c7.js, JE = job-editor.bc97b750.js.
+    # extra_headers=() on the family-B routes is "not measured", as on the
+    # other auth-host routes. Whether a write took effect is read back from
+    # the (measured) job list, never from these responses.
+    #
+    # close_job_precheck: the POST the front end sends before every close
+    # from the job list (`closeCheck`, CC@656674, path CC@656783; callers
+    # AJL@409943, CC@834032, JE@325369). It is NOT the GET
+    # /job-api/jobs/close/pre-check measured in §8.28 (`preClose`,
+    # AJL@215801): no close flow calls that one and its response has no
+    # `hunterJobPoint`. Whether this POST has side effects is unmeasured.
+    "close_job_precheck": Endpoint(
+        key="close_job_precheck",
+        host="auth",
+        path="/vip-job/close/pre-check",
+        method="POST",
+        body_encoding="json",
+        family="B",
+        extra_headers=(),
+        family_b_shape=FamilyBShape(data_kind="object", inner_key=None, sibling_keys=()),
+        throttle_gated=True,
+    ),
+    # close_jobs: CC@649817 (`close`), AJL@407434. data_kind="any": the
+    # success body is unmeasured and the tool reads only `metadata`, so a
+    # guessed `data` shape must not be able to discard it. A close error
+    # arrives as {"error": {"code": <int>, "message": ...}} on a non-200
+    # status (AJL@408479).
+    "close_jobs": Endpoint(
+        key="close_jobs",
+        host="auth",
+        path="/job-api/jobs/close",
+        method="POST",
+        body_encoding="json",
+        family="B",
+        extra_headers=(),
+        family_b_shape=FamilyBShape(data_kind="any", inner_key=None, sibling_keys=()),
+        throttle_gated=True,
+    ),
+    # job_refund_points: the query the front end runs before opening
+    # (AJL@36710 prefix, AJL@37266 host, AJL@39051 `getRefundPoints`, `data`
+    # read at AJL@360952). The job numbers travel as repeated `jobNos[]`
+    # parameters — the shared axios wrapper hands `qs` to axios `params`
+    # unserialised (CC@520765), whose default is that bracketed form.
+    "job_refund_points": Endpoint(
+        key="job_refund_points",
+        host="auth",
+        path="/commodity-job-sort/refund-points/jobs",
+        method="GET",
+        body_encoding=None,
+        family="B",
+        extra_headers=(),
+        family_b_shape=FamilyBShape(data_kind="list", inner_key=None, sibling_keys=()),
+        throttle_gated=True,
+    ),
+    # open_jobs: a form POST answering the old envelope (AJL@405100). The
+    # Referer and X-Requested-With headers are NOT a measured requirement:
+    # the tool reads ACCESS_DENIED on this route as "no permission", and on
+    # the vip routes that status was measured to mean "Referer missing"
+    # (§6b.3h), so the headers the front end sends are sent here to keep the
+    # two readings from competing.
+    "open_jobs": Endpoint(
+        key="open_jobs",
+        host="auth",
+        path="/api/job/openJob",
+        method="POST",
+        body_encoding="form",
+        family="envelope",
+        extra_headers=(("Referer", REFERER_SITE_ROOT), ("X-Requested-With", "XMLHttpRequest")),
+        family_b_shape=None,
+        throttle_gated=True,
+    ),
+    # job_more: the "more" menu's permission read (route AJL@68260, wrapper
+    # AJL@185029, `result.permit` read at AJL@220823). [M docs/104-site-facts.md §8.32,
+    # 2026-11-13, read-only probe]: without a Referer, HTTP 200, old envelope,
+    # status SUCCESS; `result` is {permit, render}; `permit.job__6` is
+    # {result: bool, message: str}; `render` has isNewModel (bool) and
+    # poNum (int). Family A because the tool reads `result.permit` only on
+    # SUCCESS and treats everything else as an error. No extra headers,
+    # like the measured job_list.
+    "job_more": Endpoint(
+        key="job_more",
+        host="auth",
+        path="/api/job/more",
+        method="GET",
+        body_encoding=None,
+        family="A",
+        extra_headers=(),
+        family_b_shape=None,
+        throttle_gated=True,
+    ),
+    # company_identity: the account-role flags (CC@1589500, `identity`; the
+    # tool reads `data.isAtsp`). [M docs/104-site-facts.md §8.32, 2026-11-13]:
+    # HTTP 200, `{data, metadata}`; `data` is an object of boolean flags
+    # that includes `isAtsp` (bool).
+    "company_identity": Endpoint(
+        key="company_identity",
+        host="auth",
+        path="/vipapi/company/profile/identity",
+        method="GET",
+        body_encoding=None,
+        family="B",
+        extra_headers=(),
+        family_b_shape=FamilyBShape(data_kind="object", inner_key=None, sibling_keys=()),
+        throttle_gated=True,
+    ),
+    # delete_job: a form POST answering the old envelope (AJL@411700). Same
+    # header reasoning as open_jobs — not a measured requirement.
+    "delete_job": Endpoint(
+        key="delete_job",
+        host="auth",
+        path="/api/job/jobDelete",
+        method="POST",
+        body_encoding="form",
+        family="envelope",
+        extra_headers=(("Referer", REFERER_SITE_ROOT), ("X-Requested-With", "XMLHttpRequest")),
         family_b_shape=None,
         throttle_gated=True,
     ),
@@ -440,9 +613,10 @@ ENDPOINTS: dict[str, Endpoint] = {
         host="auth",
         path="/bc-comm/message/all-stream",
         method="POST",
+        body_encoding="json",
         family="B",
         extra_headers=(),
-        family_b_shape=FamilyBShape(is_list=True, inner_key=None, sibling_keys=()),
+        family_b_shape=FamilyBShape(data_kind="list", inner_key=None, sibling_keys=()),
         throttle_gated=True,
     ),
     "get_conversation": Endpoint(
@@ -450,9 +624,10 @@ ENDPOINTS: dict[str, Endpoint] = {
         host="auth",
         path="/bc-comm/message/{job_no}-{p_id}",
         method="GET",
+        body_encoding=None,
         family="B",
         extra_headers=(),
-        family_b_shape=FamilyBShape(is_list=True, inner_key=None, sibling_keys=()),
+        family_b_shape=FamilyBShape(data_kind="list", inner_key=None, sibling_keys=()),
         throttle_gated=True,
     ),
     # family_b_shape is [INF], not [M]: only 104's own front-end reading
@@ -468,9 +643,10 @@ ENDPOINTS: dict[str, Endpoint] = {
         host="auth",
         path="/bc-comm/message/{job_no}-{p_id}",
         method="POST",
+        body_encoding="json",
         family="B",
         extra_headers=(),
-        family_b_shape=FamilyBShape(is_list=True, inner_key=None, sibling_keys=("failed",)),
+        family_b_shape=FamilyBShape(data_kind="list", inner_key=None, sibling_keys=("failed",)),
         throttle_gated=True,
     ),
     # ── Outbound contact (§8.13-§8.19): four routes newly declared for
@@ -489,9 +665,10 @@ ENDPOINTS: dict[str, Endpoint] = {
         host="auth",
         path="/bc-comm/template",
         method="GET",
+        body_encoding=None,
         family="B",
         extra_headers=(),
-        family_b_shape=FamilyBShape(is_list=True, inner_key=None, sibling_keys=()),
+        family_b_shape=FamilyBShape(data_kind="list", inner_key=None, sibling_keys=()),
         throttle_gated=True,
     ),
     # resolve_candidate_idno: the reverse bridge the event sends' (send_event
@@ -513,9 +690,10 @@ ENDPOINTS: dict[str, Endpoint] = {
         host="auth",
         path="/bc-comm/message/resume/{job_no}-{p_id}",
         method="GET",
+        body_encoding=None,
         family="B",
         extra_headers=(),
-        family_b_shape=FamilyBShape(is_list=False, inner_key="idNo", sibling_keys=()),
+        family_b_shape=FamilyBShape(data_kind="object", inner_key="idNo", sibling_keys=()),
         throttle_gated=True,
     ),
     # event_last_info: the event sends' second sub-request, taken only for
@@ -530,9 +708,10 @@ ENDPOINTS: dict[str, Endpoint] = {
         host="auth",
         path="/bc-comm/event/last-info",
         method="GET",
+        body_encoding=None,
         family="B",
         extra_headers=(),
-        family_b_shape=FamilyBShape(is_list=False, inner_key=None, sibling_keys=()),
+        family_b_shape=FamilyBShape(data_kind="object", inner_key=None, sibling_keys=()),
         throttle_gated=True,
     ),
     # send_willingness_event: the inquiry event's third and only send-bearing
@@ -548,9 +727,10 @@ ENDPOINTS: dict[str, Endpoint] = {
         host="auth",
         path="/bc-comm/event/willingness",
         method="POST",
+        body_encoding="json",
         family="B",
         extra_headers=(),
-        family_b_shape=FamilyBShape(is_list=True, inner_key=None, sibling_keys=("failed",)),
+        family_b_shape=FamilyBShape(data_kind="list", inner_key=None, sibling_keys=("failed",)),
         throttle_gated=True,
     ),
     # The other four structured recruiting events share the willingness
@@ -564,9 +744,10 @@ ENDPOINTS: dict[str, Endpoint] = {
         host="auth",
         path="/bc-comm/event/interview",
         method="POST",
+        body_encoding="json",
         family="B",
         extra_headers=(),
-        family_b_shape=FamilyBShape(is_list=True, inner_key=None, sibling_keys=("failed",)),
+        family_b_shape=FamilyBShape(data_kind="list", inner_key=None, sibling_keys=("failed",)),
         throttle_gated=True,
     ),
     "send_thank_event": Endpoint(
@@ -574,9 +755,10 @@ ENDPOINTS: dict[str, Endpoint] = {
         host="auth",
         path="/bc-comm/event/thank",
         method="POST",
+        body_encoding="json",
         family="B",
         extra_headers=(),
-        family_b_shape=FamilyBShape(is_list=True, inner_key=None, sibling_keys=("failed",)),
+        family_b_shape=FamilyBShape(data_kind="list", inner_key=None, sibling_keys=("failed",)),
         throttle_gated=True,
     ),
     "send_inquire_event": Endpoint(
@@ -584,9 +766,10 @@ ENDPOINTS: dict[str, Endpoint] = {
         host="auth",
         path="/bc-comm/event/inquire",
         method="POST",
+        body_encoding="json",
         family="B",
         extra_headers=(),
-        family_b_shape=FamilyBShape(is_list=True, inner_key=None, sibling_keys=("failed",)),
+        family_b_shape=FamilyBShape(data_kind="list", inner_key=None, sibling_keys=("failed",)),
         throttle_gated=True,
     ),
     "send_exam_event": Endpoint(
@@ -594,9 +777,10 @@ ENDPOINTS: dict[str, Endpoint] = {
         host="auth",
         path="/bc-comm/event/exam",
         method="POST",
+        body_encoding="json",
         family="B",
         extra_headers=(),
-        family_b_shape=FamilyBShape(is_list=True, inner_key=None, sibling_keys=("failed",)),
+        family_b_shape=FamilyBShape(data_kind="list", inner_key=None, sibling_keys=("failed",)),
         throttle_gated=True,
     ),
     # ── Restore verification ─────────────────────────────────────────────
@@ -618,6 +802,7 @@ ENDPOINTS: dict[str, Endpoint] = {
         host="vip",
         path="/api/search/getSearchRsNum",
         method="GET",
+        body_encoding=None,
         family="A",
         extra_headers=(("Referer", REFERER_SITE_ROOT),),
         family_b_shape=None,
@@ -650,6 +835,7 @@ ENDPOINTS: dict[str, Endpoint] = {
         host="vip",
         path="/oidc/logout",
         method="GET",
+        body_encoding=None,
         family="opaque",
         extra_headers=(),
         family_b_shape=None,
@@ -981,12 +1167,24 @@ class RawResponse:
     parsed_json: object | None  # dict | list | None
 
 
+def _body_kwargs(endpoint: Endpoint, body: dict | Sequence[tuple[str, str]] | None) -> dict:
+    """Pure. The aiohttp keyword that carries `body` the way
+    `endpoint.body_encoding` says: `json=` or `data=`. Only called for a
+    BODY_METHODS endpoint, whose construction already guarantees one of the
+    two encodings; anything else is a bug here, not a case to default."""
+    if endpoint.body_encoding == "json":
+        return {"json": body}
+    if endpoint.body_encoding == "form":
+        return {"data": body}
+    raise ValueError(f"Endpoint {endpoint.key!r}: no body encoding to send a body with, got {endpoint.body_encoding!r}")
+
+
 async def fetch(
     endpoint: Endpoint,
     *,
     cookie_header: str,
     params: Sequence[tuple[str, str]] | None = None,
-    body: dict | None = None,
+    body: dict | Sequence[tuple[str, str]] | None = None,
 ) -> RawResponse:
     """Issue exactly one HTTP request for `endpoint` — GET, POST or PUT per
     `endpoint.method`. Redirects are NOT followed: following one into an
@@ -997,8 +1195,10 @@ async def fetch(
     auth-host check does not belong in this module) is surfaced via
     RawResponse.location instead.
 
-    `body` is only meaningful for a BODY_METHODS endpoint — the method/body
-    mismatch check (a body handed to a GET endpoint, or a POST/PUT endpoint
+    `body` is only meaningful for a BODY_METHODS endpoint, and its type follows
+    `endpoint.body_encoding`: a dict for "json", a sequence of (key, value)
+    string pairs for "form" (a sequence, not a dict, so a repeated key and a
+    bracketed key both survive). The method/body mismatch check (a body handed to a GET endpoint, or a POST/PUT endpoint
     called with body=None) lives in tools/helpers.py's `_issue_one` (the
     per-request unit shared by guarded_api and guarded_sequence), ahead
     of the `try` that wraps this call, not here: it is a call-time check
@@ -1007,11 +1207,12 @@ async def fetch(
     `_issue_one`'s broad `except Exception` around fetch(), which would
     report a caller bug as a transient network failure.
 
-    `Content-Type: application/json` is never declared in
-    `endpoint.extra_headers` — aiohttp sets it as a consequence of
-    `json=body` on a POST or PUT, so declaring it would both duplicate a fact the
-    method already determines and imply a measurement (of what the SERVER
-    requires) that was never taken.
+    `Content-Type` is never declared in `endpoint.extra_headers` — aiohttp
+    sets `application/json` as a consequence of `json=body` and
+    `application/x-www-form-urlencoded` as a consequence of `data=body`, so
+    declaring it would both duplicate a fact `body_encoding` already
+    determines and imply a measurement (of what the SERVER requires) that
+    was never taken.
     """
     url = build_url(endpoint, params)
     headers = {
@@ -1025,9 +1226,9 @@ async def fetch(
     timeout = aiohttp.ClientTimeout(total=FETCH_TIMEOUT_SECONDS)
     async with aiohttp.ClientSession(timeout=timeout) as session:
         if endpoint.method == "POST":
-            request_cm = session.post(url, headers=headers, json=body, allow_redirects=False)
+            request_cm = session.post(url, headers=headers, allow_redirects=False, **_body_kwargs(endpoint, body))
         elif endpoint.method == "PUT":
-            request_cm = session.put(url, headers=headers, json=body, allow_redirects=False)
+            request_cm = session.put(url, headers=headers, allow_redirects=False, **_body_kwargs(endpoint, body))
         else:
             request_cm = session.get(url, headers=headers, allow_redirects=False)
         async with request_cm as response:
@@ -1266,6 +1467,8 @@ def classify(endpoint: Endpoint, raw: RawResponse) -> Verdict:
 
     if endpoint.family == "A":
         return _classify_family_a(raw)
+    if endpoint.family == "envelope":
+        return _classify_envelope(raw)
     if endpoint.family == "opaque":
         # In practice this branch is never reached at all: `_issue_one`'s
         # auth-host redirect check intercepts logout_session's 302 before
@@ -1331,12 +1534,57 @@ def _classify_family_a(raw: RawResponse) -> Verdict:
     return Verdict(False, kind="unrecognised_status", detail=f"{status}: {message}".strip(": "))
 
 
+def _classify_envelope(raw: RawResponse) -> Verdict:
+    """Pure. The "envelope" family: the older {status, message, result, url,
+    data} shape handed to the tool whole.
+
+    This classifier does not judge success or refusal — an HTTP 200 whose
+    `status` is "ACCESS_DENIED" or whose `message` names a refusal is still
+    `ok`, and the tool reads `status`/`message`/`code`/`result` itself. It
+    only separates "not a JSON response from 104" and "the session cannot be
+    used" from everything else, which is why the payload is the WHOLE object
+    with no key picked. Family A would keep only `result`, and only when
+    `status` is "SUCCESS"; loosening that would take the "anything but
+    SUCCESS is an error" protection away from every read route.
+    """
+    if raw.status == 401:
+        return Verdict(False, kind="expired")
+    if raw.status == 404:
+        if isinstance(raw.parsed_json, dict):
+            return Verdict(False, kind="not_found", detail=_envelope_error_detail(raw.parsed_json))
+        return Verdict(False, kind="wrong_host", detail=raw.content_type or "")
+    if raw.status == 400:
+        return Verdict(False, kind="validation", detail=_envelope_error_detail(raw.parsed_json))
+    if raw.status != 200:
+        detail = _envelope_error_detail(raw.parsed_json)
+        return Verdict(False, kind="unrecognised_status", detail=f"HTTP {raw.status}: {detail}".rstrip(": "))
+
+    if raw.parsed_json is None:
+        return Verdict(False, kind="non_json", detail=raw.content_type or "")
+    if not isinstance(raw.parsed_json, dict):
+        return Verdict(False, kind="malformed", detail="body is not an object")
+    return Verdict(True, payload=raw.parsed_json)
+
+
+def _envelope_error_detail(parsed_json: object) -> str:
+    """Pure. 104's own words from an "envelope"-family error body: `message`,
+    then a string `error`, else empty."""
+    if not isinstance(parsed_json, dict):
+        return ""
+    message = parsed_json.get("message")
+    if isinstance(message, str) and message:
+        return message
+    error = parsed_json.get("error")
+    return error if isinstance(error, str) else ""
+
+
 def _family_b_error_detail(parsed_json: object) -> str:
     """Pure. Recover 104's own per-field explanation from a family-B error
     envelope, never paraphrasing it.
 
-    Tries `error`, then `message` (the base line — a family-B envelope
-    carries at most one of these), then appends `detail`'s
+    Tries `error` (a string, or an object whose own `message` is read — the
+    shape the job-close route answers with), then `message` (the base line —
+    a family-B envelope carries at most one of these), then appends `detail`'s
     `{field: [msg, ...]}` flattened into `field: msg; field: msg` — the
     third error envelope §6b.9-4 measured (`{"code": "00005", "message":
     "帶入內容驗證失敗", "detail": {"content": [...], "file": [...]}}`) has no
@@ -1348,7 +1596,7 @@ def _family_b_error_detail(parsed_json: object) -> str:
     """
     if not isinstance(parsed_json, dict):
         return ""
-    base = str(parsed_json.get("error") or parsed_json.get("message") or "")
+    base = _family_b_error_text(parsed_json) or str(parsed_json.get("message") or "")
     detail = parsed_json.get("detail")
     if isinstance(detail, dict):
         parts = []
@@ -1362,6 +1610,17 @@ def _family_b_error_detail(parsed_json: object) -> str:
         if detail_text:
             return f"{base}（{detail_text}）" if base else detail_text
     return base
+
+
+def _family_b_error_text(parsed_json: dict) -> str:
+    """Pure. The text of a family-B body's `error`: the string itself, or
+    the `message` of an `error` object, else empty. `str()` of an object
+    would print Python's dict repr into a message meant for a person."""
+    error = parsed_json.get("error")
+    if isinstance(error, dict):
+        message = error.get("message")
+        return message if isinstance(message, str) else ""
+    return str(error) if error else ""
 
 
 def _family_b_payload(shape: FamilyBShape, body: dict, data: object) -> dict:
@@ -1405,7 +1664,7 @@ def _classify_family_b(endpoint: Endpoint, raw: RawResponse) -> Verdict:
         return Verdict(False, kind="validation", detail=_family_b_error_detail(raw.parsed_json))
     if raw.status != 200:
         if isinstance(raw.parsed_json, dict):
-            detail = str(raw.parsed_json.get("error") or "")
+            detail = _family_b_error_text(raw.parsed_json)
         else:
             detail = ""
         return Verdict(False, kind="unrecognised_status", detail=f"HTTP {raw.status}: {detail}".rstrip(": "))
@@ -1426,7 +1685,15 @@ def _classify_family_b(endpoint: Endpoint, raw: RawResponse) -> Verdict:
     # refuses to construct a family-B endpoint without a family_b_shape —
     # so there is no per-call default to fall back on here.
     shape = endpoint.family_b_shape
-    if shape.is_list:
+    if shape.data_kind == "any":
+        # Only that `data` exists (checked above). `metadata` and the
+        # sibling keys still ride along in the payload.
+        return Verdict(True, payload=_family_b_payload(shape, body, data))
+    if shape.data_kind == "bool":
+        if not isinstance(data, bool):
+            return Verdict(False, kind="malformed", detail="data is not a boolean")
+        return Verdict(True, payload=_family_b_payload(shape, body, data))
+    if shape.data_kind == "list":
         if not isinstance(data, list):
             return Verdict(False, kind="malformed", detail="data is not a list")
         # `data` AND `metadata`, not `data` alone — `metadata` (row total,

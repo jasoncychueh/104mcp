@@ -249,7 +249,7 @@ def _build_inbox_response(envelope: object) -> dict:
     {data, metadata} envelope. A missing `metadata` is an error (both messaging
     routes are recorded carrying `metadata` with all four keys [M §6b.7, §6b.8-5],
     so its absence is a genuine departure); `data` missing or not a list is already
-    refused upstream by family B's `is_list` floor, so it is checked again here only
+    refused upstream by family B's `data_kind="list"` floor, so it is checked again here only
     defensively, matching tools/search.py's own `_build_job_list_response`
     precedent."""
     if not isinstance(envelope, dict) or not isinstance(envelope.get("data"), list):
@@ -517,7 +517,7 @@ async def _enforce_daily_cap(app, info: SessionInfo) -> None:
 def _extract_data0(payload: object) -> dict | None:
     """Pure. `payload["data"][0]` when it exists and is itself a mapping,
     otherwise `None` — used by `_build_success_send_result` below. Both
-    send-bearing endpoints declare `is_list=True`, so `classify()` has already
+    send-bearing endpoints declare `data_kind="list"`, so `classify()` has already
     refused anything where `data` is not a list; this only has to handle an empty
     list or a non-mapping first element."""
     if not isinstance(payload, dict):
