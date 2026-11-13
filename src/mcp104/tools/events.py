@@ -29,7 +29,7 @@ from mcp.server.fastmcp import Context, FastMCP
 
 import mcp104.tools.discovery as discovery_mod
 from mcp104.browser.api_client import ENDPOINTS
-from mcp104.db.database import ID_SOURCE_MESSAGE
+from mcp104.db.database import ID_SOURCE_MESSAGE, LINK_SOURCE_EVENT_BRIDGE
 from mcp104.browser.session import SessionInfo
 from mcp104.tools.helpers import GuardAbort, ToolAbort, guarded_sequence, require_login
 from mcp104.tools.messaging import (
@@ -42,6 +42,7 @@ from mcp104.tools.messaging import (
     _looks_like_resume_id,
     _write_status,
 )
+from mcp104.tools.status import id_link_pairs, remember_id_links
 
 log = logging.getLogger("104-mcp.events")
 
@@ -123,6 +124,13 @@ async def send_event(
                 pick_data=("idNo",), pick_metadata=(),
             )
             id_no = idno_payload["data"]["idNo"]
+            # 104 itself just converted this pId to this idNo; remember it whether or not the
+            # event is sent afterwards.
+            await remember_id_links(
+                app, info.account_label,
+                id_link_pairs([{"id_no": id_no, "p_id": candidate_id}], id_no_key="id_no", p_id_key="p_id"),
+                LINK_SOURCE_EVENT_BRIDGE,
+            )
 
             last_info_payload = await request(
                 ENDPOINTS["event_last_info"],

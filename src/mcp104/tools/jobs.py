@@ -26,6 +26,7 @@ from mcp.server.fastmcp import Context, FastMCP
 
 import mcp104.tools.discovery as discovery_mod
 from mcp104.browser.api_client import ENDPOINTS
+from mcp104.db.database import LINK_SOURCE_APPLICANT_ROW
 from mcp104.tools.helpers import (
     GuardAbort,
     MalformedResponseError,
@@ -39,6 +40,7 @@ from mcp104.tools.helpers import (
 )
 from mcp104.tools.messaging import _send_verdict
 from mcp104.tools.search import html_to_text
+from mcp104.tools.status import id_link_pairs, remember_id_links
 
 log = logging.getLogger("104-mcp.jobs")
 
@@ -702,10 +704,16 @@ def register_job_tools(mcp: FastMCP) -> None:
             ("end_date", date_range[1]),
         ]
         try:
-            async with guarded_api(ctx, ENDPOINTS["list_applicants"], params=params) as (result, _info):
-                return build_applicant_page(
+            async with guarded_api(ctx, ENDPOINTS["list_applicants"], params=params) as (result, info):
+                response = build_applicant_page(
                     result, requested_jobno=jobno, requested_page=page, date_range=date_range
                 )
+                await remember_id_links(
+                    ctx.request_context.lifespan_context, info.account_label,
+                    id_link_pairs(response["results"], id_no_key="candidate_id", p_id_key="p_id"),
+                    LINK_SOURCE_APPLICANT_ROW,
+                )
+                return response
         except GuardAbort as e:
             return e.payload
         except MalformedResponseError as exc:

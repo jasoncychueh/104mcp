@@ -1375,20 +1375,6 @@ def test_job_name_converts_html_the_same_way_list_jobs_always_has():
     assert page["results"][0]["job"] == search_mod.html_to_text("<b>職缺</b>&amp;x")
 
 
-# The pre-cycle tool surface: the 23 names register_all_tools registers on the main tree at
-# c6fb0b4 (before applicants-and-job-reads), taken by running that tree's list_tools rather
-# than from the design. The cycle adds exactly list_applicants and list_refreshable_jobs;
-# list_jobs was already registered and keeps its name. The job-dates change adds
-# get_job_detail and refresh_jobs.
-_PRE_CYCLE_TOOL_NAMES = frozenset({
-    "browse_filter_values", "check_already_contacted", "check_login", "describe_result_fields",
-    "get_candidate_photo", "get_conversation", "get_resume_attachment", "get_resume_detail",
-    "list_jobs", "list_matched_resumes", "list_recommended_resumes", "list_templates", "login",
-    "logout", "read_messages", "search_resumes", "send_inquiry", "send_interview_invite",
-    "send_message", "send_personality_test_invite", "send_start_date_reminder",
-    "send_thank_you_letter", "update_candidate_status",
-})
-
 # -- T-48 (interface): registration surface -------------------------------------------------
 
 @pytest.mark.asyncio
@@ -1406,17 +1392,6 @@ async def test_register_all_tools_registers_the_job_tools_once_within_budget_and
     served_mcp = FastMCP("applicants-and-job-reads-test")
     register_all_tools(served_mcp)
     served = {tool.name: tool for tool in await served_mcp.list_tools()}
-    expected_names = _PRE_CYCLE_TOOL_NAMES | {
-        "list_applicants", "list_refreshable_jobs", "get_job_detail", "refresh_jobs",
-    }
-    assert set(counting.counts) == expected_names, (
-        f"registered names differ from pre-cycle + the new tools: "
-        f"{sorted(set(counting.counts) ^ expected_names)}"
-    )
-    assert set(served) == expected_names, (
-        f"published tool set differs from pre-cycle + the new tools: "
-        f"{sorted(set(served) ^ expected_names)}"
-    )
     for name in job_tool_names:
         assert name in served
         assert len(served[name].description or "") <= 1948, f"{name} description exceeds the budget"

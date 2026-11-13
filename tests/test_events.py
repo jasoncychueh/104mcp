@@ -453,12 +453,12 @@ async def test_T23_send_inquiry_resolve_missing_idno_is_malformed_before_last_in
 
 @pytest.mark.asyncio
 async def test_send_inquiry_exception_after_send_attempted_never_logs_body_or_cookie(tmp_path, monkeypatch, caplog):
-    """T-81 (R7.3) — send tool catch-all: a non-GuardAbort exception escaping
-    AFTER send_attempted is set (the third sub-request -- the send itself --
-    raises once _before_third's last statement has already run) is caught by
-    send_inquiry's own except-Exception block and reaches _conclude_send's
-    log.error(..., exc_info=True). That log call must never leak the letter
-    body, the emailCC value, the resolved idNo, or a cookie value."""
+    """T-81 (R7.3) — send tool, exception on the third sub-request (the send
+    itself), raised after _before_third has run. _issue_one catches it, logs an
+    ERROR under the 104-mcp logger tree, and turns it into an abort. That log
+    record must never leak the letter body, the emailCC value, the resolved
+    idNo, or a cookie value. At least one ERROR record from that tree must
+    exist, so the leak check cannot pass on empty text."""
     ctx, info, db = await _new_session(tmp_path)
     info.cookies = [{"name": "its", "value": "SYN-COOKIE-VALUE-4d2e", "domain": ".104.com.tw"}]
     _install_seq_fetch(monkeypatch, [
@@ -475,7 +475,16 @@ async def test_send_inquiry_exception_after_send_attempted_never_logs_body_or_co
 
     assert result["sent"] == "unconfirmed"
 
-    log_text = caplog.text
+    # Only the project's own records. aiosqlite logs its bound parameters at DEBUG, and the
+    # event bridge's idNo is persisted to SQLite, so its records are outside this guard.
+    project_records = [
+        record for record in caplog.records
+        if record.name == "104-mcp" or record.name.startswith("104-mcp.")
+    ]
+    assert any(
+        record.levelno == logging.ERROR for record in project_records
+    ), "the send failure must be logged as an ERROR under the 104-mcp logger tree"
+    log_text = "\n".join(caplog.handler.format(record) for record in project_records)
     for forbidden in (
         "SYN-LETTER-body-9f1c", "cc-a@example.invalid", "SYN-COOKIE-VALUE-4d2e",
         _RESOLVE_IDNO_OK.parsed_json["data"]["idNo"],

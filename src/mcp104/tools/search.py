@@ -28,7 +28,11 @@ import mcp104.tools.discovery as discovery_mod
 import mcp104.tools.drop_detection as drop_detection_mod
 import mcp104.tools.filters as filters_mod
 from mcp104.browser.api_client import ENDPOINTS
-from mcp104.db.database import ID_SOURCE_RESUME
+from mcp104.db.database import (
+    ID_SOURCE_RESUME,
+    LINK_SOURCE_RESUME_DETAIL,
+    LINK_SOURCE_RESUME_ROW,
+)
 from mcp104.tools.helpers import (
     GuardAbort,
     MalformedResponseError,
@@ -38,6 +42,7 @@ from mcp104.tools.helpers import (
     guarded_api,
     require_login,
 )
+from mcp104.tools.status import id_link_pairs, remember_id_links
 
 log = logging.getLogger("104-mcp.search")
 
@@ -743,6 +748,17 @@ def _register_tool(mcp: FastMCP, fn, doc: str) -> None:
     mcp.tool()(require_login(fn))
 
 
+async def _remember_row_links(ctx: Context, info, rows: list[dict]) -> None:
+    """Remember the (candidate_id, p_id) pairs of a résumé list page. Taken from the built
+    response rather than 104's raw envelope: those two values are what the Agent will later
+    call tools with, so the recorded pair is always the pair it holds."""
+    await remember_id_links(
+        ctx.request_context.lifespan_context, info.account_label,
+        id_link_pairs(rows, id_no_key="candidate_id", p_id_key="p_id"),
+        LINK_SOURCE_RESUME_ROW,
+    )
+
+
 def register_search_tools(mcp: FastMCP):
 
     async def search_resumes(
@@ -772,8 +788,10 @@ def register_search_tools(mcp: FastMCP):
         submitted = [("kws", keyword), *encoded_filters, ("page", str(page))]
 
         try:
-            async with guarded_api(ctx, ENDPOINTS["search_resumes"], params=submitted) as (result, _info):
-                return _build_search_response(result, submitted, caller_filters)
+            async with guarded_api(ctx, ENDPOINTS["search_resumes"], params=submitted) as (result, info):
+                response = _build_search_response(result, submitted, caller_filters)
+                await _remember_row_links(ctx, info, response["results"])
+                return response
         except GuardAbort as e:
             return e.payload
         except MalformedResponseError as exc:
@@ -788,8 +806,10 @@ def register_search_tools(mcp: FastMCP):
     async def list_recommended_resumes(jobno: str, ctx: Context, page: int = 1) -> dict:
         params = [("jobno", jobno), ("page", str(page))]
         try:
-            async with guarded_api(ctx, ENDPOINTS["list_recommended_resumes"], params=params) as (result, _info):
-                return _build_recommend_response(result)
+            async with guarded_api(ctx, ENDPOINTS["list_recommended_resumes"], params=params) as (result, info):
+                response = _build_recommend_response(result)
+                await _remember_row_links(ctx, info, response["results"])
+                return response
         except GuardAbort as e:
             return e.payload
         except MalformedResponseError as exc:
@@ -807,8 +827,10 @@ def register_search_tools(mcp: FastMCP):
         if update_date_type is not None:
             params.append(("updateDateType", update_date_type))
         try:
-            async with guarded_api(ctx, ENDPOINTS["list_matched_resumes"], params=params) as (result, _info):
-                return _build_match_response(result, requested_page=page)
+            async with guarded_api(ctx, ENDPOINTS["list_matched_resumes"], params=params) as (result, info):
+                response = _build_match_response(result, requested_page=page)
+                await _remember_row_links(ctx, info, response["results"])
+                return response
         except GuardAbort as e:
             return e.payload
         except MalformedResponseError as exc:
@@ -830,6 +852,13 @@ def register_search_tools(mcp: FastMCP):
                 name_value = envelope["data"]["resume"].get("userName")
                 if name_value:
                     await app.db.upsert_candidate(candidate_id, ID_SOURCE_RESUME, info.account_label, name=name_value)
+                # The pair is taken from the delivered resume, so what is remembered is the
+                # same pair of strings the Agent holds.
+                await remember_id_links(
+                    app, info.account_label,
+                    id_link_pairs([response["resume"]], id_no_key="id_no", p_id_key="p_id"),
+                    LINK_SOURCE_RESUME_DETAIL,
+                )
                 return response
         except GuardAbort as e:
             return e.payload

@@ -127,7 +127,9 @@
 - `list_templates(type_id, page)` — 列出帳號裡存好的罐頭信範本
 
 **候選人狀態（存在本機，與 104 無關）**
-- `check_already_contacted(candidate_id, id_source)` — 查是否已聯繫過
+- `get_candidate_status(candidate_id, id_source)` — 讀回本機對一位候選人記下的紀錄（狀態、名字、時間）；同一個人在履歷 id 與訊息 id 下的紀錄都會一起列出
+- `list_tracked_candidates(status, page)` — 列出已記下狀態的候選人，可依狀態篩選，每頁 50 筆
+- `check_already_contacted(candidate_id, id_source)` — 查是否已聯繫過；讀過這個人的履歷列、履歷詳情或應徵者資料之後，不論拿履歷 id 還是訊息 id 都查得到
 - `update_candidate_status(candidate_id, id_source, status)` — 更新狀態標記
 
 ---

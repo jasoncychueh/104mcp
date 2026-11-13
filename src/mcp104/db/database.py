@@ -1,4 +1,5 @@
 import logging
+from collections.abc import Iterable
 
 import aiosqlite
 from datetime import datetime
@@ -17,6 +18,31 @@ UTC_TZ = ZoneInfo("UTC")
 ID_SOURCE_RESUME = "resume"      # from a search_resumes/get_resume_detail card id
 ID_SOURCE_MESSAGE = "message"    # from messaging's own candidate id (104's pId)
 ID_SOURCE_UNKNOWN = "unknown"    # migrated row predating id_source — provenance genuinely unrecoverable
+
+# Where a candidate_id_links pair was observed. Each is a place 104 itself hands over
+# both of a person's ids on one piece of data, with its own strength of evidence
+# (docs/104-site-facts.md §8.12, §8.14-2, §8.17); the source is stored so one kind of
+# link can be cleared on its own if it is later measured to be unreliable.
+LINK_SOURCE_RESUME_ROW = "resume_row"        # search_resumes / list_recommended_resumes / list_matched_resumes rows
+LINK_SOURCE_APPLICANT_ROW = "applicant_row"  # list_applicants rows
+LINK_SOURCE_RESUME_DETAIL = "resume_detail"  # get_resume_detail's resume
+LINK_SOURCE_EVENT_BRIDGE = "event_bridge"    # the event tools' reverse bridge (pId -> idNo)
+LINK_SOURCES = frozenset({
+    LINK_SOURCE_RESUME_ROW,
+    LINK_SOURCE_APPLICANT_ROW,
+    LINK_SOURCE_RESUME_DETAIL,
+    LINK_SOURCE_EVENT_BRIDGE,
+})
+
+# How find_candidate_records reached a row.
+MATCHED_SAME_ID = "same_id"                          # the id and source the caller gave
+MATCHED_UNKNOWN_SOURCE = "same_id_unknown_source"    # same id string, row predates id_source
+MATCHED_LINK = "linked"                              # reached through a recorded link
+
+_MATCH_ORDER = {MATCHED_SAME_ID: 0, MATCHED_UNKNOWN_SOURCE: 1, MATCHED_LINK: 2}
+
+# Stay well under SQLite's bound-variable limit when a query takes an id list.
+_IN_CHUNK = 500
 
 
 class Database:
@@ -45,8 +71,18 @@ class Database:
                 name            TEXT,
                 status          TEXT,
                 created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+                status_updated_at DATETIME,
                 PRIMARY KEY (candidate_id, id_source, account_email)
             );
+            CREATE TABLE IF NOT EXISTS candidate_id_links (
+                account_email   TEXT NOT NULL,
+                id_no           TEXT NOT NULL,
+                p_id            TEXT NOT NULL,
+                source          TEXT NOT NULL,
+                first_seen_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (account_email, id_no, p_id)
+            );
+            CREATE INDEX IF NOT EXISTS candidate_id_links_by_p_id ON candidate_id_links (account_email, p_id);
             CREATE TABLE IF NOT EXISTS sent_log (
                 id              INTEGER PRIMARY KEY AUTOINCREMENT,
                 account_email   TEXT NOT NULL,
@@ -62,6 +98,7 @@ class Database:
         # write raises OperationalError: no such column: id_source. Bring
         # such a database forward explicitly.
         await self._migrate_id_source_column()
+        await self._migrate_status_updated_at_column()
 
     async def _column_exists(self, table: str, column: str) -> bool:
         cursor = await self._conn.execute(f"PRAGMA table_info({table})")
@@ -129,11 +166,32 @@ class Database:
             await self._conn.execute("ALTER TABLE candidates_new RENAME TO candidates")
             await self._conn.commit()
             # Row count matters operationally: every migrated row is
-            # tagged ID_SOURCE_UNKNOWN, which VALID_ID_SOURCES deliberately
-            # excludes from what the Agent can query — so any row counted
-            # here is invisible to check_already_contacted /
-            # update_candidate_status from this point on (see CLAUDE.md).
+            # tagged ID_SOURCE_UNKNOWN. The status readers find such a row by its
+            # id string under either source and label it as source-unknown;
+            # no writer touches it.
             log.info("DB migration: candidates migrated (%d pre-existing row(s) tagged %r)", row_count, ID_SOURCE_UNKNOWN)
+
+    async def _migrate_status_updated_at_column(self):
+        """Add candidates.status_updated_at to a database that predates it. Runs after
+        _migrate_id_source_column, so a database older than both ends up with both
+        columns. Existing rows keep NULL: when their status was written is not
+        recoverable, and filling in created_at would turn "no earlier than" into "exactly".
+        The column is added without a default because SQLite's ADD COLUMN rejects a
+        non-constant default such as CURRENT_TIMESTAMP; the two status-writing methods
+        set it explicitly, so a freshly created table and a migrated one behave alike.
+        A single ALTER commits on its own, so an interrupted run is simply repeated:
+        whether the column exists is the only state there is."""
+        if await self._column_exists("candidates", "status_updated_at"):
+            return
+        log.warning("DB migration: candidates has no status_updated_at column, adding it")
+        await self._conn.execute("ALTER TABLE candidates ADD COLUMN status_updated_at DATETIME")
+        await self._conn.commit()
+        cursor = await self._conn.execute("SELECT COUNT(*) FROM candidates WHERE status IS NOT NULL")
+        with_status = (await cursor.fetchone())[0]
+        log.info(
+            "DB migration: candidates.status_updated_at added (%d row(s) carry a status whose time is unknown)",
+            with_status,
+        )
 
     async def close(self):
         """Idempotent: safe to call more than once, and safe to call after a
@@ -147,22 +205,50 @@ class Database:
             self._conn = None
 
     async def upsert_candidate(self, candidate_id: str, id_source: str, account_label: str, **fields):
-        existing = await self.get_candidate(candidate_id, id_source, account_label)
-        if existing:
-            if not fields:
-                return  # nothing to update
-            sets = ", ".join(f"{k} = ?" for k in fields)
+        """One statement per write: the primary key guarantees a single row per
+        (candidate_id, id_source, account_email), and two concurrent writers cannot
+        collide on it the way a read-then-insert would. Only the fields given are
+        updated. When `status` is among them, status_updated_at is set to now in the
+        same statement — even if the value is unchanged, because the write itself is
+        the event the time records."""
+        if not fields:
             await self._conn.execute(
-                f"UPDATE candidates SET {sets} WHERE candidate_id = ? AND id_source = ? AND account_email = ?",
-                [*fields.values(), candidate_id, id_source, account_label],
+                "INSERT OR IGNORE INTO candidates (candidate_id, id_source, account_email) VALUES (?, ?, ?)",
+                [candidate_id, id_source, account_label],
             )
-        else:
-            cols = "candidate_id, id_source, account_email" + (", " + ", ".join(fields) if fields else "")
-            placeholders = "?, ?, ?" + (", " + ", ".join("?" for _ in fields) if fields else "")
-            await self._conn.execute(
-                f"INSERT INTO candidates ({cols}) VALUES ({placeholders})",
-                [candidate_id, id_source, account_label, *fields.values()],
-            )
+            await self._conn.commit()
+            return
+
+        columns = list(fields)
+        insert_cols = ["candidate_id", "id_source", "account_email", *columns]
+        insert_vals = ["?"] * len(insert_cols)
+        updates = [f"{c} = excluded.{c}" for c in columns]
+        if "status" in fields:
+            insert_cols.append("status_updated_at")
+            insert_vals.append("CURRENT_TIMESTAMP")
+            updates.append("status_updated_at = CURRENT_TIMESTAMP")
+        await self._conn.execute(
+            f"INSERT INTO candidates ({', '.join(insert_cols)}) VALUES ({', '.join(insert_vals)}) "
+            f"ON CONFLICT(candidate_id, id_source, account_email) DO UPDATE SET {', '.join(updates)}",
+            [candidate_id, id_source, account_label, *fields.values()],
+        )
+        await self._conn.commit()
+
+    async def set_status_if_unset(self, candidate_id: str, id_source: str, account_label: str, status: str):
+        """Write `status` only when the row has none. "Has none" is decided by the one
+        statement itself (COALESCE on the stored value, which an UPDATE's expressions read
+        from the pre-update row), so two near-simultaneous writers cannot both read NULL and
+        have the later one overwrite a status the earlier just wrote. status_updated_at moves
+        only when the status does. Columns other than status are not touched."""
+        await self._conn.execute(
+            "INSERT INTO candidates (candidate_id, id_source, account_email, status, status_updated_at) "
+            "VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP) "
+            "ON CONFLICT(candidate_id, id_source, account_email) DO UPDATE SET "
+            "status = COALESCE(candidates.status, excluded.status), "
+            "status_updated_at = CASE WHEN candidates.status IS NULL "
+            "THEN CURRENT_TIMESTAMP ELSE candidates.status_updated_at END",
+            [candidate_id, id_source, account_label, status],
+        )
         await self._conn.commit()
 
     async def get_candidate(self, candidate_id: str, id_source: str, account_label: str) -> dict | None:
@@ -172,6 +258,180 @@ class Database:
         )
         row = await cursor.fetchone()
         return dict(row) if row else None
+
+    async def record_id_links(
+        self, account_label: str, pairs: Iterable[tuple[str, str]], source: str,
+    ) -> None:
+        """Remember pairs 104 handed over as (idNo, pId) of one person. A pair already
+        recorded is left exactly as it was — its first source and first_seen_at are
+        kept. `source` is checked here rather than by a CHECK on the table: SQLite cannot
+        alter a CHECK on an existing table, so a fifth source added later would be refused
+        by every already-created database with an error that only reaches the log."""
+        if source not in LINK_SOURCES:
+            raise ValueError(f"unknown id-link source {source!r}; expected one of {sorted(LINK_SOURCES)}")
+        rows = [(account_label, id_no, p_id, source) for id_no, p_id in pairs]
+        if not rows:
+            return
+        await self._conn.executemany(
+            "INSERT OR IGNORE INTO candidate_id_links (account_email, id_no, p_id, source) VALUES (?, ?, ?, ?)",
+            rows,
+        )
+        await self._conn.commit()
+
+    async def _query_in(self, sql: str, args: list, values: Iterable[str]) -> list:
+        """Run `sql` once per chunk of `values`; the single `{in}` marker in it becomes
+        the chunk's placeholders. Rows of all chunks are concatenated."""
+        values = list(values)
+        found: list = []
+        for start in range(0, len(values), _IN_CHUNK):
+            chunk = values[start:start + _IN_CHUNK]
+            cursor = await self._conn.execute(
+                sql.replace("{in}", ", ".join("?" for _ in chunk)), [*args, *chunk]
+            )
+            found.extend(await cursor.fetchall())
+        return found
+
+    async def _attach_linked_ids(self, rows: list[dict], account_label: str) -> None:
+        """Set rows[i]["linked_ids"]: for each row, the ids in the other space that the
+        link table pairs with it directly, each with the status and status time recorded
+        under that other id (None when it has no row). Directly paired only — the full
+        connected set is find_candidate_records' to walk. The one place that decides what
+        a linked_ids entry looks like."""
+        resume_ids = {r["candidate_id"] for r in rows if r["id_source"] == ID_SOURCE_RESUME}
+        message_ids = {r["candidate_id"] for r in rows if r["id_source"] == ID_SOURCE_MESSAGE}
+
+        message_for_resume: dict[str, set[str]] = {}
+        for link in await self._query_in(
+            "SELECT id_no, p_id FROM candidate_id_links WHERE account_email = ? AND id_no IN ({in})",
+            [account_label], resume_ids,
+        ):
+            message_for_resume.setdefault(link["id_no"], set()).add(link["p_id"])
+        resume_for_message: dict[str, set[str]] = {}
+        for link in await self._query_in(
+            "SELECT id_no, p_id FROM candidate_id_links WHERE account_email = ? AND p_id IN ({in})",
+            [account_label], message_ids,
+        ):
+            resume_for_message.setdefault(link["p_id"], set()).add(link["id_no"])
+
+        wanted_messages = {p for ids in message_for_resume.values() for p in ids}
+        wanted_resumes = {i for ids in resume_for_message.values() for i in ids}
+        state: dict[tuple[str, str], tuple] = {}
+        for source, wanted in ((ID_SOURCE_MESSAGE, wanted_messages), (ID_SOURCE_RESUME, wanted_resumes)):
+            for row in await self._query_in(
+                "SELECT candidate_id, status, status_updated_at FROM candidates "
+                "WHERE account_email = ? AND id_source = ? AND candidate_id IN ({in})",
+                [account_label, source], wanted,
+            ):
+                state[(source, row["candidate_id"])] = (row["status"], row["status_updated_at"])
+
+        def entries(other_source: str, ids: set[str]) -> list[dict]:
+            return [
+                {
+                    "candidate_id": other_id,
+                    "id_source": other_source,
+                    "status": state.get((other_source, other_id), (None, None))[0],
+                    "status_updated_at": state.get((other_source, other_id), (None, None))[1],
+                }
+                for other_id in sorted(ids)
+            ]
+
+        for row in rows:
+            if row["id_source"] == ID_SOURCE_RESUME:
+                row["linked_ids"] = entries(ID_SOURCE_MESSAGE, message_for_resume.get(row["candidate_id"], set()))
+            elif row["id_source"] == ID_SOURCE_MESSAGE:
+                row["linked_ids"] = entries(ID_SOURCE_RESUME, resume_for_message.get(row["candidate_id"], set()))
+            else:
+                row["linked_ids"] = []
+
+    async def find_candidate_records(
+        self, candidate_id: str, id_source: str, account_label: str,
+    ) -> list[dict]:
+        """Every candidates row that belongs to the person (candidate_id, id_source)
+        names, each with "matched_by" and "linked_ids". Read-only.
+
+        The person is the set of ids reachable from the starting id through this
+        account's candidate_id_links (a resume id pairs with message ids, which pair
+        with other resume ids, and so on until nothing new turns up). The rows are the
+        (id, space) rows of every id in that set, plus any id_source = "unknown" row
+        whose id string is in the set. Rows come back as same_id (the starting row),
+        same_id_unknown_source (an unknown row with the starting id string), then
+        linked (everything else); within a group by (id_source, candidate_id)."""
+        resume_ids: set[str] = set()
+        message_ids: set[str] = set()
+        frontier_resume: set[str] = set()
+        frontier_message: set[str] = set()
+        if id_source == ID_SOURCE_RESUME:
+            resume_ids.add(candidate_id)
+            frontier_resume.add(candidate_id)
+        elif id_source == ID_SOURCE_MESSAGE:
+            message_ids.add(candidate_id)
+            frontier_message.add(candidate_id)
+
+        while frontier_resume or frontier_message:
+            next_message = {
+                link["p_id"] for link in await self._query_in(
+                    "SELECT p_id FROM candidate_id_links WHERE account_email = ? AND id_no IN ({in})",
+                    [account_label], frontier_resume,
+                )
+            } - message_ids
+            next_resume = {
+                link["id_no"] for link in await self._query_in(
+                    "SELECT id_no FROM candidate_id_links WHERE account_email = ? AND p_id IN ({in})",
+                    [account_label], frontier_message,
+                )
+            } - resume_ids
+            message_ids |= next_message
+            resume_ids |= next_resume
+            frontier_message, frontier_resume = next_message, next_resume
+
+        found: list[dict] = []
+        for source, ids in (
+            (ID_SOURCE_RESUME, resume_ids),
+            (ID_SOURCE_MESSAGE, message_ids),
+            (ID_SOURCE_UNKNOWN, resume_ids | message_ids | {candidate_id}),
+        ):
+            for row in await self._query_in(
+                "SELECT * FROM candidates WHERE account_email = ? AND id_source = ? AND candidate_id IN ({in})",
+                [account_label, source], ids,
+            ):
+                found.append(dict(row))
+
+        for record in found:
+            if (record["id_source"], record["candidate_id"]) == (id_source, candidate_id):
+                record["matched_by"] = MATCHED_SAME_ID
+            elif record["id_source"] == ID_SOURCE_UNKNOWN and record["candidate_id"] == candidate_id:
+                record["matched_by"] = MATCHED_UNKNOWN_SOURCE
+            else:
+                record["matched_by"] = MATCHED_LINK
+        found.sort(key=lambda r: (_MATCH_ORDER[r["matched_by"]], r["id_source"], r["candidate_id"]))
+        await self._attach_linked_ids(found, account_label)
+        return found
+
+    async def list_candidates(
+        self, account_label: str, status: str | None, *, limit: int, offset: int,
+    ) -> tuple[list[dict], int]:
+        """One page of this account's rows that carry a status — exactly `status` when
+        given, any status when None — including id_source = "unknown" rows. Newest status
+        time first, rows whose status time is unknown last, ties broken by created_at
+        (newest first) then (id_source, candidate_id) so the order is stable between calls.
+        Returns (rows with "linked_ids", total count ignoring limit/offset). Read-only."""
+        if status is None:
+            condition, args = "status IS NOT NULL", [account_label]
+        else:
+            condition, args = "status = ?", [account_label, status]
+        cursor = await self._conn.execute(
+            f"SELECT COUNT(*) FROM candidates WHERE account_email = ? AND {condition}", args
+        )
+        total = (await cursor.fetchone())[0]
+        cursor = await self._conn.execute(
+            f"SELECT * FROM candidates WHERE account_email = ? AND {condition} "
+            "ORDER BY status_updated_at IS NULL, status_updated_at DESC, created_at DESC, id_source, candidate_id "
+            "LIMIT ? OFFSET ?",
+            [*args, limit, offset],
+        )
+        rows = [dict(row) for row in await cursor.fetchall()]
+        await self._attach_linked_ids(rows, account_label)
+        return rows, total
 
     async def log_sent(self, account_label: str, candidate_id: str, id_source: str):
         await self._conn.execute(

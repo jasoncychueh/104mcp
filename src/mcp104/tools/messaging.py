@@ -472,12 +472,12 @@ async def _write_status(app, candidate_id: str, account_label: str | None, how: 
     tool takes is a pId.
 
     `"contacted_if_unset"` only writes `status="contacted"` when the row currently
-    has NO status (checked via `get_candidate` first) — `upsert_candidate`
-    overwrites unconditionally, and writing "contacted" over an existing
-    "interested" would be data loss dressed up as a record. `"scheduled"` overwrites
-    whatever is there: an interview invitation with a concrete time and place is the
-    candidate's newest recruiting progress, so `interested` -> `scheduled` is an
-    advance, not a loss.
+    has NO status, decided inside one SQL statement (`set_status_if_unset`) —
+    writing "contacted" over an existing "interested" would be data loss dressed
+    up as a record, and a read-then-write could overwrite a status another call
+    wrote in between. `"scheduled"` overwrites whatever is there: an interview
+    invitation with a concrete time and place is the candidate's newest recruiting
+    progress, so `interested` -> `scheduled` is an advance, not a loss.
 
     Called on both the confirmed AND the unconfirmed/ambiguous paths —
     `check_already_contacted`'s repeat-contact guard is useless if an ambiguous send
@@ -486,10 +486,7 @@ async def _write_status(app, candidate_id: str, account_label: str | None, how: 
     """
     try:
         if how == "contacted_if_unset":
-            existing = await app.db.get_candidate(candidate_id, ID_SOURCE_MESSAGE, account_label)
-            if existing is not None and existing.get("status") is not None:
-                return
-            await app.db.upsert_candidate(candidate_id, ID_SOURCE_MESSAGE, account_label, status="contacted")
+            await app.db.set_status_if_unset(candidate_id, ID_SOURCE_MESSAGE, account_label, "contacted")
         else:
             await app.db.upsert_candidate(candidate_id, ID_SOURCE_MESSAGE, account_label, status="scheduled")
     except Exception:
