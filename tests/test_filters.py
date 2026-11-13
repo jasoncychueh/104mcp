@@ -1,26 +1,24 @@
 """Tests for tools/filters.py's condition table, wire encoding, pre-request
 validation and drop detection.
 
-Written blind to tools/filters.py's implementation (spec-driven-development
-Mode 1/2): every expected wire form below comes from
-docs/104-site-facts.md §6b.3g's measured request/echo pairs; every composite
-wire structure and every composite **caller-facing** dict shape comes from
-design.md's Data Models — Condition table (the "Caller-facing value shapes"
-table pins `work_exp_time`, `expect_pay` and `language_skills` explicitly,
-as of the round-2 design revision — an earlier draft of this file inferred
-those shapes and got `expect_pay`'s field names wrong; see this session's
-report).
+Written blind to tools/filters.py's implementation: every expected wire form
+below comes from docs/104-site-facts.md §6b.3g's measured request/echo pairs;
+every composite wire structure and every composite **caller-facing** dict shape
+comes from the Condition table's documented caller-facing value shapes
+(`work_exp_time`, `expect_pay` and `language_skills`). An earlier draft of this
+file inferred those shapes instead and got `expect_pay`'s field names wrong.
 
 `expect_pay` and `work_exp_time` deliberately share the caller-facing key
 `mode` (both are "a range with a mode") while still not sharing a *wire*
-encoding — design.md calls this out explicitly because it looks like a
+encoding — that is deliberate, because it looks like a
 contradiction and is not. `test_encode_filters_range_composites_do_not_share_an_encoding`
 below asserts the wire asymmetry; nothing about the caller-facing `mode`
 key is shared code to that assertion.
 
-`detect_dropped`'s `sent` parameter is `encode_filters`'s return value
-**verbatim** (`list[tuple[str, str]]`, pinned in Components §5) — the tests
-below compose the two directly rather than hand-writing wire tuples, both
+`detect_dropped`'s `sent` parameter is a list of wire `(name, value)` tuples;
+the tests below pass `encode_filters`'s return value (`list[tuple[str, str]]`)
+to it directly (a real call also adds the keyword and page pairs) rather than
+hand-writing wire tuples, both
 because that is what a real caller does and because it means this file
 never has to independently know the wire spelling of every key used here.
 """
@@ -50,10 +48,9 @@ CORPUS_PATH = (
     REPO_ROOT / "src" / "mcp104" / "assets" / "certification" / "certify_conditions_results.json"
 )
 
-# The three literal values design.md's Data Models — Condition table pins for the
-# "echo evidence" column. The Python attribute NAME holding one of these on a
-# `Condition` is NOT pinned by design.md (only the column's conceptual name and its
-# three values are), so the helpers below locate it by VALUE rather than assuming an
+# The three literal values of the Condition table's "echo evidence" column. The Python
+# attribute NAME holding one of these on a `Condition` is not part of the contract
+# (only the column's conceptual name and its three values are), so the helpers below locate it by VALUE rather than assuming an
 # identifier -- the same shape-hedge discipline tests/test_categories.py already
 # applies to `Resolution`'s field names.
 _ECHO_EVIDENCE_VALUES = ("echoed", "not-echoed", "unmeasured")
@@ -112,11 +109,11 @@ def _replace_echo_evidence(condition, new_value: str):
     raise TypeError(f"don't know how to clone-and-replace a {type(condition)!r}")
 
 
-# ── T-74 (R9.1): a name supplied for workExpJob (經歷職務, work experience) resolves
+# ── T-74: a name supplied for workExpJob (經歷職務, work experience) resolves
 # against the SAME dataset jobcat (希望職類, expectation) resolves against, and
 # submits the resolved code under its OWN wire parameter ────────────────────────────
 #
-# design.md: "workExpJob is backed by JobCat.json... jobcat and workExpJob share a
+# The binding: "workExpJob is backed by JobCat.json... jobcat and workExpJob share a
 # code space and ask different questions." Sharing a code space means a name common
 # to both must resolve to the IDENTICAL code either way (same dataset file, same
 # tree); asking different questions means that code must land on the WIRE PARAMETER
@@ -148,14 +145,14 @@ def test_workexpjob_resolves_against_jobcats_dataset_under_its_own_wire_key():
     )
 
 
-# jobcat is a `dataset`-sourced condition — Data Models says plainly "the
-# caller passes a **name**, resolved per §6", never a raw code — so every
+# jobcat is a `dataset`-sourced condition — the caller passes a **name**,
+# resolved through the category resolver, never a raw code — so every
 # jobcat value below is a real JobCat.json leaf name, confirmed unique and
-# resolvable to the code shown as a comment (see this session's report:
-# passing a raw code here was this test file's own first-draft mistake,
-# caught by re-reading the Condition table, not by reading tools/filters.py).
+# resolvable to the code shown as a comment (passing a raw code here was this
+# test file's own first-draft mistake, caught by re-reading the Condition
+# table, not by reading tools/filters.py).
 
-# ── T-2 (R1.2): only what the caller supplied is emitted, no server default ──
+# ── T-2: only what the caller supplied is emitted, no server default ──
 
 def test_encode_filters_emits_only_supplied_conditions():
     params = encode_filters({"sex": "1", "jobcat": ["機械裝配員"]})  # -> 2010001023
@@ -191,7 +188,7 @@ def test_encode_filters_repeated_parameter_family():
     assert params == [("edu[]", "4"), ("edu[]", "8")]
 
 
-# ── T-32 (R8.3) / T-47: the two range composites do not share an encoding ──
+# ── T-32 / T-47: the two range composites do not share an encoding ──
 
 def test_encode_filters_range_composites_do_not_share_an_encoding():
     # work_exp_time's bounds are single unbracketed values (workExpTimeMin,
@@ -217,7 +214,7 @@ def test_encode_filters_range_composites_do_not_share_an_encoding():
     assert not any(k == "expectPayMonthMin" for k, _ in pay_params)
 
 
-# ── T-30 (R8.1): a composite missing a required companion is rejected ──
+# ── T-30: a composite missing a required companion is rejected ──
 
 def test_validate_filters_composite_missing_companion_rejected_before_request():
     # work_exp_time's "down"/"up" modes are meaningless without a bound --
@@ -227,7 +224,7 @@ def test_validate_filters_composite_missing_companion_rejected_before_request():
         validate_filters({"work_exp_time": {"mode": "down"}})
 
 
-# ── T-31 (R8.2): a fourth language slot is rejected before any request ──
+# ── T-31: a fourth language slot is rejected before any request ──
 
 def test_validate_filters_rejects_a_fourth_language_slot():
     # The server's own returned parameter vocabulary carries
@@ -235,8 +232,8 @@ def test_validate_filters_rejects_a_fourth_language_slot():
     # human-recorded submission) -- a fourth slot's ability values would
     # silently vanish server-side while language[] still carried four
     # values, producing a search broader than requested with a
-    # correct-looking echo. Rejected locally instead. Caller-facing shape
-    # per Data Models — Condition table: {"languages": [{"language": code,
+    # correct-looking echo. Rejected locally instead. Caller-facing shape:
+    # {"languages": [{"language": code,
     # "abilities": [a, a, a, a]}, ...], "fulfills_all": bool}.
     four_slots = {
         "languages": [
@@ -274,7 +271,7 @@ def test_validate_filters_rejects_slot_count_violation():
         validate_filters({"language_skills": four_slots})
 
 
-# ── T-26 (R7.1): a compared condition whose echo matches passes ──
+# ── T-26: a compared condition whose echo matches passes ──
 
 def test_detect_dropped_matching_echo_is_not_reported_dropped():
     sent = encode_filters({"jobcat": ["機械裝配員"]})  # -> [("jobcat", "2010001023")]
@@ -282,10 +279,10 @@ def test_detect_dropped_matching_echo_is_not_reported_dropped():
     assert detect_dropped(sent, search_form) == []
 
 
-# ── T-27 (R7.2): table lookup, never a runtime null test ──
+# ── T-27: table lookup, never a runtime null test ──
 #
-# Re-grounded (Round I7). The original form hard-coded `military` as its
-# measured-not-echoed example. This round's corpus overturned that premise:
+# Re-grounded. The original form hard-coded `military` as its
+# measured-not-echoed example. A later corpus overturned that premise:
 # military[]=5 now echoes ["5"], so it derives as `echoed`, and `detect_dropped`
 # correctly reports a drop when fed a null echo for it -- the test failed because
 # its EXAMPLE was refuted, not because the rule it protects regressed. Drop-checking
@@ -303,7 +300,7 @@ def test_detect_dropped_matching_echo_is_not_reported_dropped():
 #
 # The rule must hold even with ZERO real not-echoed filter-key conditions on the
 # shipped surface — "a table entry fails loudly when a row is missing; a runtime
-# null test adapts silently to new data" (design.md, same section) is the whole
+# null test adapts silently to new data" is the whole
 # argument, and it does not get weaker just because today's corpus happens to leave
 # `not-echoed` empty. So this DISCOVERS a real not-echoed filter-key condition if one
 # currently exists (reusing its own corpus-recorded `filters_sent` value, valid for
@@ -400,7 +397,7 @@ def test_detect_dropped_branch_code_echoed_verbatim_compares_equal():
     assert detect_dropped(sent, search_form) == []
 
 
-# ── T-72 (R7.6, interface): echo evidence is DERIVED from the certification corpus,
+# ── T-72 (interface): echo evidence is DERIVED from the certification corpus,
 # and a condition with no echo observation reads `unmeasured` ──────────────────────
 #
 # `echoed: bool` could not carry contactPrivacy's real state -- its certification
@@ -411,7 +408,7 @@ def test_detect_dropped_branch_code_echoed_verbatim_compares_equal():
 # corpus is satisfied by a hand-typed table that happens to match today, exactly the
 # gap T-67 closed for the generated tool description earlier this round. So the
 # check below does not compare CONDITIONS against a copy of the corpus read here --
-# it PERTURBS the on-disk corpus file design.md names as authoritative and shows the
+# it PERTURBS the on-disk corpus file, which is authoritative, and shows the
 # derived value follows, in a subprocess (never a reload-in-place: `mcp104.tools.filters`
 # is already imported by other test modules in this same session, and mutating its
 # module-level CONDITIONS dict in place would leak the perturbation into every other
@@ -490,10 +487,10 @@ def test_echo_evidence_is_derived_from_the_corpus_not_hand_maintained():
 
 
 def test_condition_with_no_corpus_echo_observation_reads_unmeasured():
-    # The default half. Round I8 finding: the first form of this test asserted
+    # The default half. The first form of this test asserted
     # `no_observation` was non-empty -- a POPULATION assertion in disguise ("at
-    # least one unmeasured condition must exist"), the exact shape last round's own
-    # brief warned against. contactPrivacy and workExpJob were the instances when
+    # least one unmeasured condition must exist"), the exact shape this project's rule against
+    # population assertions forbids. contactPrivacy and workExpJob were the instances when
     # this case was written; both have SINCE been measured (targeted follow-up
     # requests, recorded in the corpus's own `provenance_note` fields) and the
     # sanity check went red -- not because the default stopped working, but because
@@ -565,7 +562,7 @@ def test_condition_with_no_corpus_echo_observation_reads_unmeasured():
         )
 
 
-# ── T-73 half 1 (R7.2, behavior): a condition recorded `unmeasured` is excluded
+# ── T-73 half 1 (behavior): a condition recorded `unmeasured` is excluded
 # from drop comparison exactly as a measured `not-echoed` one is ──────────────────
 #
 # The corpus has no condition CURRENTLY measured as a confirmed not-echoed outcome

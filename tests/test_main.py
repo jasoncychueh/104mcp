@@ -1,19 +1,19 @@
-"""§C1 (src/mcp104/main.py) test cases: T-30, T-32, T-33, T-35, T-36, T-37,
+"""src/mcp104/main.py test cases: T-30, T-32, T-33, T-35, T-36, T-37,
 T-49, T-50, T-91, T-111.
 
-Written blind to this cycle's main.py rewrite (spec-tester Mode 1 rule): every
+Written without reading main.py's implementation: every
 assertion here goes through a subprocess boundary or through introspection of
-the public interfaces named in design.md §C1 (`configure_logging`,
-`AppContext`, the `mcp104` console script / `python -m mcp104.main` entry
-point, and the argv self-test flag `--selftest-browser-stdout` named as
-design.md's own example). None of it imports internals of main.py's function
-bodies.
+the public interfaces (`configure_logging`, `AppContext`, the `mcp104`
+console script / `python -m mcp104.main` entry point, and the argv self-test
+flag `--selftest-browser-stdout`). None of it imports internals of main.py's
+function bodies.
 """
 
 import io
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 import tomllib
@@ -21,13 +21,18 @@ from pathlib import Path
 
 import pytest
 
+from mcp104.config import RETIRED_ENV_NAMES
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PYPROJECT = REPO_ROOT / "pyproject.toml"
 
 
-def _base_env(data_dir, label="tester@104.com"):
+def _base_env(data_dir):
     env = dict(os.environ)
-    env["MCP104_ACCOUNT"] = label
+    # get_config() refuses to start while a retired bare name is set; the
+    # developer's shell must not decide whether these subprocess tests pass.
+    for retired in RETIRED_ENV_NAMES:
+        env.pop(retired, None)
     env["MCP104_DATA_DIR"] = str(data_dir)
     # Keep the auth site on an ephemeral local port unless a test overrides it.
     env.pop("MCP104_AUTH_BASE_URL", None)
@@ -81,7 +86,7 @@ def _handshake(proc):
     return [init_line]
 
 
-# ── T-30 (R5.3): data location gets created, init doesn't fail on it ───────
+# ── T-30: data location gets created, init doesn't fail on it ───────
 
 def test_t030_missing_data_dir_is_created_and_startup_succeeds(tmp_path):
     data_dir = tmp_path / "does" / "not" / "exist" / "yet"
@@ -113,7 +118,7 @@ def test_t030_missing_data_dir_is_created_and_startup_succeeds(tmp_path):
             proc.wait(timeout=10)
 
 
-# ── T-32 (R6.2): argv self-test path — zero stdout bytes, exit 0, no leaks ─
+# ── T-32: argv self-test path — zero stdout bytes, exit 0, no leaks ─
 
 def test_t032_selftest_browser_stdout_flag_writes_nothing_to_stdout():
     proc = subprocess.run(
@@ -122,7 +127,7 @@ def test_t032_selftest_browser_stdout_flag_writes_nothing_to_stdout():
         timeout=60,
     )
     if proc.returncode != 0:
-        # I2-M: skip ONLY for the one documented cause (CLAUDE.md "已知坑與
+        # Skip ONLY for the one documented cause (CLAUDE.md "已知坑與
         # 解法" #1: patchright's browser cache missing) -- any other
         # non-zero exit is a real failure and must not be swallowed by a
         # broad "looks browser-related" skip.
@@ -152,7 +157,7 @@ def test_t032_selftest_browser_stdout_flag_writes_nothing_to_stdout():
     # a hang against that timeout rather than a clean return.
 
 
-# ── T-33 (R6.3): initialization failure -> zero stdout bytes ───────────────
+# ── T-33: initialization failure -> zero stdout bytes ───────────────
 
 def test_t033_init_failure_writes_nothing_to_stdout(tmp_path):
     env = _base_env(tmp_path)
@@ -168,7 +173,7 @@ def test_t033_init_failure_writes_nothing_to_stdout(tmp_path):
     assert proc.stdout == b"", f"stdout must be zero bytes, got {proc.stdout!r}"
 
 
-# ── T-35 (R7.1): INFO-level messages reach diagnostic output ───────────────
+# ── T-35: INFO-level messages reach diagnostic output ───────────────
 
 def test_t035_info_level_messages_reach_diagnostic_output():
     from mcp104.main import configure_logging
@@ -191,7 +196,7 @@ def test_t035_info_level_messages_reach_diagnostic_output():
         root.setLevel(saved_level)
 
 
-# ── T-36 (R7.2, R7.3): init failure -> readable reason + nonzero exit ──────
+# ── T-36: init failure -> readable reason + nonzero exit ──────
 
 def test_t036_init_failure_readable_reason_and_nonzero_exit(tmp_path):
     env = _base_env(tmp_path)
@@ -213,7 +218,34 @@ def test_t036_init_failure_readable_reason_and_nonzero_exit(tmp_path):
     )
 
 
-# ── T-37 (R7.4, R7.5): diagnostic output doesn't leak input/credential/token ─
+# ── A retired bare setting name left in the environment stops startup ──────
+
+def test_retired_setting_names_stop_startup_and_name_their_replacements(tmp_path):
+    env = _base_env(tmp_path)
+    env["MAX_DAILY_MESSAGES"] = "20"
+    env["MAX_REQUESTS_PER_HOUR"] = "4"
+    env["MCP104_MAX_REQUESTS_PER_HOUR"] = "4"  # the new name being set too is no exemption
+
+    proc = subprocess.run(
+        [sys.executable, "-m", "mcp104.main"],
+        input=b"",
+        capture_output=True,
+        env=env,
+        timeout=30,
+    )
+    assert proc.returncode != 0
+    assert proc.stdout == b"", f"stdout must be zero bytes, got {proc.stdout!r}"
+    # ASCII fragments only: the Chinese text goes out in the console code page.
+    # The bare name is a substring of its replacement, so it must also appear
+    # as its own token (not preceded by another name character).
+    for old in ("MAX_DAILY_MESSAGES", "MAX_REQUESTS_PER_HOUR"):
+        assert re.search(rb"(?<![A-Z0-9_])" + old.encode() + rb"(?![A-Z0-9_])", proc.stderr), (
+            f"stderr must name {old} on its own: {proc.stderr!r}"
+        )
+        assert b"MCP104_" + old.encode() in proc.stderr
+
+
+# ── T-37: diagnostic output doesn't leak input/credential/token ─
 
 def test_t037_diagnostic_output_does_not_contain_full_token(tmp_path):
     data_dir = tmp_path / "data"
@@ -285,7 +317,7 @@ def test_t049_configure_logging_routes_all_levels_to_diagnostics_not_stdout():
 
         diagnostics = fake_stderr.getvalue()
         # DEBUG's threshold is a level-setting decision outside this case's
-        # scope; INFO and above must reach diagnostics per R7.1.
+        # scope; INFO and above must reach diagnostics.
         assert "sentinel-info-t049" in diagnostics
         assert "sentinel-warning-t049" in diagnostics
         assert "sentinel-error-t049" in diagnostics
@@ -327,7 +359,7 @@ def test_t050_appcontext_has_no_display_manager_or_process_level_browser_field()
     assert not missing, f"AppContext is missing expected fields: {missing}"
 
 
-# ── T-91 (R6.1): full stdio handshake + one browser-free tool call ─────────
+# ── T-91: full stdio handshake + one browser-free tool call ─────────
 
 def test_t091_stdio_transport_carries_only_framed_protocol_messages(tmp_path):
     data_dir = tmp_path / "data"
@@ -456,14 +488,13 @@ def test_t111_package_imports_succeed_on_requires_python_floor(tmp_path):
     )
 
 
-# -- T-121 (R9.4): process-shutdown teardown, in-process against a fake
-# AppContext -- main.py's _shutdown_globals is the ONLY teardown entry point
-# among the four the lifecycle table lists (handed_off/abandoned's shared
-# entry points) that none of T-8/T-93/T-98/T-120/test_auth.py's own
+# -- T-121: process-shutdown teardown, in-process against a fake
+# AppContext -- main.py's _shutdown_globals is the ONLY pending-login
+# teardown entry point that none of T-8/T-93/T-98/T-120/test_auth.py's own
 # _finalize_pending_login cases go through. Reuses the fake-AppContext shape
 # tests/test_auth.py already established for _finalize_pending_login
 # (_FakeSessionPool/_FakeStream/_FakeBrowserResource/_FakeConfig) rather than
-# inventing a second one, per the case's own instruction. No real browser,
+# inventing a second one. No real browser,
 # no subprocess -- this calls mcp104.main._shutdown_globals() directly
 # against module-global _app_ctx, monkeypatched to the fake.
 
@@ -652,7 +683,7 @@ async def test_t121_one_items_teardown_raising_does_not_strand_the_other_or_the_
     calls = _T121Calls()
     # tok-awaiting's own teardown fails inside _finalize_pending_login (its
     # discard_pending call, the one call in that function's body NOT wrapped
-    # in its own try/except) -- Requirement 9.4's failure mode is exactly a
+    # in its own try/except) -- the failure mode is exactly a
     # leaked browser process, so tok-settling and the shared driver must
     # still be handled despite tok-awaiting's finalize blowing up.
     app = _T121App(calls, tmp_path / "resume-files", raise_for_token="tok-awaiting")

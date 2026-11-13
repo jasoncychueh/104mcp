@@ -9,8 +9,8 @@ Deliberately imports nothing — this is what keeps the module importable in
 a browser-free environment. browser/stealth.py cannot host these constants
 itself: it imports patchright at module level, and any module that imports
 IT would then fail everywhere patchright isn't installed (e.g. this
-project's own test suite). See structure.md's TYPE_CHECKING rule for why
-that matters project-wide.
+project's own test suite). That is why patchright is imported only under
+TYPE_CHECKING everywhere else: the test suite runs without a browser installed.
 
 Sending a User-Agent is measured necessary: dropping it gets HTTP 403 from
 Cloudflare (docs/104-site-facts.md §6b.6 — "拿掉 user-agent 會得到 403"). Sending

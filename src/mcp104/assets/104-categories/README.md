@@ -18,17 +18,14 @@ that would silently drop these files from the repository). Confirmed with
 `git check-ignore -v src/mcp104/assets/104-categories/*` returning nothing (2026-08-14).
 
 Packaged under `src/mcp104/assets/` (not the repository root) because setuptools can only ship
-package data that lives inside the package, and the container image's allowlist `COPY` lines carry
-nothing outside `src/mcp104/` — see `.spec/steering/tech.md`'s package-layout note. Production code
+package data that lives inside the package. Production code
 (`tools/categories.py`) reads these files via `importlib.resources.files("mcp104")`, addressing the
 installed package tree, not this directory by a repo-relative path.
 
 ## Provenance
 
 - **Source:** `https://static.104.com.tw/category-tool/json/<FileName>.json` — the URL pattern
-  recorded in `docs/104-site-facts.md` (§ Technology Stack in `.spec/steering/tech.md`: "104 公開
-  分類資料（`static.104.com.tw/category-tool/json/*.json`）— 免登入、不在受保護主機上、零反爬蟲
-  曝險"). Unauthenticated, public, zero anti-bot exposure — this is why fetching them (then, and on
+  recorded in `docs/104-site-facts.md`). Unauthenticated, public, zero anti-bot exposure — this is why fetching them (then, and on
   refresh) is not routed through `guarded_api` or the throttle.
 - **Fetched:** 2026-08-13, copied verbatim from `research/captures/category_json/` (that directory
   holds the original captures alongside several datasets this feature does not bundle; only the
@@ -76,7 +73,7 @@ per-node keys (`icon`, `issuing_authority*`) that `tools/categories.py` does not
    `docs/104-site-facts.md` §6b.3g — a refresh could change node counts, decoration patterns, or
    the name-prefix-family census that section measured.
 4. Update the node/depth table above and the fetch date if anything changed.
-5. Re-run `python -m pytest tests/test_categories.py -q` — T-51 asserts each dataset's measured
+5. Re-run `python -m pytest tests/test_categories.py -q` — it asserts each dataset's measured
    codes against fixed expected values, so a refresh that renumbers or renames a node this project
    already depends on will fail loudly here rather than silently in production.
 

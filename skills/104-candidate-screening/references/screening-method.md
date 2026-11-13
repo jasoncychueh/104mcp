@@ -61,8 +61,8 @@
 
 ## 薪資：最後一道，而且只能在履歷詳情之後
 
-`hope_salary_desc` 只出現在 `get_resume_detail`。清單裡那個「每段工作的薪資」欄位是**過去
-的薪資**、而且大部分是空的，不能拿來當期望待遇用。
+`hope_salary_desc` 只出現在 `get_resume_detail`。清單列上完全沒有薪資欄位，過去的與期望的
+都沒有；薪資只能在讀過 `get_resume_detail` 之後驗（`hope_salary_desc`）。
 
 所以順序一定是：分組 → 讀詳情 → 才驗薪資。反過來做會白花配額。
 

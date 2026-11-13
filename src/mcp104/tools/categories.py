@@ -11,8 +11,8 @@ only knows how to load a named dataset file and resolve a query against it, with
 knowledge of which filter keys exist. The datasets are public,
 unauthenticated 104 taxonomy data — see `src/mcp104/assets/104-categories/README.md` — so
 loading them is local file I/O only, never a request, and is not routed through the guard
-or the throttle (steering/structure.md and steering/tech.md both record this explicitly,
-because someone will otherwise wire them in "for consistency").
+or the throttle, deliberately,
+because someone will otherwise wire them in "for consistency".
 
 104's category names are decorated (suffixes like "相關"/"業", parenthetical glosses,
 embedded abbreviations) `[M docs/104-site-facts.md §6b.3g]`. Exact matching alone
@@ -20,7 +20,7 @@ therefore refuses most natural input. Resolution proceeds through three tiers on
 *normalised* name — exact, prefix, substring — and the first tier producing exactly one
 match wins. No tier ever picks among several matches: a tier yielding more than one hit
 returns those hits as candidates and resolves nothing, because a wrong code returns a
-plausible-looking result set with no signal that it is wrong (product.md principle 2).
+plausible-looking result set with no signal that it is wrong.
 
 `[M §6b.3g]` results referenced below (2026-08-14, offline, zero requests, over every
 node of every bundled dataset): a precision sweep found 22 misresolutions in 6,302
@@ -84,7 +84,7 @@ ASSETS_DIR = files("mcp104") / "assets" / "104-categories"
 #     see the next entry, earned independently rather than inherited from this one.
 #   - (JobCat.json, workExpJob): the same branch, 2010001000, submitted through
 #     `workExpJob` instead — echo ['2010001000'], baseline 531,943 → 73,304
-#     (2026-08-14, live session; Phase 6 task 3). A fall of 458,639 against a
+#     (2026-08-14, live session). A fall of 458,639 against a
 #     same-session drift band under five, to a non-zero total, certifies under this
 #     project's certification criterion (a fall clearing the drift band by orders of
 #     magnitude, landing on a non-zero total). Measured, not inherited from `jobcat`'s

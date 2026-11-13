@@ -1,8 +1,6 @@
-"""AP (Round I8, narrowed this cycle): `.gitignore` must exclude every
-personal-data path.
+"""`.gitignore` must exclude every personal-data path.
 
-**`.dockerignore` and `Dockerfile` are both gone this cycle (§C9, Phase 4 task
-1) — the container packaging/deployment shape is retired along with them, not
+**`.dockerignore` and `Dockerfile` are both gone this cycle — the container packaging/deployment shape is retired along with them, not
 merely edited.** This file used to check a SECOND protection line: that
 `.dockerignore` also excluded every personal-data path, because `docker build`
 uploads the entire directory tree (minus `.dockerignore`'s exclusions) to the
@@ -21,8 +19,8 @@ narrower and different in kind: not "what does the build context upload" but
 own `[tool.setuptools.package-data]`/`packages` configuration is what decides
 that now, not an ignore file at all. That check — the actual built artifact's
 member list carries no real candidate data, login state, or measurement
-captures — is **T-88**, owned by Phase 4 task 1's own verification (the
-`pyproject.toml`/packaging task), not this file; it is a distinct assertion
+captures — is **T-88**, owned by tests/test_packaging.py (the
+`pyproject.toml`/packaging checks), not this file; it is a distinct assertion
 against a distinct artifact (a built sdist/wheel's file list) and duplicating
 it here against `.gitignore`'s text would test the wrong object.
 

@@ -15,7 +15,7 @@ from mcp104.browser.session import (
 
 
 # =========================================================================
-# T-11 (R2.1, R2.3): login state is written where config points, and the
+# T-11: login state is written where config points, and the
 # file is enough for a separate process to recover from.
 # =========================================================================
 

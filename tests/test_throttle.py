@@ -122,7 +122,7 @@ def test_two_minute_gap_mid_streak_resets_it_and_call_proceeds():
     assert decision.proceed is True
 
 
-# -- T-37 (R10.1): a call inside the minimum interval waits inline -------
+# -- T-37: a call inside the minimum interval waits inline -------
 # and returns a normal result - the caller never sees an error for this.
 
 def test_call_inside_the_minimum_interval_proceeds_and_waits_the_remainder():
@@ -163,7 +163,7 @@ async def test_enforce_throttle_sleeps_inline_for_a_sub_floor_wait_and_returns_n
     ]
 
 
-# -- T-38 (R10.2, R10.3): volume cap and forced rest each refuse ---------
+# -- T-38: volume cap and forced rest each refuse ---------
 # with a retry-after error, and never sleep the wait away inline.
 
 @pytest.mark.asyncio
@@ -222,7 +222,7 @@ async def test_forced_rest_returns_retry_after_without_sleeping(monkeypatch, tmp
     assert sleep_calls == []  # the rest is never slept away inline
 
 
-# -- T-39 (R10.4): an API call is counted toward the rolling window ------
+# -- T-39: an API call is counted toward the rolling window ------
 
 def test_a_call_counted_via_note_request_can_fill_the_rolling_window(tmp_path):
     # Real wall-clock time, so this doesn't depend on whether note_request
@@ -242,7 +242,7 @@ def test_a_call_counted_via_note_request_can_fill_the_rolling_window(tmp_path):
     assert at_the_cap.reason == "budget"
 
 
-# -- T-40 (R10.5): the observed inter-call interval is logged ------------
+# -- T-40: the observed inter-call interval is logged ------------
 # note_request has no clock-injection parameter, so the interval is driven
 # by seeding ThrottleState's own timestamp field directly - the same
 # public-construction idiom every other test in this file already uses
@@ -280,7 +280,7 @@ def test_note_request_appends_exactly_one_timestamp_per_call(tmp_path):
     assert len(state.request_timestamps) == 3
 
 
-# -- T-60 (R10.6): an early retry earns the same refusal ------------------
+# -- T-60: an early retry earns the same refusal ------------------
 
 def test_early_retry_after_forced_rest_receives_the_same_refusal():
     now = 1_000_000.0
@@ -403,8 +403,8 @@ def test_malformed_line_between_valid_lines_is_dated_by_the_following_timestamp(
     timestamps = sorted(state.request_timestamps)
 
     # The garbled line is dated by the timestamp that follows it in the
-    # file (2000.0), not the one before it (1000.0) - the design requires
-    # "not earlier than the true value".
+    # file (2000.0), not the one before it (1000.0) - a line's
+    # assigned date must not be earlier than its true value.
     assert timestamps == [pytest.approx(1000.0), pytest.approx(2000.0), pytest.approx(2000.0)]
 
 
@@ -695,7 +695,7 @@ async def test_resting_until_does_not_carry_over_a_partial_remainder_across_runs
 
 
 # =========================================================================
-# T-17 (R6.2, behavior) - sequence reservation: the retry-after value names
+# T-17 (behavior) - sequence reservation: the retry-after value names
 # the N-th-oldest expiring entry, not the oldest and not the (N+1)-th.
 # =========================================================================
 
@@ -745,7 +745,7 @@ async def test_slots_needed_reservation_names_the_nth_oldest_expiring_entry_not_
 
 
 # =========================================================================
-# T-63 (R6.7, behavior) - omitting slots_needed reproduces the prior,
+# T-63 (behavior) - omitting slots_needed reproduces the prior,
 # single-slot decisions across a normal / near-cap / over-cap / rest set of
 # scenarios, bit-for-bit with what this file already pinned pre-feature.
 # =========================================================================

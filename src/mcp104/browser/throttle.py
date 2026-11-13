@@ -21,7 +21,7 @@ mandatory rest after sustained continuous activity, to model "the human
 stops and leaves" — the behaviour the original uniform-delay approach most
 conspicuously lacked.
 
-★ Inter-action pacing is now an INTERVAL FLOOR (MIN_CALL_INTERVAL_SECONDS),
+★ Inter-action pacing is now an INTERVAL FLOOR (MCP104_MIN_CALL_INTERVAL_SECONDS),
 not a distribution drawn to approximate the recording's idle-gap shape.
 The two are opposite in effect on traffic shape: a drawn delay ADDS an
 interval sampled from a distribution of our own devising, so timing
@@ -31,7 +31,7 @@ leaves the caller's own rhythm intact (inference time varies with output
 length; the Agent reads results before deciding what to call next) and
 clips only the fastest tail.
 
-★ MAX_REQUESTS_PER_HOUR's default was lowered (1800 -> 300) around the
+★ MCP104_MAX_REQUESTS_PER_HOUR's default was lowered (1800 -> 300) around the
 same time this ThrottleState first served only five tools going through
 guarded_api and issuing exactly one HTTP request per call. The JSON-API
 messaging migration (read_messages / get_conversation / send_message)
@@ -42,7 +42,7 @@ therefore a call-volume budget for the whole tool surface, sized by how
 many requests actually go out, not a number that binds some tools and is
 slack for others.
 
-★ The outbound-contact feature adds ONE exception to "one request per
+★ The event tools add ONE exception to "one request per
 tool call": each event tool (shared `send_event` in tools/events.py) issues
 three (a reverse-bridge GET, an event/last-info GET, then the event POST
 itself). The
@@ -76,7 +76,7 @@ something production never produces at all, on any tool this project
 registers, which puts the derivation basis further from what actually
 ships than it was before this migration, not closer to it. A client that fetches only
 JSON and never the surrounding page assets is itself a distinguishing
-signature (steering/tech.md §6b.6: "量少不等於可疑度低" — low request
+signature (docs/104-site-facts.md §6b.6: "量少不等於可疑度低" — low request
 volume is not the same as low suspicion), which is a reason to keep
 treating these numbers as a starting point, not a reason the migration
 made moot. Stating the single path plainly must not read as license to
@@ -94,7 +94,7 @@ from pathlib import Path
 log = logging.getLogger("104-mcp.throttle")
 
 # Rolling window for the hourly request budget. Fixed, not env-configurable
-# — only the request COUNT allowed within it (MAX_REQUESTS_PER_HOUR in
+# — only the request COUNT allowed within it (MCP104_MAX_REQUESTS_PER_HOUR in
 # config.py) is. "Rolling", not a fixed clock hour: the window is always
 # "the last 3600 seconds as of now", so it never resets in a burst at the
 # top of an hour.
@@ -182,7 +182,7 @@ class ThrottleAbort:
     "try again in N seconds". detail, when present, is a plain description
     of which file and which kind of read failure; the caller-facing wording
     around it belongs to the guard, not here — this module never imports
-    from tools/ (steering/structure.md) and never writes Agent-facing
+    from tools/ (browser/ does not depend on tools/) and never writes Agent-facing
     prose.
     """
     kind: str

@@ -317,7 +317,7 @@ def extract_browse_limit(container: dict) -> dict | None:
 
 
 def browse_limit_warning(browse_limit: dict | None) -> str | None:
-    """A heads-up when today's browse count has reached the design-pinned 90% threshold
+    """A heads-up when today's browse count has reached the 90% threshold
     of resumeMax (270/300 as measured) — see _BROWSE_LIMIT_WARNING_RATIO. Never refuses:
     104's own enforcement at the maximum has never been observed, so this tool does not
     guess a boundary the site itself has not been seen to enforce.
@@ -804,8 +804,8 @@ async def _issue_one(
         log.error("_issue_one: request to %s failed: %s", target.key, exc)
         # A timeout/connection error says nothing about whether the
         # session itself is usable — the next call may succeed outright
-        # — so this is ToolAbort, not SessionUnavailable: the design
-        # treats transport failure as transient, and SessionUnavailable's
+        # — so this is ToolAbort, not SessionUnavailable: a transport
+        # failure is treated as transient, and SessionUnavailable's
         # contract (a future session-recovery handler may react to it,
         # e.g. by clearing cookies) must not misfire on a network blip
         # that has nothing to do with session health.

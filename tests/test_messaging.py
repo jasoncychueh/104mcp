@@ -1,7 +1,7 @@
 """Tests for the JSON-API messaging migration (`read_messages` / `get_conversation` /
 `send_message`), following tests/test_search.py's seam-substitution idiom: the HTTP
 transport (`browser.api_client.fetch`) is faked. There is no BrowserContext seam left
-post-login (§C7) — `guarded_api` reads credentials straight off `SessionInfo.cookies`,
+post-login — `guarded_api` reads credentials straight off `SessionInfo.cookies`,
 so a session under test is built by handing that field a cookie list directly.
 `guarded_api`, `classify()` and the actual `tools.messaging` functions are exercised
 for real, never mocked.
@@ -251,7 +251,7 @@ async def _new_session(tmp_path) -> tuple[FakeCtx, SessionInfo, Database]:
     ctx = FakeCtx(pool, database)
     sid = get_session_id(ctx)
     # guarded_api reads credentials straight off SessionInfo.cookies now —
-    # there is no BrowserContext left to fake post-login (§C7).
+    # there is no BrowserContext left to fake post-login.
     info = SessionInfo(cookies=[], account_label="test@104.com")
     pool.activate_direct(sid, info)
     return ctx, info, database
@@ -275,7 +275,7 @@ def deterministic_throttle(monkeypatch):
 # Pure functions — no HTTP, no browser, no MCP Context
 # ═════════════════════════════════════════════════════════════════════════════════
 
-# ── _watermark / _read_state / _direction (§4) ──────────────────────────────────────
+# ── _watermark / _read_state / _direction ──────────────────────────────────────
 
 def test_watermark_reads_creadat_as_int():
     assert _watermark({"creadAt": 9101}) == 9101
@@ -347,7 +347,7 @@ def test_send_body_is_exactly_content():
     assert set(_send_body("hello").keys()) == {"content"}
 
 
-# ── _more_pages_warning (§3) ──────────────────────────────────────────────────────────
+# ── _more_pages_warning ──────────────────────────────────────────────────────────
 
 def test_more_pages_warning_fires_when_page_below_total():
     warning = _more_pages_warning({"page": 1, "total_pages": 8, "total": 213})
@@ -371,7 +371,7 @@ def test_more_pages_warning_extra_only_appended_when_it_fires():
     assert silent is None
 
 
-# ── _event_labels (§5) — imported via tools.discovery, the table's real home ────────
+# ── _event_labels — imported via tools.discovery, the table's real home ────────
 
 def test_event_labels_pair_1_1_and_2_1_side_by_side():
     # The whole reason the table is pair-keyed: status=1 means a different word
@@ -406,7 +406,7 @@ def test_event_labels_pair_absent_from_table_behaves_same_as_unlabelled():
     assert progress is not None and polarity is None
 
 
-# ── _convert_inbox_row (§5) ───────────────────────────────────────────────────────────
+# ── _convert_inbox_row ───────────────────────────────────────────────────────────
 
 def test_convert_inbox_row_renames_job_no_and_p_id():
     row = _convert_inbox_row(_INBOX_ROW_LABELLED)
@@ -445,7 +445,7 @@ def test_convert_inbox_row_every_measured_field_is_glossed_or_excluded():
         ), f"{raw_key!r} on a fixture row is neither glossed nor explicitly excluded"
 
 
-# ── _convert_message_row (§4, §5) ─────────────────────────────────────────────────────
+# ── _convert_message_row ─────────────────────────────────────────────────────
 
 def test_convert_message_row_derives_direction_and_excludes_source():
     row = _convert_message_row(_MSG_SENT_READ, watermark=9101)
@@ -498,10 +498,10 @@ def test_convert_message_row_every_measured_field_is_glossed_or_excluded():
         ), f"{raw_key!r} on a fixture row is neither glossed nor explicitly excluded"
 
 
-# ── _send_verdict / NOT_SENT (§6) ─────────────────────────────────────────────────────
+# ── _send_verdict / NOT_SENT ─────────────────────────────────────────────────────
 
 def test_send_verdict_maps_every_documented_not_sent_kind():
-    # Round I1 Low K: iterating NOT_SENT and checking _send_verdict against
+    # Iterating NOT_SENT and checking _send_verdict against
     # its own members cannot fail no matter what the set contains — it is
     # the constant testing itself. The kinds are listed as independent
     # literals here (transcribed from §6b's table, not read off NOT_SENT),
@@ -659,7 +659,7 @@ async def test_get_conversation_missing_metadata_is_malformed(tmp_path, monkeypa
 
 
 # ═════════════════════════════════════════════════════════════════════════════════
-# send_message — the taxonomy (§6), this round's largest behavioural surface
+# send_message — the taxonomy, the largest behavioural surface
 # ═════════════════════════════════════════════════════════════════════════════════
 
 _SEND_SUCCESS_BODY = {"data": [{"messageId": ["9999"]}], "metadata": None}
@@ -696,7 +696,7 @@ async def test_send_message_empty_message_rejected_before_any_request(tmp_path, 
 
     result = await send_message(ctx=ctx, job_id="12355016", candidate_id="0577442", message="   ")
 
-    # Round I1 Low M: comparing against a dict built FROM result["error"]
+    # Comparing against a dict built FROM result["error"]
     # itself can never fail on the error half, whatever its value is — the
     # real claims are the exact key set and a non-empty, human-readable
     # message naming the actual reason (empty content).
@@ -724,14 +724,14 @@ async def test_send_message_daily_cap_rejected_before_any_request(tmp_path, monk
 
 @pytest.mark.asyncio
 async def test_send_message_throttled_rejection_carries_retry_after_seconds_and_does_not_log(tmp_path, monkeypatch):
-    # Round I1 Bug D: shape 3 ({"error": str}) is not always "104 refused" —
+    # Shape 3 ({"error": str}) is not always "104 refused" —
     # a throttle rejection is OUR OWN precondition (no request ever reaches
     # 104) and carries a fourth key, retry_after_seconds, the docstring must
     # name. Not sent either way, so no sent_log row.
     ctx, info, db = await _new_session(tmp_path)
     _install_never_called_fetch(monkeypatch)
 
-    # enforce_throttle's contract (§C10): a rejection is a ThrottleAbort, not
+    # enforce_throttle's contract: a rejection is a ThrottleAbort, not
     # a bare dict — guarded_api reads .kind/.payload off it directly.
     async def rejecting_throttle(*args, **kwargs):
         return ThrottleAbort(
@@ -767,7 +767,7 @@ async def test_send_message_expired_session_returns_error_payload_and_does_not_l
 
 @pytest.mark.asyncio
 async def test_send_message_auth_host_redirect_returns_error_not_unconfirmed_and_does_not_log(tmp_path, monkeypatch):
-    # Round I1 Bug A: the specific site helpers.py's guarded_api singles out
+    # The specific site helpers.py's guarded_api singles out
     # as needing kind="expired" rather than the "transport" kind raised 30
     # lines earlier for a plain fetch() exception — a 3xx response whose
     # Location points at an auth host, read from fetch()'s own RawResponse
@@ -943,7 +943,7 @@ async def test_send_message_log_sent_failure_does_not_change_ambiguous_verdict(t
 async def test_send_message_exception_after_hook_reports_unconfirmed_and_logs(tmp_path, monkeypatch):
     # select_cookies_for_host runs AFTER before_request in guarded_api, ahead of
     # fetch() — raising there simulates a non-GuardAbort exception with the hook
-    # already completed. (Post-§C7 there is no BrowserContext.cookies() call left
+    # already completed. (There is no BrowserContext.cookies() call left
     # to fault-inject against; credentials are a plain SessionInfo.cookies list
     # that cannot itself raise, so the seam moves to the next call that consumes
     # it.)
@@ -1006,7 +1006,7 @@ async def test_send_message_exception_after_hook_reports_unconfirmed_even_with_e
 
 
 # ═════════════════════════════════════════════════════════════════════════════════
-# Repo sweeps (§7) — the claims whose falsifier is invisible to any test that reads
+# Repo sweeps — the claims whose falsifier is invisible to any test that reads
 # a single file
 # ═════════════════════════════════════════════════════════════════════════════════
 
@@ -1019,14 +1019,14 @@ def _all_src_files():
 
 def test_messaging_module_touches_no_browser_page_or_context():
     # Successor to the old test_guarded_page_appears_nowhere_except_its_own_
-    # definition: guarded_page itself is removed this cycle (§C7), so a scan
+    # definition: guarded_page itself is removed, so a scan
     # for the STRING "guarded_page(" would go silent the moment its subject
     # stopped existing anywhere — this file included — and keep passing
     # forever with nothing left to catch. The property actually worth
     # protecting here — a narrower, permanently-true slice of the repo-wide
     # claim T-113 owns (tests/test_stealth.py / tests/test_main.py; not
     # duplicated here) — is specific to this module: tools/messaging.py
-    # migrated fully to the JSON API this cycle (module docstring, top of
+    # migrated fully to the JSON API (module docstring, top of
     # this file) and must never re-acquire a page/BrowserContext reference,
     # whether via a direct Playwright import or a call into the retired
     # guarded_page.
@@ -1082,7 +1082,7 @@ _PID_SHAPED_ID = "073748"
 
 
 def _outbound_success_envelope(event_id: str = "") -> dict:
-    """§Testing Strategy's "成功信封" — identical on both send_message and
+    """The success envelope — identical on both send_message and
     send_willingness_event; only eventId differs by route (send_message
     measures "" [T-4], send_inquiry measures non-empty [T-36])."""
     return {
@@ -1309,7 +1309,7 @@ async def test_T48_candidate_status_write_rules(tmp_path, monkeypatch):
 
 
 
-# Round I1 Smell B: this file used to carry its own
+# This file used to carry its own
 # test_endpoint_construction_with_delete_method_raises, but it passed
 # family_b_shape=None alongside family="B" — the ValueError it caught could
 # come from EITHER the missing-shape check OR the method whitelist, so it
@@ -1320,7 +1320,7 @@ async def test_T48_candidate_status_write_rules(tmp_path, monkeypatch):
 # — kept there rather than duplicated here.
 
 
-# ── send_message status rule after this round — T-70 (R5.6) ─────────────────────────
+# ── send_message status rule — T-70 ─────────────────────────
 
 @pytest.mark.asyncio
 async def test_send_message_accepted_marks_a_blank_candidate_contacted_and_keeps_interested(tmp_path, monkeypatch):

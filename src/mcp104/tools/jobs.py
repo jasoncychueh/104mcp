@@ -42,7 +42,7 @@ from mcp104.tools.helpers import (
 )
 from mcp104.tools.registration import register_tool
 from mcp104.tools.messaging import _send_verdict
-from mcp104.tools.search import html_to_text
+from mcp104.tools.search import compact_exp_job, html_to_text
 from mcp104.tools.status import id_link_pairs, remember_id_links
 
 log = logging.getLogger("104-mcp.jobs")
@@ -54,10 +54,6 @@ log = logging.getLogger("104-mcp.jobs")
 APPLICANT_WINDOW_DAYS = 60
 _TAIPEI = timezone(timedelta(hours=8))
 _DATE_FORMAT = "%Y/%m/%d"
-
-# The only keys of an `expJobArr` entry that survive onto an applicant row. A row's
-# `expJobNote` alone was 39% of its ~6.2 KB (§8.28).
-_EXP_JOB_KEPT_KEYS = ("expFirm", "expTitle", "expStart", "expEnd")
 
 _RESUME_NUMBER_KEYS = (
     ("match", "match"),
@@ -94,14 +90,6 @@ def _count_int(value: object) -> int | None:
     return None
 
 
-def _compact_exp_job(entry):
-    """One `expJobArr` entry reduced to company, title and start/end. A key 104 left
-    out stays out; a non-dict entry (never observed) passes through untouched."""
-    if not isinstance(entry, dict):
-        return entry
-    return {k: entry[k] for k in _EXP_JOB_KEPT_KEYS if k in entry}
-
-
 def _build_applicant_row(raw: object, input_date: str | None) -> dict:
     if not isinstance(raw, dict):
         raise MalformedResponseError("應徵者列不是物件")
@@ -113,7 +101,7 @@ def _build_applicant_row(raw: object, input_date: str | None) -> dict:
             raise MalformedResponseError(f"應徵者列缺少 {key}")
     picked = {k: v for k, v in raw.items() if k in discovery_mod.APPLICANT_ROW_FIELD_GLOSS}
     if isinstance(picked.get("expJobArr"), list):
-        picked["expJobArr"] = [_compact_exp_job(entry) for entry in picked["expJobArr"]]
+        picked["expJobArr"] = [compact_exp_job(entry) for entry in picked["expJobArr"]]
     # Same value handling as a résumé row: 104's rich-text fields arrive as HTML.
     row = convert_keys(picked, string_transform=html_to_text)
     if "id_no" in row:

@@ -160,13 +160,15 @@ Claude Code skill，內容來自用這個 server 實際跑完一輪招募的過�
 | `MCP104_DATA_DIR` | 選填，預設依平台慣例放在使用者目錄下的 `mcp104` | 資料庫、登入憑證、節流狀態都存在這裡 |
 | `MCP104_AUTH_BASE_URL` | 選填，須與 `MCP104_AUTH_BIND_PORT` 成對設定 | 登入頁的對外網址，你和伺服器不在同一台機器時才需要 |
 | `MCP104_AUTH_BIND_PORT` | 選填，須與 `MCP104_AUTH_BASE_URL` 成對設定 | 登入頁監聽的埠 |
-| `MAX_DAILY_MESSAGES` | `50` | 每個帳號每天最多發幾則訊息（`send_message` 與上面五個送出事件的工具合計） |
-| `LOGIN_TIMEOUT_SECONDS` | `900` | 等你完成登入的上限秒數 |
-| `MAX_REQUESTS_PER_HOUR` | `300` | 每小時對 104 的請求上限 |
-| `MAX_INLINE_WAIT_SECONDS` | `20` | 節流等待超過這個秒數就改回覆「稍後再試」 |
-| `ACTIVITY_STREAK_LIMIT_MINUTES` | `20` | 連續操作多久後強制休息 |
-| `REST_DURATION_MINUTES` | `3` | 強制休息的長度 |
-| `MIN_CALL_INTERVAL_SECONDS` | `5` | 兩次呼叫之間的最小間隔 |
+| `MCP104_MAX_DAILY_MESSAGES` | `50` | 每個帳號每天最多發幾則訊息（`send_message` 與上面五個送出事件的工具合計） |
+| `MCP104_LOGIN_TIMEOUT_SECONDS` | `900` | 等你完成登入的上限秒數 |
+| `MCP104_MAX_REQUESTS_PER_HOUR` | `300` | 每小時對 104 的請求上限 |
+| `MCP104_MAX_INLINE_WAIT_SECONDS` | `20` | 節流等待超過這個秒數就改回覆「稍後再試」 |
+| `MCP104_ACTIVITY_STREAK_LIMIT_MINUTES` | `20` | 連續操作多久後強制休息 |
+| `MCP104_REST_DURATION_MINUTES` | `3` | 強制休息的長度 |
+| `MCP104_MIN_CALL_INTERVAL_SECONDS` | `5` | 兩次呼叫之間的最小間隔 |
+
+舊的無前綴名稱（例如 `MAX_DAILY_MESSAGES`）已停用：只要環境裡還有設定，伺服器就不會啟動，錯誤訊息會寫出要改成哪個新名稱。
 
 ---
 

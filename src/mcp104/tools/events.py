@@ -473,7 +473,7 @@ def register_event_tools(mcp: FastMCP) -> None:
                 事件種類由工具決定，範本類別不換路由（104 前端碼）：本工具一律
                 送詢問意願。
 
-        每日上限由 MAX_DAILY_MESSAGES 控制（per 帳號，與 send_message 共用）。
+        每日上限由 MCP104_MAX_DAILY_MESSAGES 控制（per 帳號，與 send_message 共用）。
         回傳形狀與 send_message 完全相同（"success": False、{"error": ...}、
         "sent": "confirmed"/"unconfirmed" 三大類，見 send_message 的說明）——
         兩者共用同一套判定與同一份程式碼。

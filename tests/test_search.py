@@ -1,12 +1,11 @@
-"""Phase 4 tool-surface tests — design.md Testing Strategy, Components §9, Data Models
-(Response shapes / Résumé detail field handling), Error Handling.
+"""Tool-surface tests for the résumé search, recommend, match and detail tools: response
+shapes, résumé detail field handling, and error behaviour.
 
-Written BLIND to tools/search.py's *implementation* (spec-tester Mode 1 rule): every
-assertion below is derived from design.md's declared tool interfaces (Components §9),
-Data Models, requirements.md R1-R5/R11/R12, and docs/104-site-facts.md's measured facts —
-never from reading tools/search.py itself, which was being rewritten in parallel by
-another agent for this same cycle. What WAS read (permitted — completed, prior-phase
-modules, not this cycle's blind file):
+Written BLIND to tools/search.py's *implementation*: every assertion below is derived from
+the tools' declared public interfaces, the response-shape contract, and
+docs/104-site-facts.md's measured facts — never from reading tools/search.py itself, which
+was written independently by another agent. What WAS read (permitted — completed
+modules that tools/search.py builds on):
 
 - `browser/api_client.py` (Endpoint/RawResponse/Verdict, `classify()`, `ENDPOINTS`) —
   needed to build canned HTTP responses and to know, e.g., that HTTP 400 on a family-A
@@ -15,14 +14,14 @@ modules, not this cycle's blind file):
   know the guard's `except GuardAbort as e: return e.payload` convention, which is why a
   failure result is asserted to carry ONLY `{"error": ...}`.
 - `tools/filters.py`, `tools/categories.py` (`CONDITIONS`, `VALID_FILTER_KEYS`,
-  `encode_filters`, `resolve`, `load_dataset`) — already-complete Phase 3 deliverables,
+  `encode_filters`, `resolve`, `load_dataset`) — already-complete, earlier deliverables,
   used directly (not mocked) to build realistic filtered-search scenarios (T-29, T-58)
   and to check an unknown-key/tombstone error names a real valid replacement (T-3, T-4).
 - `db/database.py`, `browser/session.py`, and the sibling `tests/test_api_client.py` /
   `tests/test_helpers.py` fixture-harness idiom (`FakeCtx`/`FakeApp`/
   `_install_fake_fetch`) — reused/adapted here so this file's seam-substitution
   matches the rest of the suite: the HTTP transport (`browser.api_client.fetch`) is
-  faked (there is no BrowserContext left to fake post-login, §C7 — a session under
+  faked (there is no BrowserContext left to fake post-login — a session under
   test is built by handing `SessionInfo.cookies` a list directly); `guarded_api`,
   `classify`, `encode_filters`, `resolve` and the actual `tools.search` tool
   functions are exercised for real, never mocked.
@@ -30,10 +29,10 @@ modules, not this cycle's blind file):
 Cases: T-1, T-3, T-4, T-5, T-6, T-7, T-8, T-9, T-10, T-11, T-12, T-13, T-14, T-15, T-16,
 T-17, T-18, T-28, T-29, T-41, T-42, T-43, T-58, T-59.
 
-**PINNED (was a genuine ambiguity in Mode 1, resolved by the coordinator in Mode 2):**
+**PINNED (a genuine ambiguity in the contract, settled as described here):**
 détail success nests the résumé fields under a `resume` key, alongside `browse_limit` and
 `warnings` — `{"resume": {…113 mechanically converted fields…}, "browse_limit": …,
-"warnings": [...]}` — per design.md Data Models — Response shapes. Two other readings were
+"warnings": [...]}` — per the response-shape contract. Two other readings were
 tried and rejected first, and the reasoning matters for how T-13/T-14/T-16 are written:
 the whole family-B `data` envelope (this test author's first bet, grounded in
 `classify()`'s `payload=data`) was rejected because `data.userName`/`data.companyName` are
@@ -49,8 +48,8 @@ siblings (operator identity, job-context, telemetry) do NOT leak into the top le
 (T-13, T-14, T-16) rely only on order- and count-preservation at every nesting level
 (what any mechanical `{f(k): g(v) for k, v in d.items()}` conversion satisfies) — never on
 knowing the exact camelCase→snake_case algorithm. Row-level tests (T-1, T-7, T-9, T-10,
-T-11, T-17, T-18) deliberately do NOT run this exhaustive check: design.md calls row
-fields "an allow-list" (Data Models — Response shapes), which — unlike détail's explicit
+T-11, T-17, T-18) deliberately do NOT run this exhaustive check: the contract calls row
+fields "an allow-list", which — unlike détail's explicit
 "every field... no field omitted" — leaves open whether the row shape is a filtered
 subset of the raw fields. Row tests therefore spot-check only fields whose spelling is
 invariant under any reasonable snake_case conversion (`candidate_id` per the one
@@ -65,13 +64,13 @@ line 711 only records "未帶 `jobno` 時推薦與配對回 HTTP 400 + JSON（�
 — only the HTTP status does, and that IS measured.
 
 **T-42's "warning threshold" is now pinned at `on_that_day_count >= 270`** (ninety per
-cent of the measured 300 daily maximum) per design.md Data Models — Response shapes.
+cent of the measured 300 daily maximum), as the response-shape contract specifies.
 Tested directly at 270 (warning fires) and at 269 (it does not) in addition to the
-separate at-maximum non-refusal check — the design basis originally gave no number here,
+separate at-maximum non-refusal check — the contract originally gave no number here,
 so the first draft of this test only exercised the unambiguous at-maximum case.
 
 **T-59's docstring-content checks are deliberately loose** (substring/keyword presence,
-not exact wording) since design.md states WHAT each docstring must say, never the exact
+not exact wording) since the contract states WHAT each docstring must say, never the exact
 Traditional-Chinese prose. A loose check can false-negative on unlucky phrasing but
 cannot false-positive on a docstring that never raises the concept at all.
 """
@@ -247,7 +246,7 @@ async def _new_session(tmp_path) -> tuple[FakeCtx, SessionInfo, Database]:
     ctx = FakeCtx(pool, database)
     sid = get_session_id(ctx)
     # guarded_api reads credentials straight off SessionInfo.cookies now —
-    # there is no BrowserContext left to fake post-login (§C7).
+    # there is no BrowserContext left to fake post-login.
     info = SessionInfo(cookies=[], account_label="test@104.com")
     pool.activate_direct(sid, info)
     return ctx, info, database
@@ -344,7 +343,7 @@ def _contains_value(node, value):
     return False
 
 
-# ── T-1 (R1.1): keyword search returns rows, pagination, quota, warnings ────────────
+# ── T-1: keyword search returns rows, pagination, quota, warnings ────────────
 
 @pytest.mark.asyncio
 async def test_keyword_search_returns_documented_success_shape(tmp_path, monkeypatch):
@@ -377,14 +376,14 @@ async def test_keyword_search_returns_documented_success_shape(tmp_path, monkeyp
     assert len(result["results"]) == len(fixture_rows)
     first = result["results"][0]
     # candidate_id <- idNo is the one documented row-field renaming exception
-    # (design.md Data Models — Response shapes); age/sex are invariant under any
+    # (the row-shape contract); age/sex are invariant under any
     # camelCase->snake_case conversion (single lowercase words already).
     assert first["candidate_id"] == fixture_rows[0]["idNo"]
     assert first["age"] == fixture_rows[0]["age"]
     assert first["sex"] == fixture_rows[0]["sex"]
 
 
-# ── T-3 (R1.3): unrecognised filters key -> error naming it + valid keys, no request ─
+# ── T-3: unrecognised filters key -> error naming it + valid keys, no request ─
 
 @pytest.mark.asyncio
 async def test_unknown_filters_key_errors_naming_it_and_valid_keys_no_request(tmp_path, monkeypatch):
@@ -397,11 +396,11 @@ async def test_unknown_filters_key_errors_naming_it_and_valid_keys_no_request(tm
     assert "results" not in result
     assert "totally_bogus_key_zzz" in result["error"]
     assert any(valid_key in result["error"] for valid_key in filters.VALID_FILTER_KEYS), (
-        "R1.3: the error must name the valid keys"
+        "the error must name the valid keys"
     )
 
 
-# ── T-4 (R1.4): retired argument -> error naming a replacement, no request ──────────
+# ── T-4: retired argument -> error naming a replacement, no request ──────────
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("tombstone_kwarg", ["area", "experience", "education"])
@@ -414,12 +413,12 @@ async def test_retired_argument_errors_naming_a_replacement_no_request(tombstone
     assert "error" in result
     assert "results" not in result
     assert any(valid_key in result["error"] for valid_key in filters.VALID_FILTER_KEYS), (
-        f"R1.4: retired argument {tombstone_kwarg!r} must name a replacement that "
+        f"retired argument {tombstone_kwarg!r} must name a replacement that "
         f"exists in the condition table"
     )
 
 
-# ── T-5 (R1.5): successful search carries applied_filters/browse_limit/warnings ─────
+# ── T-5: successful search carries applied_filters/browse_limit/warnings ─────
 
 @pytest.mark.asyncio
 async def test_successful_search_carries_applied_filters_browse_limit_warnings_present(tmp_path, monkeypatch):
@@ -434,7 +433,7 @@ async def test_successful_search_carries_applied_filters_browse_limit_warnings_p
     assert "warnings" in result
 
 
-# ── T-6 (R1.6): requesting a page fetches exactly one page ──────────────────────────
+# ── T-6: requesting a page fetches exactly one page ──────────────────────────
 
 @pytest.mark.asyncio
 async def test_requesting_a_page_fetches_exactly_one_page(tmp_path, monkeypatch):
@@ -447,7 +446,7 @@ async def test_requesting_a_page_fetches_exactly_one_page(tmp_path, monkeypatch)
     assert len(spy.calls) == 1, "a page request must fetch exactly one page, never more on the caller's behalf"
 
 
-# ── T-7 (R2.1): recommend with a job id returns rows in the documented shape ────────
+# ── T-7: recommend with a job id returns rows in the documented shape ────────
 
 @pytest.mark.asyncio
 async def test_recommend_with_job_id_returns_documented_shape(tmp_path, monkeypatch):
@@ -478,7 +477,7 @@ async def test_recommend_with_job_id_returns_documented_shape(tmp_path, monkeypa
     assert result["results"][0]["candidate_id"] == fixture_rows[0]["idNo"]
 
 
-# ── T-8 (R2.2, R3.4): no job id -> missing-parameter error, not an empty result ─────
+# ── T-8: no job id -> missing-parameter error, not an empty result ─────
 
 _MISSING_PARAM_BODY = {
     "status": "USER_ERROR",
@@ -499,15 +498,15 @@ async def test_recommend_or_match_with_no_job_id_surfaces_missing_param_error(to
     result = await tool(jobno="", ctx=ctx)
 
     assert len(spy.calls) == 1, (
-        "R2.2/R3.4: the system surfaces the SERVER's rejection, which implies a real "
+        "the system surfaces the SERVER's rejection, which implies a real "
         "request is made and its HTTP 400 response drives the error — not a client-side "
         "short-circuit before any request"
     )
     assert "error" in result
-    assert "results" not in result, "must not be presented as an empty result (R2.2/R3.4)"
+    assert "results" not in result, "must not be presented as an empty result"
 
 
-# ── T-9 (R2.3): job with no recommendations -> empty result set, not an error ───────
+# ── T-9: job with no recommendations -> empty result set, not an error ───────
 
 @pytest.mark.asyncio
 async def test_recommend_job_with_no_recommendations_is_empty_success_not_error(tmp_path, monkeypatch):
@@ -521,7 +520,7 @@ async def test_recommend_job_with_no_recommendations_is_empty_success_not_error(
     assert result["pagination"] == {"page": 1, "total_pages": 0, "total": 0}
 
 
-# ── T-10 (R3.1): match with a job id returns rows in the documented shape ───────────
+# ── T-10: match with a job id returns rows in the documented shape ───────────
 
 @pytest.mark.asyncio
 async def test_match_with_job_id_returns_documented_shape(tmp_path, monkeypatch):
@@ -544,14 +543,14 @@ async def test_match_with_job_id_returns_documented_shape(tmp_path, monkeypatch)
     assert result["results"][0]["candidate_id"] == fixture_rows[0]["idNo"]
 
 
-# ── T-11 (R3.2): match route reads container/page from its OWN key names ───────────
+# ── T-11: match route reads container/page from its OWN key names ───────────
 
 @pytest.mark.asyncio
 async def test_match_route_reads_container_and_page_from_its_own_keys(tmp_path, monkeypatch):
     # rows_match.json's `result` carries NO `data` key and its `pageInfo` carries NO
     # `this_page` key at all (only `resumes` / `thisPage` — docs/104-site-facts.md
     # §6b.3b, tests/fixtures/README.md) — a reader sharing search/recommend's key names
-    # would find nothing here, and per design.md must not silently read that as empty.
+    # would find nothing here, and must not silently read that as empty.
     fixture = load_fixture("rows_match.json")
     assert "data" not in fixture["result"]
     assert "this_page" not in fixture["result"]["pageInfo"]
@@ -567,7 +566,7 @@ async def test_match_route_reads_container_and_page_from_its_own_keys(tmp_path, 
     assert result["pagination"]["total"] == fixture["result"]["pageInfo"]["total"]
 
 
-# ── T-12 (R3.3): closed job on match route -> server's own explanation ──────────────
+# ── T-12: closed job on match route -> server's own explanation ──────────────
 
 @pytest.mark.asyncio
 async def test_match_closed_job_reports_servers_own_explanation(tmp_path, monkeypatch):
@@ -624,7 +623,7 @@ async def test_match_update_date_type_blank_rejected_before_request(tmp_path, mo
     )
 
 
-# ── T-13 (R4.1): résumé detail returns every field the server provided ──────────────
+# ── T-13: résumé detail returns every field the server provided ──────────────
 
 @pytest.mark.asyncio
 async def test_get_resume_detail_returns_every_field_the_server_provided(tmp_path, monkeypatch):
@@ -636,7 +635,7 @@ async def test_get_resume_detail_returns_every_field_the_server_provided(tmp_pat
 
     assert "error" not in result
     assert "warnings" in result and isinstance(result["warnings"], list)
-    # PINNED (design.md Data Models — Response shapes, coordinator ruling): the résumé
+    # PINNED (the settled response shape): the résumé
     # fields nest under a `resume` key, alongside `browse_limit` and `warnings` — this
     # matches the other four tools' named-container convention, rather than either of
     # the two readings this test bet on and rejected earlier (the whole family-B `data`
@@ -646,12 +645,12 @@ async def test_get_resume_detail_returns_every_field_the_server_provided(tmp_pat
     response_resume = result["resume"]
     assert len(response_resume) == len(source_resume), (
         "field count of the nested `resume` object changed from the server's own "
-        "data.resume (R4.1: 'return every field the server provides')"
+        "data.resume (the detail tool must return every field the server provides)"
     )
     assert _corresponding(source_resume, response_resume, "idNo") == source_resume["idNo"]
     assert _corresponding(source_resume, response_resume, "userName") == source_resume["userName"]
 
-    # design.md: "the envelope's other siblings are deliberately dropped" — userName/
+    # The envelope's other siblings are deliberately dropped — userName/
     # companyName at the ENVELOPE level are the signed-in OPERATOR's identity, not the
     # candidate's (data.resume already carries the candidate's own userName, asserted
     # above), and job-context/telemetry siblings (hasOnJob, jobNo, resumeTemplate, ...)
@@ -662,7 +661,7 @@ async def test_get_resume_detail_returns_every_field_the_server_provided(tmp_pat
     )
 
 
-# ── T-14 (R4.2): mechanical conversion at every depth, no collision ─────────────────
+# ── T-14: mechanical conversion at every depth, no collision ─────────────────
 
 @pytest.mark.asyncio
 async def test_get_resume_detail_key_conversion_is_mechanical_with_no_collision(tmp_path, monkeypatch):
@@ -682,7 +681,7 @@ async def test_get_resume_detail_key_conversion_is_mechanical_with_no_collision(
     _assert_mechanical_conversion(source_resume, result["resume"], path="$data.resume")
 
 
-# ── T-15 (R4.3): restricted-contact résumé appends a warning naming affected fields ─
+# ── T-15: restricted-contact résumé appends a warning naming affected fields ─
 
 @pytest.mark.asyncio
 async def test_get_resume_detail_restricted_contact_appends_warning(tmp_path, monkeypatch):
@@ -697,7 +696,7 @@ async def test_get_resume_detail_restricted_contact_appends_warning(tmp_path, mo
 
     assert "error" not in result
     assert "warnings" in result
-    assert len(result["warnings"]) >= 1, "restricted résumé must append a masking warning (R4.3)"
+    assert len(result["warnings"]) >= 1, "restricted résumé must append a masking warning"
     warning_text = " ".join(result["warnings"])
     assert "email" in warning_text, (
         "the warning must name the affected fields; 'email' is one of the fields "
@@ -708,7 +707,7 @@ async def test_get_resume_detail_restricted_contact_appends_warning(tmp_path, mo
     )
 
 
-# ── T-16 (R4.4): restricted contact fields byte-identical, no derived flag ──────────
+# ── T-16: restricted contact fields byte-identical, no derived flag ──────────
 
 @pytest.mark.asyncio
 async def test_get_resume_detail_restricted_contact_fields_byte_identical_no_derived_flag(tmp_path, monkeypatch):
@@ -769,7 +768,7 @@ async def test_search_resumes_missing_page_info_is_malformed_not_empty_result(tm
     assert "104 回應結構異常" in result["error"]
 
 
-# ── T-28 (R7.3): a dropped condition -> error naming it, no results key ─────────────
+# ── T-28: a dropped condition -> error naming it, no results key ─────────────
 
 @pytest.mark.asyncio
 async def test_dropped_filter_condition_errors_naming_it_no_results_key(tmp_path, monkeypatch):
@@ -787,10 +786,10 @@ async def test_dropped_filter_condition_errors_naming_it_no_results_key(tmp_path
 
     assert "error" in result
     assert "results" not in result
-    assert "sex" in result["error"], "R7.3: the error must name the dropped condition"
+    assert "sex" in result["error"], "the error must name the dropped condition"
 
 
-# ── T-29 (R7.4): applied_filters carries resolved wire values, not caller's names ───
+# ── T-29: applied_filters carries resolved wire values, not caller's names ───
 
 @pytest.mark.asyncio
 async def test_applied_filters_carries_resolved_wire_value_not_callers_name(tmp_path, monkeypatch):
@@ -817,7 +816,7 @@ async def test_applied_filters_carries_resolved_wire_value_not_callers_name(tmp_
     )
 
 
-# ── T-41 (R11.1, R11.2): quota key present on every success, null when absent ───────
+# ── T-41: quota key present on every success, null when absent ───────
 
 @pytest.mark.asyncio
 async def test_quota_key_present_and_populated_on_success(tmp_path, monkeypatch):
@@ -840,16 +839,16 @@ async def test_quota_key_present_and_null_when_response_carries_none(tmp_path, m
     result = await search_resumes(keyword="zzqxvkwj9871nonexistentkeyword", ctx=ctx)
 
     assert "error" not in result
-    assert "browse_limit" in result, "the key must be present even with nothing to report (R11.2)"
+    assert "browse_limit" in result, "the key must be present even with nothing to report"
     assert result["browse_limit"] is None
 
 
-# ── T-42 (R11.3, R11.4): reaching threshold warns; reaching maximum doesn't refuse ──
+# ── T-42: reaching threshold warns; reaching maximum doesn't refuse ──
 
 @pytest.mark.asyncio
 async def test_quota_reaching_threshold_appends_warning(tmp_path, monkeypatch):
-    # design.md Data Models — Response shapes (pinned): "the warning threshold is
-    # on_that_day_count >= 270" — ninety per cent of the measured 300 daily maximum.
+    # Pinned: the warning threshold is on_that_day_count >= 270 — ninety per cent of
+    # the measured 300 daily maximum.
     ctx, _info, _db = await _new_session(tmp_path)
     body = copy.deepcopy(load_fixture("rows_search.json"))
     body["result"]["browseLimit"] = {"resumeMax": 300, "onThatDayCount": "270"}
@@ -858,7 +857,7 @@ async def test_quota_reaching_threshold_appends_warning(tmp_path, monkeypatch):
     result = await search_resumes(keyword="應用工程師", ctx=ctx)
 
     assert "error" not in result
-    assert len(result["warnings"]) >= 1, "reaching the pinned warning threshold (270) must append a warning (R11.3)"
+    assert len(result["warnings"]) >= 1, "reaching the pinned warning threshold (270) must append a warning"
 
 
 @pytest.mark.asyncio
@@ -879,8 +878,8 @@ async def test_quota_below_threshold_appends_no_warning(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_quota_at_maximum_does_not_refuse_call(tmp_path, monkeypatch):
-    # design.md (pinned): "the tool does not refuse at the maximum — the allowance is
-    # 104's to enforce, we have never observed it enforcing one" (R11.4).
+    # Pinned: the tool does not refuse at the maximum — the allowance is
+    # 104's to enforce, we have never observed it enforcing one.
     ctx, _info, _db = await _new_session(tmp_path)
     body = copy.deepcopy(load_fixture("rows_search.json"))
     body["result"]["browseLimit"] = {"resumeMax": 300, "onThatDayCount": "300"}
@@ -888,11 +887,11 @@ async def test_quota_at_maximum_does_not_refuse_call(tmp_path, monkeypatch):
 
     result = await search_resumes(keyword="應用工程師", ctx=ctx)
 
-    assert "error" not in result, "reaching the quota maximum must not refuse the call on its own (R11.4)"
+    assert "error" not in result, "reaching the quota maximum must not refuse the call on its own"
     assert "results" in result
 
 
-# ── T-43 (R12.3): success/empty share one shape; failure carries no results key ─────
+# ── T-43: success/empty share one shape; failure carries no results key ─────
 
 @pytest.mark.asyncio
 async def test_success_and_empty_result_share_one_shape_per_tool(tmp_path, monkeypatch):
@@ -907,7 +906,7 @@ async def test_success_and_empty_result_share_one_shape_per_tool(tmp_path, monke
     assert "error" not in success and "error" not in empty
     assert set(success.keys()) == set(empty.keys()), (
         "a tool's success shape must not vary between a populated and an empty result "
-        "(design.md Data Models: 'the stable-shape promise is per tool')"
+        "(the stable-shape promise is per tool)"
     )
     assert empty["results"] == []
 
@@ -921,13 +920,13 @@ async def test_failure_carries_no_results_key_and_no_empty_containers(tmp_path, 
 
     assert "error" in result
     assert set(result.keys()) == {"error"}, (
-        "a failure must carry no results key and no empty containers (design.md Data "
-        "Models: 'deliberately no empty containers either, since padding an error with "
-        "them would make it structurally resemble a successful empty result')"
+        "a failure must carry no results key and no empty containers ('deliberately no "
+        "empty containers either, since padding an error with them would make it "
+        "structurally resemble a successful empty result')"
     )
 
 
-# ── T-58 (e2e, R1.1+R7.1): filtered search resolves a name, submits, confirms, rows ─
+# ── T-58 (e2e): filtered search resolves a name, submits, confirms, rows ─
 
 @pytest.mark.asyncio
 async def test_filtered_search_resolves_name_submits_and_confirms_in_echo(tmp_path, monkeypatch):
@@ -950,13 +949,13 @@ async def test_filtered_search_resolves_name_submits_and_confirms_in_echo(tmp_pa
     assert result["applied_filters"].get("jobcat") == resolution.code
 
 
-# ── Shared sweep helpers for T-68 / T-70 (Round I5, added after 7afe06d) ────────────
+# ── Shared sweep helpers for T-68 / T-70 (added after 7afe06d) ────────────
 #
-# Round I5's own brief arrived carrying two node names -- "人力仲介代辦" /
-# "人力仲介代辦服務業" -- that do not exist in any bundled dataset; the coordinator had
-# copied them from another agent's report without being able to read the report's own
-# (mojibake'd) output. The correction: "do not hard-code either name from any brief,
-# mine included... let the data supply the oracle." Both discovery helpers below take
+# The brief for these cases arrived carrying two node names -- "人力仲介代辦" /
+# "人力仲介代辦服務業" -- that do not exist in any bundled dataset; they had been
+# copied from another agent's report whose own output was unreadable (mojibake'd). The
+# correction: do not hard-code a node name taken from a brief; let the data supply the
+# oracle. Both discovery helpers below take
 # that literally -- neither hard-codes a dataset node name anywhere. They locate their
 # scenario by calling `categories.resolve()` itself (never re-implementing its tiering
 # or refusal rule) and confirm choosability the same way T-69 does: by round-tripping
@@ -967,9 +966,8 @@ _ALL_DATASET_FILES = [
     "Major.json", "Tool.json", "Skill.json", "Abroad.json",
 ]
 
-# The dataset -> filter-key mapping is design.md's own "Bundled datasets" table
-# (Data Models), stable prior to and untouched by this round's diff -- not read from
-# tools/filters.py, which is one of the files being changed in parallel this round.
+# The dataset -> filter-key mapping is the bundled-datasets table (which dataset backs
+# which filter key), written out here rather than read from tools/filters.py.
 # Where a dataset backs two keys, either is a valid choice; one is picked arbitrarily.
 _DATASET_TO_FILTER_KEY = {
     "JobCat.json": "jobcat",
@@ -995,7 +993,7 @@ def _find_ambiguous_mixed_instance():
     one found, or None.
     """
     for dataset_name in _ALL_DATASET_FILES:
-        # Round I9: load_dataset() now requires a condition_key (branch-code
+        # load_dataset() requires a condition_key (branch-code
         # acceptance is measured per (dataset, condition) pair). Using the SAME
         # mapping here as the caller uses to build its filter (`_DATASET_TO_FILTER_
         # KEY`) is what keeps the round trip below well-defined -- resolving a
@@ -1059,11 +1057,11 @@ def _find_family_instances():
     return mixed, pure
 
 
-# ── T-68 (R9.7, R9.3): an ambiguous name whose tied nodes share an identical raw name
+# ── T-68: an ambiguous name whose tied nodes share an identical raw name
 # is refused with a candidate list that tells them apart, and no request is issued ──
 #
 # Asserted at the TOOL boundary -- what search_resumes actually returns to a caller --
-# never against resolve()'s own return value. Round I4 added `terminal` to `Candidate`,
+# never against resolve()'s own return value. `terminal` was added to `Candidate`,
 # computed correctly at every construction site inside tools/categories.py, and
 # discarded before it reached this exact boundary; every case up to T-67 asserted
 # resolve()'s output, which is upstream of that loss, so the suite went green with the
@@ -1074,8 +1072,8 @@ async def test_ambiguous_identically_named_candidates_are_told_apart_no_request(
     found = _find_ambiguous_mixed_instance()
     assert found is not None, (
         "sanity: the sweep must find at least one ambiguous tie with mixed "
-        "choosability somewhere across the bundled datasets (design.md Components §6: "
-        "7 of 27 duplicate-name groups are 'mixed')"
+        "choosability somewhere across the bundled datasets (7 of 27 "
+        "duplicate-name groups are 'mixed')"
     )
     dataset_name, query_name, outcomes = found
     filter_key = _DATASET_TO_FILTER_KEY[dataset_name]
@@ -1114,11 +1112,11 @@ async def test_ambiguous_identically_named_candidates_are_told_apart_no_request(
     assert len(terminal_values) > 1, (
         f"the tied, identically-named entries all report the same choosability "
         f"({terminal_values!r}) -- they remain indistinguishable to a caller, which "
-        f"is exactly the state R9.7 exists to prevent"
+        f"is exactly the state the `terminal` flag exists to prevent"
     )
 
 
-# ── T-59 (R5.3, R7.5, R9.5): docstrings state the required contract details ─────────
+# ── T-59: docstrings state the required contract details ─────────
 
 def test_tool_docstrings_state_required_contract_details():
     # Reads TOOL_DESCRIPTIONS (the effective text an Agent sees — `description=` kwarg
@@ -1129,26 +1127,26 @@ def test_tool_docstrings_state_required_contract_details():
     # FastMCP's `description=` kwarg (verified via `inspect.signature` on the
     # installed third-party library) is genuinely in use here, not merely possible.
     search_doc = TOOL_DESCRIPTIONS.get("search_resumes", "")
-    # R7.5: expect_pay's semantically-inert "up" mode's actual meaning must be stated
+    # expect_pay's semantically-inert "up" mode's actual meaning must be stated
     # (tools/filters.py's own docstring explicitly defers this to tools/search.py).
     assert "expect_pay" in search_doc, "search_resumes' docstring must document the expect_pay condition"
     assert "up" in search_doc, "search_resumes' docstring must mention the semantically inert 'up' mode"
 
-    # R9.5: codes-only conditions must be named — workExpJob's dataset was never
+    # Codes-only conditions must be named — workExpJob's dataset was never
     # identified among the captured category files (tools/filters.py CONDITIONS table).
     assert "workExpJob" in search_doc, "search_resumes' docstring must name workExpJob as codes-only"
 
     detail_doc = TOOL_DESCRIPTIONS.get("get_resume_detail", "")
-    # Data Models — "Résumé detail field handling": restricted-contact placeholder
+    # Restricted-contact placeholder
     # behaviour must be documented, not just implemented.
     assert any(term in detail_doc for term in ("佔位", "placeholder", "遮罩", "隱藏")), (
         "get_resume_detail's docstring must state that restricted-contact fields hold "
-        "placeholder text (R4.3 / Data Models)"
+        "placeholder text"
     )
 
-    # The unbridgeable "second identifier" (pId) — Data Models: "returned and
+    # The unbridgeable "second identifier" (pId) is returned and
     # documented rather than omitted... a documented one carries the warning that its
-    # key space is unknown and must not be bridged to the messaging id space."
+    # key space is unknown and must not be bridged to the messaging id space.
     all_list_docs = " ".join([
         search_doc,
         TOOL_DESCRIPTIONS.get("list_recommended_resumes", ""),
@@ -1160,7 +1158,7 @@ def test_tool_docstrings_state_required_contract_details():
     )
 
 
-# ── T-67 (R9.5), REVISED for part A of the filter-value-discovery feature: the
+# ── T-67, REVISED for part A of the filter-value-discovery feature: the
 # per-key acceptance text (`categories.RESOLVE_ACCEPTS_ZH`, 133 chars) used to be
 # emitted VERBATIM once per dataset-backed key inside `_filter_key_reference()` --
 # 1,463 chars of pure repetition, a third of why search_resumes' published
@@ -1222,19 +1220,19 @@ def test_search_resumes_description_points_to_browse_filter_values():
     )
 
 
-# ── T-70 (R9.8, R9.4): a prefix-family warning naming a category the resolver would
+# ── T-70: a prefix-family warning naming a category the resolver would
 # refuse identifies it as such; a warning naming only selectable categories carries no
 # such mark. Both directions. ────────────────────────────────────────────────────────
 #
 # The instance is found by `_find_family_instances()` above (shared with T-68's sibling
-# helper), never hard-coded: this round's own brief demonstrated that a node name typed
-# by hand -- even confidently, even by the coordinator -- can name a node that does not
-# exist. Design.md does not pin the exact Traditional-Chinese wording of the mark (only
-# its EFFECT, R9.8), so the presence check below is loose/keyword-based, matching this
+# helper), never hard-coded: a node name typed
+# by hand -- even confidently -- can name a node that does not
+# exist. The exact Traditional-Chinese wording of the mark is not pinned (only
+# its EFFECT: a refused family entry is identified as such), so the presence check below is loose/keyword-based, matching this
 # suite's own established idiom for un-pinned model-facing prose (see T-59's docstring).
 # Drawn from vocabulary tools/categories.py's own RESOLVE_ACCEPTS_ZH export already uses
-# for this same underlying concept (refusal / branch nodes), since design.md ties the
-# `terminal` flag's published meaning to being generated "beside the predicate that
+# for this same underlying concept (refusal / branch nodes), since the
+# `terminal` flag's published meaning is generated "beside the predicate that
 # computes it" in that same module.
 
 _REFUSAL_MARK_KEYWORDS = (
@@ -1260,7 +1258,7 @@ async def test_prefix_family_warning_marks_only_the_refused_sibling(tmp_path, mo
     mixed, pure = _find_family_instances()
     assert mixed is not None, (
         "sanity: the sweep must find at least one prefix family naming an entry the "
-        "resolver would refuse (design.md Components §6: exactly one, across the "
+        "resolver would refuse (exactly one such family exists across the "
         "bundled datasets)"
     )
     assert pure is not None, (
@@ -1297,7 +1295,7 @@ async def test_prefix_family_warning_marks_only_the_refused_sibling(tmp_path, mo
         mentions = _windows_around(joined, refused_name)
         assert any(any(kw in w for kw in _REFUSAL_MARK_KEYWORDS) for w in mentions), (
             f"a family entry the resolver would refuse ({refused_name!r}) must be "
-            f"identified as such near its own mention (R9.8); warnings: {warnings_list!r}"
+            f"identified as such near its own mention; warnings: {warnings_list!r}"
         )
 
     # Direction 2: a family naming only selectable siblings carries no such mark.
@@ -1324,13 +1322,13 @@ async def test_prefix_family_warning_marks_only_the_refused_sibling(tmp_path, mo
     )
 
 
-# ── T-73 half 2 (R7.2, behavior): `unmeasured` and measured `not-echoed` reach the
+# ── T-73 half 2 (behavior): `unmeasured` and measured `not-echoed` reach the
 # caller as the SAME single not-echo-confirmed flag ─────────────────────────────────
 #
-# design.md: "That caller-facing flag is deliberately one flag, not three... a
+# The caller-facing flag is deliberately one flag, not three... a
 # caller cannot [act on the distinction] — in both cases the value was submitted and
-# the server did not confirm it, and there is no different move to make." The exact
-# shape of that flag is not pinned by design.md, so this does not assert a literal
+# the server did not confirm it, and there is no different move to make. The exact
+# shape of that flag is not pinned, so this does not assert a literal
 # for it. It asserts EQUALITY instead: swap ONLY the echo-evidence state on the same
 # condition (not-echoed vs unmeasured), keep the rest of the request identical, and
 # require the caller-facing output to come back byte-identical. An implementation
@@ -1413,17 +1411,17 @@ async def test_unmeasured_and_not_echoed_reach_the_caller_as_one_flag(tmp_path, 
 def result_repr_keys(result: dict) -> str:
     """Flatten a result dict to one string for a simple containment sanity check --
     deliberately not structural, since the exact shape of the not-echo-confirmed
-    marking is not pinned by design.md (see module comment above)."""
+    marking is not pinned (see module comment above)."""
     return json.dumps(result, ensure_ascii=False, default=str)
 
 
 # ── 2026-09-04: list rows are lists, not résumés; HTML becomes plain text ──────────
 #
 # Account holder's decision: a row must not carry `master_url` (a 104 page link only
-# the process's own session can open — no human the Agent talks to can follow it), the
-# per-job objects inside `exp_job_arr` drop their empty fields, and every rich-text
-# value (rows and détail alike) is delivered as plain text. None of it may lose a word
-# the candidate wrote: every non-empty raw value must still be present, converted.
+# the process's own session can open — no human the Agent talks to can follow it), each
+# per-job object inside `exp_job_arr` keeps only company, title and start/end (job
+# content is get_resume_detail's), and every rich-text value (rows and détail alike) is
+# delivered as plain text, losing no word the candidate wrote.
 
 _HTML_TAG = re.compile(r"<[A-Za-z/!][^>]*>")
 
@@ -1459,37 +1457,55 @@ def test_rows_never_carry_master_url_under_any_spelling():
     assert "master_url" not in _describe_result_fields()["fields"]
 
 
+_EXP_JOB_LIST_KEYS = {"exp_firm", "exp_title", "exp_start", "exp_end"}
+
+
 @pytest.mark.parametrize("name", ["rows_search.json", "rows_recommend.json", "rows_match.json"])
-def test_row_exp_job_entries_drop_empties_and_keep_every_word_as_plain_text(name):
-    seen_html = False
-    seen_empty = False
+def test_row_exp_job_entries_carry_only_company_title_and_dates(name):
+    seen_entries = 0
     for row in _fixture_rows(name):
         converted = search_mod._convert_resume_row(row)
         raw_entries = row.get("expJobArr") or []
         entries = converted.get("exp_job_arr") or []
         assert len(entries) == len(raw_entries), "no job may be dropped"
         for raw_entry, entry in zip(raw_entries, entries):
+            seen_entries += 1
+            assert set(entry) <= _EXP_JOB_LIST_KEYS, f"{name}: extra per-job keys {set(entry) - _EXP_JOB_LIST_KEYS}"
+            assert "exp_job_note" not in entry
             for raw_key, raw_value in raw_entry.items():
                 key = discovery_mod._snake_case(raw_key)
-                if raw_value is None or raw_value == "" or raw_value == []:
-                    seen_empty = True
-                    assert key not in entry, f"{name}: empty {raw_key} must be dropped"
-                    continue
-                assert key in entry, f"{name}: non-empty {raw_key} must be kept"
-                if isinstance(raw_value, str):
-                    if _HTML_TAG.search(raw_value):
-                        seen_html = True
-                    assert entry[key] == search_mod.html_to_text(raw_value)
-                    assert not _HTML_TAG.search(entry[key]), f"{name}: markup leaked in {raw_key}"
-                else:
-                    assert entry[key] == raw_value
-    assert seen_empty, f"{name}: sanity — fixture has no empty per-job field to drop"
-    assert seen_html, f"{name}: sanity — fixture has no HTML exp_job_note to convert"
+                if key in _EXP_JOB_LIST_KEYS:
+                    assert entry[key] == raw_value, f"{name}: {raw_key} must keep its value as-is"
+    assert seen_entries, f"{name}: sanity — fixture has no expJobArr entries"
 
 
-def test_row_level_fields_are_not_compacted_only_the_nested_job_objects_are():
-    """A row's own key set stays stable (and fully published by describe_result_fields);
-    only the per-job objects inside exp_job_arr drop their empties."""
+@pytest.mark.parametrize("name", ["rows_search.json", "rows_recommend.json", "rows_match.json"])
+def test_still_employed_is_exactly_an_end_date_of_1900_01_01_on_the_fixtures(name):
+    # `exp_end` is the only thing left on the row that says a job is still held, so the
+    # sentinel documented for callers must hold in both directions on real rows.
+    seen = 0
+    for row in _fixture_rows(name):
+        for entry in row.get("expJobArr") or []:
+            assert (entry["expEnd"] == "1900/01/01") == (entry["expEndDesc"] == "仍在職"), (
+                f"{name}: expEnd={entry['expEnd']!r} but expEndDesc={entry['expEndDesc']!r}"
+            )
+            seen += entry["expEnd"] == "1900/01/01"
+    if name == "rows_search.json":
+        assert seen, "rows_search.json needs an expJobArr entry whose expEnd is 1900/01/01 (tests/fixtures/README.md)"
+
+
+def test_row_remark_html_is_delivered_as_plain_text():
+    converted = search_mod._convert_resume_row(
+        {"idNo": "1", "remark": "<p>甲&nbsp;乙</p><ul><li>A &amp; B</li></ul>"}
+    )
+    assert converted["remark"] == "甲 乙\nA & B"
+    assert not _HTML_TAG.search(converted["remark"])
+
+
+def test_row_level_fields_keep_null_values_and_only_the_exp_job_entries_are_reduced():
+    """A row's own key set stays stable (and fully published by describe_result_fields),
+    null values included; only the per-job objects inside exp_job_arr are reduced, to
+    company, title and start/end."""
     raw_rows = _fixture_rows("rows_search.json")
     row_with_empty_top_level = next((r for r in raw_rows if r.get("latestMemo") is None), None)
     assert row_with_empty_top_level is not None, (

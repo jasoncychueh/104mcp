@@ -79,10 +79,10 @@ def test_mixed_jar_with_vip_session_cookie_among_others_is_true():
 # ── _finalize_pending_login: cancellation must be bounded, and every
 # resource still gets torn down even when the watcher itself hangs ──────
 #
-# Renamed from the old _abandon_pending_login (this cycle's login-lifecycle
-# rewrite, §C6): the old name and its _FakeApp (`_pending_browsers`,
+# Renamed from the old _abandon_pending_login (the login-lifecycle
+# rewrite): the old name and its _FakeApp (`_pending_browsers`,
 # `vnc_manager`) no longer match the real signature at all — there is no
-# more VNC layer (browser/vnc.py is deleted, §C3) and pending-login state is
+# more VNC layer (browser/vnc.py is deleted) and pending-login state is
 # now PendingLoginResources keyed in AppContext._pending_logins, not a bare
 # browser handle. This test's job is unchanged: prove teardown proceeds
 # (and reports it did NOT fully confirm) even when the watcher task never

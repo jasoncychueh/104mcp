@@ -2,25 +2,21 @@ from pathlib import Path
 
 import pytest
 
-from mcp104.config import ConfigError, get_config, resolve_data_dir
+from mcp104.config import RETIRED_ENV_NAMES, ConfigError, get_config, resolve_data_dir
 
 
-def _configure_env(monkeypatch, data_dir, label="tester@104.com"):
-    """Set the two knobs get_config() needs to succeed: a required identity
-    value and a data directory. Individual tests override either on top of
-    this baseline."""
-    monkeypatch.setenv("MCP104_ACCOUNT", label)
+def _configure_env(monkeypatch, data_dir):
+    """Point the data directory at `data_dir`; individual tests override it on
+    top of this baseline."""
     monkeypatch.setenv("MCP104_DATA_DIR", str(data_dir))
 
 
-# ── Regression: config fields still readable from (unchanged-name) env vars ──
-# DB_PATH / AUTH_BASE_URL are gone (§C2 — replaced by MCP104_DATA_DIR and the
-# MCP104_AUTH_BASE_URL/MCP104_AUTH_BIND_PORT pair), so the old assertions on
-# those two are removed rather than carried forward; the rest of the
-# no-prefix knobs are unchanged and still worth a round-trip check.
+# ── Every setting is read from its MCP104_-prefixed name ────────────────────
 
 def test_default_config(monkeypatch, tmp_path):
     _configure_env(monkeypatch, tmp_path)
+    for name in RETIRED_ENV_NAMES:
+        monkeypatch.delenv("MCP104_" + name, raising=False)
     cfg = get_config()
     assert cfg.max_daily_messages == 50
     assert cfg.login_timeout_seconds == 900
@@ -33,13 +29,13 @@ def test_default_config(monkeypatch, tmp_path):
 
 def test_config_from_env(monkeypatch, tmp_path):
     _configure_env(monkeypatch, tmp_path)
-    monkeypatch.setenv("MAX_DAILY_MESSAGES", "100")
-    monkeypatch.setenv("LOGIN_TIMEOUT_SECONDS", "1200")
-    monkeypatch.setenv("MAX_REQUESTS_PER_HOUR", "900")
-    monkeypatch.setenv("MAX_INLINE_WAIT_SECONDS", "15")
-    monkeypatch.setenv("ACTIVITY_STREAK_LIMIT_MINUTES", "10")
-    monkeypatch.setenv("REST_DURATION_MINUTES", "5")
-    monkeypatch.setenv("MIN_CALL_INTERVAL_SECONDS", "8")
+    monkeypatch.setenv("MCP104_MAX_DAILY_MESSAGES", "100")
+    monkeypatch.setenv("MCP104_LOGIN_TIMEOUT_SECONDS", "1200")
+    monkeypatch.setenv("MCP104_MAX_REQUESTS_PER_HOUR", "900")
+    monkeypatch.setenv("MCP104_MAX_INLINE_WAIT_SECONDS", "15")
+    monkeypatch.setenv("MCP104_ACTIVITY_STREAK_LIMIT_MINUTES", "10")
+    monkeypatch.setenv("MCP104_REST_DURATION_MINUTES", "5")
+    monkeypatch.setenv("MCP104_MIN_CALL_INTERVAL_SECONDS", "8")
     cfg = get_config()
     assert cfg.max_daily_messages == 100
     assert cfg.login_timeout_seconds == 1200
@@ -50,18 +46,17 @@ def test_config_from_env(monkeypatch, tmp_path):
     assert cfg.min_call_interval_seconds == 8
 
 
-# ── I2-I: a non-numeric value for any of the numeric knobs is a startup
-# failure naming the offending variable and value, same pattern as T-104's
-# MCP104_ACCOUNT coverage ────────────────────────────────────────────
+# ── a non-numeric value for any of the numeric knobs is a startup
+# failure naming the offending variable and value ───────────────────────────
 
 @pytest.mark.parametrize("var_name", [
-    "MAX_DAILY_MESSAGES",
-    "LOGIN_TIMEOUT_SECONDS",
-    "MAX_REQUESTS_PER_HOUR",
-    "MAX_INLINE_WAIT_SECONDS",
-    "ACTIVITY_STREAK_LIMIT_MINUTES",
-    "REST_DURATION_MINUTES",
-    "MIN_CALL_INTERVAL_SECONDS",
+    "MCP104_MAX_DAILY_MESSAGES",
+    "MCP104_LOGIN_TIMEOUT_SECONDS",
+    "MCP104_MAX_REQUESTS_PER_HOUR",
+    "MCP104_MAX_INLINE_WAIT_SECONDS",
+    "MCP104_ACTIVITY_STREAK_LIMIT_MINUTES",
+    "MCP104_REST_DURATION_MINUTES",
+    "MCP104_MIN_CALL_INTERVAL_SECONDS",
     "MCP104_AUTH_BIND_PORT",
 ])
 def test_non_numeric_env_value_is_startup_failure_naming_var_and_value(monkeypatch, tmp_path, var_name):
@@ -81,7 +76,7 @@ def test_non_numeric_env_value_is_startup_failure_naming_var_and_value(monkeypat
     assert "'abc'" in message, f"message must quote the bad value: {message!r}"
 
 
-# ── T-29 (R5.2): no data path comes from a hardcoded absolute path ─────────
+# ── T-29: no data path comes from a hardcoded absolute path ─────────
 
 def test_t029_data_paths_derive_from_config_not_hardcoded(monkeypatch, tmp_path):
     loc1 = tmp_path / "loc1"
@@ -169,3 +164,74 @@ def test_a_stale_account_label_in_the_environment_is_ignored(monkeypatch, tmp_pa
     monkeypatch.setenv("MCP104_DATA_DIR", str(tmp_path))
 
     assert get_config().data_dir == tmp_path
+
+
+
+# ── The bare, pre-0.10 names are retired: any one that is set stops startup ──
+
+@pytest.mark.parametrize("name", RETIRED_ENV_NAMES)
+def test_prefixed_name_is_read(monkeypatch, tmp_path, name):
+    _configure_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("MCP104_" + name, "7777")
+
+    assert getattr(get_config(), name.lower()) == 7777
+
+
+@pytest.mark.parametrize("name", RETIRED_ENV_NAMES)
+def test_retired_name_refuses_startup_and_names_the_replacement(monkeypatch, tmp_path, name):
+    _configure_env(monkeypatch, tmp_path)
+    monkeypatch.setenv(name, "20")
+
+    with pytest.raises(ConfigError) as exc_info:
+        get_config()
+
+    message = str(exc_info.value)
+    assert name in message
+    assert "MCP104_" + name in message
+    assert "已停用" in message
+    assert "請改名為" in message
+
+
+@pytest.mark.parametrize("name", RETIRED_ENV_NAMES)
+def test_retired_name_refuses_even_when_the_new_name_is_also_set(monkeypatch, tmp_path, name):
+    _configure_env(monkeypatch, tmp_path)
+    monkeypatch.setenv(name, "20")
+    monkeypatch.setenv("MCP104_" + name, "30")
+
+    with pytest.raises(ConfigError) as exc_info:
+        get_config()
+
+    assert "環境變數 " + name + " 已停用" in str(exc_info.value)
+
+
+def test_retired_name_with_a_non_integer_value_reports_retirement_not_a_parse_error(monkeypatch, tmp_path):
+    _configure_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("MAX_DAILY_MESSAGES", "abc")
+
+    with pytest.raises(ConfigError) as exc_info:
+        get_config()
+
+    assert "已停用" in str(exc_info.value)
+    assert "不是合法整數" not in str(exc_info.value)
+
+
+def test_two_retired_names_give_one_line_each(monkeypatch, tmp_path):
+    _configure_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("MAX_DAILY_MESSAGES", "20")
+    monkeypatch.setenv("MAX_REQUESTS_PER_HOUR", "4")
+
+    with pytest.raises(ConfigError) as exc_info:
+        get_config()
+
+    lines = str(exc_info.value).splitlines()
+    assert len(lines) == 2
+    assert "環境變數 MAX_DAILY_MESSAGES " in lines[0] and "MCP104_MAX_DAILY_MESSAGES" in lines[0]
+    assert "環境變數 MAX_REQUESTS_PER_HOUR " in lines[1] and "MCP104_MAX_REQUESTS_PER_HOUR" in lines[1]
+
+
+@pytest.mark.parametrize("blank", ["", "   "])
+def test_blank_retired_name_counts_as_unset(monkeypatch, tmp_path, blank):
+    _configure_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("MAX_DAILY_MESSAGES", blank)
+
+    assert get_config().max_daily_messages == 50

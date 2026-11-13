@@ -1,23 +1,23 @@
-"""Tests for the job-switch write tools close_jobs, open_jobs and delete_job (job-switch-delete).
+"""Tests for the job-switch write tools close_jobs, open_jobs and delete_job.
 
-Cases in this file (design.md Testing Strategy, "Test Cases" table):
+Cases in this file:
   T-1 .. T-24, T-26 .. T-54, T-62, T-63, T-65 .. T-74, T-76, T-77
-(T-25 is not in the table.) T-55 .. T-61, T-64, T-75 and T-78 are in tests/test_api_client.py,
+(There is no T-25.) T-55 .. T-61, T-64, T-75 and T-78 are in tests/test_api_client.py,
 tests/test_helpers.py and tests/test_jobs.py.
 
-Blindness: written against design.md's declared interfaces only. The three tools are reached
+Blindness: assertions come from the public interfaces only, not from the implementation. The three tools are reached
 through register_job_switch_tools, the pure helpers through module attributes, and every 104
 request goes through the real guard, the real classifier and the real throttle gate. Only the
 transport (fetch) is replaced, by the scripted _SeqFetchSpy from tests/conftest.py. delete_job's
 published inputSchema is read from a real FastMCP server.
 
 Synthetic data: no body in this file was read from tests/fixtures/ or from a live 104 response.
-The jobList result follows the measured key set (design §C2, docs/104-site-facts.md §8.31). The
+The jobList result follows the measured key set (docs/104-site-facts.md §8.31). The
 bodies of /api/job/more and of the company identity follow the key sets measured by the read-only
 probe of 2026-11-13 (docs/104-site-facts.md §8.32); their values are synthetic. The other write routes
 (close pre-check, close, refund-points, openJob, jobDelete) and their responses are synthesised from
-the front-end code shape (design §C1, §C5 to §C7); nothing about them has been measured, so the
-assertions hold only to the extent the design specifies. The ithp cookies are synthetic JWT-shaped
+the front-end code shape; nothing about them has been measured, so the
+assertions hold only to the extent the tools' public contract specifies. The ithp cookies are synthetic JWT-shaped
 strings.
 """
 
@@ -1276,7 +1276,7 @@ def test_register_all_tools_includes_both_job_switch_tools_within_the_descriptio
 
 @pytest.mark.asyncio
 async def test_with_four_slots_free_close_is_sent_in_full(tmp_path, monkeypatch):
-    monkeypatch.setenv("MAX_REQUESTS_PER_HOUR", "4")
+    monkeypatch.setenv("MCP104_MAX_REQUESTS_PER_HOUR", "4")
     result, spy, _ = await _run(tmp_path, monkeypatch, "close_jobs",
                                 _close_script([_on(J1)], reread=[_off(J1)]), **_kw("close_jobs", [J1]))
     assert "error" not in result
@@ -1285,7 +1285,7 @@ async def test_with_four_slots_free_close_is_sent_in_full(tmp_path, monkeypatch)
 
 @pytest.mark.asyncio
 async def test_with_four_slots_free_open_is_sent_in_full(tmp_path, monkeypatch):
-    monkeypatch.setenv("MAX_REQUESTS_PER_HOUR", "4")
+    monkeypatch.setenv("MCP104_MAX_REQUESTS_PER_HOUR", "4")
     result, spy, _ = await _run(tmp_path, monkeypatch, "open_jobs",
                                 _open_script([_off(J1)], reread=[_on(J1)]), jobnos=[J1])
     assert "error" not in result
@@ -1852,7 +1852,7 @@ async def test_delete_sends_the_listed_jobno_as_the_form_field(tmp_path, monkeyp
 @pytest.mark.asyncio
 async def test_delete_job_publishes_one_string_parameter_named_jobno_and_no_list():
     from mcp.server.fastmcp import FastMCP
-    mcp = FastMCP("job-switch-delete-schema")
+    mcp = FastMCP("job-switch-schema")
     _js().register_job_switch_tools(mcp)
     published = {tool.name: tool for tool in await mcp.list_tools()}
     properties = published["delete_job"].inputSchema.get("properties", {})
@@ -2123,7 +2123,7 @@ async def test_cookies_and_operator_identity_reach_no_delete_return_and_no_log(
 
 @pytest.mark.asyncio
 async def test_with_four_slots_free_delete_needs_five_and_is_refused_before_any_request(tmp_path, monkeypatch):
-    monkeypatch.setenv("MAX_REQUESTS_PER_HOUR", "5")
+    monkeypatch.setenv("MCP104_MAX_REQUESTS_PER_HOUR", "5")
     ctx = await _spend_slots(tmp_path, monkeypatch, 1)
     spy = _install(monkeypatch, [])
     result = await _tool("delete_job")(ctx=ctx, jobno=J1)
@@ -2135,7 +2135,7 @@ async def test_with_four_slots_free_delete_needs_five_and_is_refused_before_any_
 @pytest.mark.asyncio
 @pytest.mark.parametrize("tool", TOOLS)
 async def test_with_three_slots_free_a_four_slot_write_is_refused_before_any_request(tmp_path, monkeypatch, tool):
-    monkeypatch.setenv("MAX_REQUESTS_PER_HOUR", "4")
+    monkeypatch.setenv("MCP104_MAX_REQUESTS_PER_HOUR", "4")
     ctx = await _spend_slots(tmp_path, monkeypatch, 1)
     spy = _install(monkeypatch, [])
     result = await _tool(tool)(ctx=ctx, **_kw(tool, [J1]))

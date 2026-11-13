@@ -215,7 +215,7 @@ def _convert_message_row(raw: dict, watermark: int | None) -> dict:
 def _more_pages_warning(pagination: dict, *, extra: str = "") -> str | None:
     """Pure. Shared by both read_messages' and get_conversation's response
     builders — the more-pages signal is a property of `pagination.
-    {page,total_pages}`, not a read_messages-specific feature (§3). `extra` lets a
+    {page,total_pages}`, not a read_messages-specific feature. `extra` lets a
     caller append route-specific guidance WITHOUT this function itself asserting
     anything about a route it cannot see: get_conversation's caller passes the
     oldest-first / newest-page note here because `sort=ASC` is measured for that
@@ -269,7 +269,7 @@ def _build_conversation_response(envelope: object) -> dict:
     "missing metadata is an error" rule as `_build_inbox_response`. The watermark
     (`_watermark`) is read from this SAME `metadata`, once, and threaded into every
     row's `_convert_message_row` call — it is a single conversation-wide value, not
-    per-row data (§4)."""
+    per-row data."""
     if not isinstance(envelope, dict) or not isinstance(envelope.get("data"), list):
         raise MalformedResponseError("data 缺失或非陣列")
     metadata = envelope.get("metadata")
@@ -340,7 +340,7 @@ NOT_SENT: frozenset[str] = frozenset({
     # directly and never calls _send_verdict at all (no request is issued,
     # so there is no kind to classify). Kept in the set anyway because the
     # set's job is to enumerate every condition this taxonomy considers
-    # "not sent" for the READER (§6a's table lists it beside daily_cap),
+    # "not sent" for the READER (the table of not-sent kinds lists it beside daily_cap),
     # not only the ones _send_verdict happens to be called with.
     "empty_content",
     "expired", "blocked", "challenge", "not_found", "validation", "wrong_host",
@@ -351,7 +351,7 @@ NOT_SENT: frozenset[str] = frozenset({
 def _send_verdict(kind: str) -> str:
     """Pure. `"not_sent"` when `kind` is in the closed NOT_SENT set, `"ambiguous"`
     otherwise — the default runs INTO ambiguous, and that direction is the whole
-    point (§6b): an unknown kind defaulting to ambiguous wastes one daily-cap slot
+    point: an unknown kind defaulting to ambiguous wastes one daily-cap slot
     and one "go check the console" message; defaulting to "not sent" tells the
     Agent to try again, and the cost of that is a real person messaged twice.
     """
@@ -437,7 +437,7 @@ async def _enforce_daily_cap(app, info: SessionInfo) -> None:
     hook and the event tools' two call sites (before_first and the send
     sub-request's before_request). Raises the row-1 payload
     (`{"success": False, "error": ...}`) via ToolAbort(kind="daily_cap") when the
-    account has reached MAX_DAILY_MESSAGES; returns normally otherwise. Does NOT
+    account has reached MCP104_MAX_DAILY_MESSAGES; returns normally otherwise. Does NOT
     set any send_attempted flag itself — that is each caller's own hook, so the
     LAST statement of THAT hook is unambiguously the caller's, not buried inside a
     shared helper.
@@ -708,7 +708,7 @@ def register_messaging_tools(mcp: FastMCP):
             message: 訊息內容，純文字，沒有長度上限（此路由未量測到任何限制）。
                 空白（含只有空白字元）會在送出前就被拒絕，不會浪費一次請求。
 
-        每日上限由 MAX_DAILY_MESSAGES 控制（per 帳號，與 send_inquiry 共用）。
+        每日上限由 MCP104_MAX_DAILY_MESSAGES 控制（per 帳號，與 send_inquiry 共用）。
 
         ⚠ 若 MCP 客戶端在請求已送出後才逾時，這裡看不到任何回傳，但對方可能已經
         收到那則訊息——請改用 read_messages(job_nos=[job_id]) 或 104 後台確認，

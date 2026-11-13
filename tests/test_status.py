@@ -1286,7 +1286,7 @@ async def test_registration_adds_the_two_status_reads_once_and_publishes_no_call
     for name in ("get_candidate_status", "list_tracked_candidates"):
         assert counting.counts.get(name) == 1, f"{name} must be registered exactly once: {counting.counts.get(name)}"
 
-    mcp = FastMCP("status-completion-registration")
+    mcp = FastMCP("status-registration")
     register_all_tools(mcp)
     published = {tool.name: tool for tool in await mcp.list_tools()}
 

@@ -63,13 +63,12 @@ def deterministic_throttle(monkeypatch):
 
     Previously this fixture also patched `browser.throttle._rng` with a
     `_FixedShortRng` stand-in, to steer the old drawn-delay distribution's
-    random branch selection. The pacing rework (design.md Components §7)
+    random branch selection. The pacing rework
     replaced that distribution with a deterministic interval floor —
-    `MIN_CALL_INTERVAL_SECONDS` minus elapsed time, no randomness
+    `MCP104_MIN_CALL_INTERVAL_SECONDS` minus elapsed time, no randomness
     involved — so `_rng` no longer exists on browser.throttle at all.
     Patching a since-removed attribute is exactly what made every test in
-    this file error at setup (tasks.md "Existing tests this feature
-    invalidates"); the fix is simply that there is nothing left to patch
+    this file error at setup; the fix is simply that there is nothing left to patch
     for randomness, only the sleep itself.
     """
     async def instant_sleep(seconds):
@@ -92,7 +91,7 @@ def test_get_session_id_stable_across_repeated_calls():
     assert first == second
 
 
-# ── guarded_api: body forwarding, the method/body mismatch check (§1/§2) ────────────
+# ── guarded_api: body forwarding, the method/body mismatch check ────────────────────
 
 def _new_api_ctx_and_session():
     pool = SessionPool()
@@ -100,7 +99,7 @@ def _new_api_ctx_and_session():
     sid = get_session_id(ctx)
     # guarded_api reads credentials straight from SessionInfo.cookies now —
     # there is no BrowserContext to fake a `.cookies()` call against
-    # post-login (§C7).
+    # post-login.
     info = SessionInfo(cookies=[], account_label="test@104.com")
     pool.activate_direct(sid, info)
     return ctx, info
@@ -137,7 +136,7 @@ async def test_guarded_api_post_endpoint_without_body_is_internal_config_error()
             pass  # pragma: no cover
 
     assert exc_info.value.kind == "internal_config"
-    # Must NOT read as a transient network problem (Error Handling §2) — a
+    # Must NOT read as a transient network problem — a
     # caller bug reported as "retry later" is exactly what this distinction
     # exists to prevent.
     assert exc_info.value.payload != ERROR_API_REQUEST_FAILED
@@ -191,7 +190,7 @@ async def test_guarded_api_get_endpoint_with_body_names_get_in_the_error_and_sen
 
 @pytest.mark.asyncio
 async def test_guarded_api_no_session_at_all_raises_not_logged_in_kind():
-    # Round I1 Bug A: this test's old name ("...raise_sites_carry_the_
+    # This test's old name ("...raise_sites_carry_the_
     # classifiers_own_kind") claimed coverage of every guarded_api raise
     # path while asserting only this one — payload wording and `.kind` are
     # independent (the redirect-to-auth-host site proved that: its payload
@@ -208,7 +207,7 @@ async def test_guarded_api_no_session_at_all_raises_not_logged_in_kind():
     #     test_guarded_api_get_endpoint_with_body_is_internal_config_error
     #   - "transport", "challenge", "blocked", and the classifier's own
     #     kinds (e.g. "validation") — test_api_client.py's family-A/B
-    #     Error Handling suite and tests/test_messaging.py's send_message
+    #     error-handling suite and tests/test_messaging.py's send_message
     #     taxonomy tests, which drive them through the real classify().
     ctx = FakeCtx(SessionPool())  # no session activated at all
     with pytest.raises(SessionUnavailable) as exc_info:
@@ -356,8 +355,8 @@ async def test_T59_projection_missing_key_raises_malformed_using_the_same_error_
     assert exc_info.value.kind == "malformed"
     # Same builder as classify()'s own inner_key floor (_error_malformed) --
     # asserted by template shape rather than a guessed exact detail string,
-    # since the implementer's own wording for "which key" is not specified
-    # by design.md beyond "uses _error_malformed".
+    # since the exact wording for "which key" is not part of the contract
+    # beyond "uses _error_malformed".
     err = exc_info.value.payload["error"]
     assert err.startswith("104 回應結構異常（")
     assert err.endswith("），可能是介面已變更，請回報")
@@ -1329,7 +1328,7 @@ async def test_without_pick_data_optional_only_the_required_keys_survive(monkeyp
     assert projected["data"] == {"a": 1}
 
 
-# ── job-switch-delete, Phase 1 (design Testing Strategy T-64, T-78) ───────────
+# ── Job switch/delete (T-64, T-78) ────────────────────────────────────────────
 
 
 def _jobswitch_guard_probe(*, data_kind="any", method="POST", body_encoding="json"):
@@ -1421,7 +1420,7 @@ async def test_projection_on_an_object_data_kind_still_projects(monkeypatch):
     assert projected["data"] == {"x": 1}
 
 
-# ── Template management, Phase 1 (design Testing Strategy T-71, T-74, T-75) ─────────
+# ── Template management (T-71, T-74, T-75) ────────────────────────────────────
 
 _TEMPLATE_CHALLENGE_TEXT = "vip.104.com.tw 正在執行安全驗證\n此網站使用安全服務抵禦惡意機器人。"
 

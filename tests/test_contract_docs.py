@@ -1,4 +1,4 @@
-"""Contract test for the registered MCP tool surface (T-61, R12.1).
+"""Contract test for the registered MCP tool surface (T-61).
 
 The registered tools' descriptions and schemas are the only surface an Agent
 reads when deciding how to call a tool. This file checks that surface against
@@ -31,8 +31,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # literal default), or the `_parse_optional_int_env("NAME")` helper (never has
 # a default — its whole contract is "unset means None", not "unset means a
 # fallback value"). Exactly one of the three named-group triples matches per
-# hit; which one tells `_scan_env_var_calls` how to read the name/default off
-# it, since the three forms carry that information differently.
+# hit.
 _ENV_VAR_CALL_RE = re.compile(
     r'os\.getenv\(\s*"(?P<getenv_name>[A-Z0-9_]+)"\s*(?:,\s*"(?P<getenv_default>[^"]*)")?\s*\)'
     r'|_parse_int_env\(\s*"(?P<int_name>[A-Z0-9_]+)"\s*,\s*(?P<int_default>-?\d+)\s*\)'
@@ -40,94 +39,13 @@ _ENV_VAR_CALL_RE = re.compile(
 )
 
 
-def _scan_env_var_calls(source: str, info: dict[str, dict], *, only_mcp104_prefixed: bool) -> None:
-    matches = list(_ENV_VAR_CALL_RE.finditer(source))
-    for i, m in enumerate(matches):
-        if m.group("getenv_name") is not None:
-            # Only this form can ever be required: `_parse_int_env` and
-            # `_parse_optional_int_env` both resolve unset input on their own
-            # (a default, or None) and never raise, so only a bare
-            # `os.getenv(...)` can be the one paired with a `raise
-            # ConfigError` in the source immediately after it.
-            name = m.group("getenv_name")
-            has_default = m.group("getenv_default") is not None
-            default = m.group("getenv_default")
-            window_end = matches[i + 1].start() if i + 1 < len(matches) else len(source)
-            window = source[m.end():window_end]
-            required = (not has_default) and ("raise ConfigError" in window)
-        elif m.group("int_name") is not None:
-            name = m.group("int_name")
-            has_default = True
-            default = m.group("int_default")
-            required = False
-        else:
-            name = m.group("opt_name")
-            has_default = False
-            default = None
-            required = False
-
-        if only_mcp104_prefixed and not name.startswith("MCP104_"):
-            continue
-        info[name] = {"has_default": has_default, "default": default, "required": required}
-
-
-def _env_vars_from_config_source() -> dict[str, dict]:
-    """Every environment variable `config.py` reads as an APPLICATION
-    configuration knob — not merely every `os.getenv(...)` call textually
-    present in the module. Two functions are scanned, with different scope:
-
-    - `get_config()` itself, unrestricted — every variable it reads directly
-      is a documented knob (this is where the seven no-prefix legacy names
-      and the three other `MCP104_`-prefixed ones live).
-    - `resolve_data_dir()`, restricted to `MCP104_`-prefixed names only. That
-      function ALSO reads `APPDATA`/`LOCALAPPDATA` (Windows) and
-      `XDG_DATA_HOME` (Linux) as platform-convention fallbacks when
-      `MCP104_DATA_DIR` is unset — those are the operating system's own
-      environment, not a knob this project defines or documents (CLAUDE.md's
-      table has never listed them, and they are not `app.config.*`-shaped:
-      `resolve_data_dir()` reads them directly, unlike every documented knob,
-      which is read once by `get_config()` and thereafter accessed only
-      through `Config`). Scanning `resolve_data_dir()` at all — rather than
-      skipping it — is still required, because it is the one place
-      `MCP104_DATA_DIR` itself is read; `get_config()` calls it but does not
-      inline it, so a scan of `get_config()`'s own source alone would
-      silently miss that one real knob.
-
-    Extracted from source rather than hand-listed, so a variable added to or
-    removed from `config.py` changes this without anyone updating this test.
-    Returns `{name: {"has_default": bool, "default": str | None, "required":
-    bool}}`. `has_default` comes straight from the call form (a literal
-    string second argument to `os.getenv`, or its absence). `required` is a
-    SEPARATE signal, also read from source, not inferred from `has_default`
-    alone: three variables (`MCP104_DATA_DIR`, `MCP104_AUTH_BASE_URL`,
-    `MCP104_AUTH_BIND_PORT`) also have no literal default yet are genuinely
-    optional (they resolve to `None` or a derived value when unset) — only
-    `MCP104_ACCOUNT` is required. What actually marks a variable
-    required in `get_config()`'s own body is that its `os.getenv(...)` call
-    is followed, before the NEXT `os.getenv(...)` call, by `raise
-    ConfigError` — exactly the shape of `account_label`'s own validation
-    block. That is read here from the source text, not asserted about it.
-    """
-    info: dict[str, dict] = {}
-    _scan_env_var_calls(inspect.getsource(config_module.get_config), info, only_mcp104_prefixed=False)
-    _scan_env_var_calls(inspect.getsource(config_module.resolve_data_dir), info, only_mcp104_prefixed=True)
-    assert info, (
-        "found no os.getenv(...) calls in config.get_config/resolve_data_dir's "
-        "source — either those functions were rewritten in a way this regex "
-        "can no longer parse, or they stopped reading any environment "
-        "variables; either way this check has nothing to compare and must "
-        "not pass silently"
-    )
-    return info
-
-
 def test_env_var_regex_extraction_does_not_miss_a_fourth_call_form():
-    """I2-N: `_ENV_VAR_CALL_RE` only recognizes three call shapes
+    """`_ENV_VAR_CALL_RE` only recognizes three call shapes
     (`os.getenv(...)`, `_parse_int_env(...)`, `_parse_optional_int_env(...)`).
     If `get_config()`/`resolve_data_dir()` ever read an environment variable
     through a fourth shape the regex does not match (e.g. `os.environ["X"]`,
-    an f-string built name, or a new helper), the regex-based extraction
-    above would silently miss it rather than fail loudly. This check only
+    an f-string built name, or a new helper), the regex would silently
+    miss it rather than fail loudly. This check only
     covers the literal string constants that appear directly in these two
     functions' own bodies (via `inspect.getsource` + `ast.walk`) — it walks
     for every such string constant and checks each is one the regex already
@@ -144,15 +62,10 @@ def test_env_var_regex_extraction_does_not_miss_a_fourth_call_form():
     for func in (config_module.get_config, config_module.resolve_data_dir):
         source = inspect.getsource(func)
 
-        # What the regex itself actually matched in THIS function's source --
-        # not `_env_vars_from_config_source()`'s filtered `code_names`, which
-        # deliberately drops resolve_data_dir()'s non-MCP104_-prefixed
-        # matches (APPDATA/LOCALAPPDATA/XDG_DATA_HOME are platform-convention
-        # fallbacks, not knobs this project owns, per that function's own
-        # docstring). Comparing against the filtered set would flag those as
-        # "missed by the regex" when the regex caught them fine and a later
-        # filter intentionally discarded them -- this must test the regex's
-        # own miss, not the filter's own choice.
+        # What the regex itself actually matched in THIS function's source.
+        # resolve_data_dir() also reads APPDATA/LOCALAPPDATA/XDG_DATA_HOME
+        # (platform-convention fallbacks, not knobs this project owns); the
+        # regex catches those too, so they count as matched here.
         regex_matched_names = set()
         for m in _ENV_VAR_CALL_RE.finditer(source):
             name = m.group("getenv_name") or m.group("int_name") or m.group("opt_name")
@@ -171,6 +84,21 @@ def test_env_var_regex_extraction_does_not_miss_a_fourth_call_form():
                         "fourth call form reading an environment variable "
                         "was likely added without updating the regex"
                     )
+
+
+def test_retired_env_names_are_exactly_the_integer_settings_get_config_reads():
+    """The list of bare names that stop the server from starting must match the
+    integer settings get_config() reads (as their MCP104_ form). A name missing
+    from the list is a setting whose old spelling is silently ignored; an extra
+    one blocks startup over a variable nothing reads."""
+    source = inspect.getsource(config_module.get_config)
+    read_names = {
+        m.group("int_name")
+        for m in _ENV_VAR_CALL_RE.finditer(source)
+        if m.group("int_name") is not None
+    }
+    assert read_names, "found no _parse_int_env reads in get_config()"
+    assert read_names == {"MCP104_" + n for n in config_module.RETIRED_ENV_NAMES}
 
 
 # ── package-layout restructure: requirements.txt must equal pyproject.toml's
@@ -220,7 +148,7 @@ def test_requirements_txt_equals_pyproject_dependencies():
 # tombstone warning, the p_id note, the success/failure shape contract). Swept over
 # the WHOLE registry via each tools/*.py module's own `register_*_tools(mcp)` function
 # -- never a hard-coded tool list -- so a tool added later is covered automatically,
-# not only the one that happened to blow the budget this round.
+# not only the one that happened to blow the budget.
 
 _TOOL_DESCRIPTION_CHAR_BUDGET = 2048
 _TOOL_DESCRIPTION_HEADROOM = 100  # "real headroom", not merely squeaking under budget
@@ -277,7 +205,7 @@ def test_every_tool_description_fits_claude_code_budget_with_headroom():
     )
 
 
-# ── Regression coverage for the `ctx` auto-injection bug (Phase 5 acceptance) ─────────
+# ── Regression coverage for the `ctx` auto-injection bug ─────────
 #
 # FastMCP's Tool.from_function decides whether a parameter is the auto-injected
 # server Context (never a caller-facing field) via `issubclass(param.annotation,
@@ -418,8 +346,8 @@ def test_no_ctx_param_module_uses_future_annotations():
     )
 
 
-# ── outbound-contact Phase 5 (T-76..T-80): send_inquiry / list_templates land this
-# cycle, plus a CLAUDE.md/.mcp.json rewrite ──────────────────────────────────────────
+# ── outbound-contact (T-76..T-80): send_inquiry / list_templates, plus a
+# CLAUDE.md/.mcp.json rewrite ──────────────────────────────────────────
 #
 # T-76 ("every registered tool's description fits budget with >=100 headroom",
 # measured via _all_tool_descriptions) and T-80 ("no tool leaks ctx into
@@ -455,8 +383,8 @@ _POSITIVE_WARNING_ZH = "會立刻送到一位真實求職者手上"
 
 
 def test_search_resumes_description_keeps_at_least_100_chars_headroom():
-    """T-77 (R8.1): search_resumes is the budget table's one perpetually-tight
-    description (121 chars headroom as of the outbound-contact design) -- it
+    """T-77: search_resumes is the budget table's one perpetually-tight
+    description (121 chars headroom when the send tools were added) -- it
     must clear the >=100-char headroom bar on its own, not merely survive as
     part of the whole-registry sweep the budget test above already runs."""
     descriptions = _all_tool_descriptions()
@@ -473,7 +401,7 @@ def test_search_resumes_description_keeps_at_least_100_chars_headroom():
 
 
 def test_send_message_and_send_inquiry_each_carry_the_positive_warning_and_name_the_other():
-    """T-78 (R8.2): both send tools must state plainly that the call reaches a
+    """T-78: both send tools must state plainly that the call reaches a
     real jobseeker immediately, and each must name the OTHER tool -- send_message
     covering the plain-text case, send_inquiry covering the event case -- so a
     caller reading either description is pointed at the one it doesn't cover."""
@@ -486,12 +414,12 @@ def test_send_message_and_send_inquiry_each_carry_the_positive_warning_and_name_
         desc = _normalize_ws(descriptions[name])
         assert _normalize_ws(_POSITIVE_WARNING_ZH) in desc, (
             f"{name}'s description must carry the positive warning "
-            f"{_POSITIVE_WARNING_ZH!r} (R8.2) -- got: {desc!r}"
+            f"{_POSITIVE_WARNING_ZH!r} -- got: {desc!r}"
         )
         assert other_name in desc, (
             f"{name}'s description must name {other_name!r} -- each of the two "
             f"send tools must point the caller at the other tool for the case it "
-            f"does not cover (R8.2): {desc!r}"
+            f"does not cover: {desc!r}"
         )
 
 
@@ -525,7 +453,7 @@ def _code_precedes_label(text: str, code: str, label: str, window: int = 6) -> b
 
 
 def test_list_templates_description_lists_all_six_measured_categories_as_account_archival():
-    """T-79 (R3.7): list_templates' description must name all six measured
+    """T-79: list_templates' description must name all six measured
     template categories (code + Traditional-Chinese label each) and must say
     these categories are the account's own archival categorisation -- not a
     vocabulary this project defines."""
@@ -542,19 +470,19 @@ def test_list_templates_description_lists_all_six_measured_categories_as_account
         f"categories, code immediately preceding its label -- missing: {missing}. "
         f"Description: {desc!r}"
     )
-    # R3.7's own wording ("這個帳號自己的歸檔分類") is descriptive prose, not a
+    # The description's wording ("這個帳號自己的歸檔分類") is descriptive prose, not a
     # verbatim-transcription contract like CANDIDATE_TERMINAL_ZH -- so this checks
     # for the two content words ("帳號自己" ownership, "歸檔" archival/filing) it
     # must convey, not the exact phrase or grammar around them.
     assert "帳號自己" in desc and "歸檔" in desc, (
         "list_templates' description must say these categories are the "
-        f"account's own archival/filing categorisation (R3.7: '這個帳號自己的歸檔"
+        f"account's own archival/filing categorisation ('這個帳號自己的歸檔"
         f"分類'), not a project-defined vocabulary: {desc!r}"
     )
 
 
 # Marks the "what to do after a timeout" guidance: check the back office or
-# read_messages, and do NOT resend -- R8.7 requires this be readable from the
+# read_messages, and do NOT resend -- this must be readable from the
 # tool description alone, since a timed-out Agent may have nothing else in
 # front of it at the moment it needs the instruction.
 _TIMEOUT_GUIDANCE_MARKERS = ("read_messages", "重送")
@@ -566,7 +494,7 @@ def _has_timeout_guidance(text: str) -> bool:
 
 @pytest.mark.parametrize("tool_name", ["send_message", "send_inquiry"])
 def test_timeout_after_guidance_appears_in_send_message_and_send_inquiry_description(tool_name):
-    """T-79 (R8.7): the post-timeout instruction (check the back office or
+    """T-79: the post-timeout instruction (check the back office or
     read_messages to confirm; do not resend) must be readable from the tool
     description, and the guidance is documented for both send_message and
     send_inquiry, not just send_inquiry."""
@@ -575,7 +503,7 @@ def test_timeout_after_guidance_appears_in_send_message_and_send_inquiry_descrip
     desc = _normalize_ws(descriptions[tool_name])
     assert _has_timeout_guidance(desc), (
         f"{tool_name}'s description must carry the post-timeout guidance "
-        f"(mentions read_messages and tells the caller not to resend, R8.7) -- "
+        f"(mentions read_messages and tells the caller not to resend) -- "
         f"got: {desc!r}"
     )
 # ── register_all_tools is the single registration entry — event-sends T-68 (interface) ──
@@ -656,7 +584,7 @@ _EVENT_AND_ASSET_TOOLS = {
 
 
 def test_budget_scan_covers_the_five_event_tools_and_the_two_asset_tools_with_headroom():
-    """T-44 (R10.2): the description-budget scan reaches the event tools and the asset tools, and
+    """T-44: the description-budget scan reaches the event tools and the asset tools, and
     each of them keeps at least the required headroom under the 2,048-character slice."""
     descriptions = _all_tool_descriptions()
     assert _EVENT_AND_ASSET_TOOLS <= set(descriptions)
@@ -666,7 +594,7 @@ def test_budget_scan_covers_the_five_event_tools_and_the_two_asset_tools_with_he
 
 @pytest.mark.asyncio
 async def test_ctx_scan_reaches_the_five_event_tools_and_the_two_asset_tools():
-    """T-44 (R10.2): the published-schema scan that rejects a caller-facing ctx field is driven by
+    """T-44: the published-schema scan that rejects a caller-facing ctx field is driven by
     register_all_tools and reaches the same seven tools."""
     mcp = FastMCP("contract-test-event-ctx-scan")
     register_all_tools(mcp)
@@ -679,7 +607,7 @@ async def test_ctx_scan_reaches_the_five_event_tools_and_the_two_asset_tools():
 
 
 def test_send_inquiry_description_names_the_four_new_tools_and_drops_the_old_future_sentence():
-    """T-45 (R10.3): send_inquiry no longer says other recruiting events will come later as new tools,
+    """T-45: send_inquiry no longer says other recruiting events will come later as new tools,
     names the four new tools, and describes the template category as not changing the route."""
     description = _all_tool_descriptions()["send_inquiry"]
     squashed = re.sub(r"\s+", "", description)

@@ -5,7 +5,7 @@ Both tools are pure, offline, module-level functions wrapped by a thin async clo
 (`register_discovery_tools`) -- these tests exercise the pure functions directly
 (`_browse_filter_values`, `_describe_result_fields`), the same pattern tests/test_search.py
 uses for tools/search.py's `_build_*_response` functions, and the same "no MCP Context
-needed" property steering/structure.md requires of decision logic.
+needed" property the decision logic is extracted into module-level functions to get.
 """
 from __future__ import annotations
 
@@ -44,9 +44,8 @@ __all__ = ["_close_opened_databases", "deterministic_throttle"]
 
 def test_browse_filter_values_legal_shape_for_every_valid_filter_key():
     """Every key in VALID_FILTER_KEYS must produce a success shape carrying at least
-    key/value_source/note -- swept, never a hard-coded key list or count (the plan's
-    own instruction, and this project's general rule against population-count
-    assertions -- steering/structure.md)."""
+    key/value_source/note -- swept, never a hard-coded key list or count (this
+    project's general rule against population-count assertions)."""
     assert VALID_FILTER_KEYS, "sanity: no filter keys defined at all"
     for key in VALID_FILTER_KEYS:
         result = _browse_filter_values(key, None)
@@ -63,7 +62,7 @@ def test_browse_filter_values_legal_shape_for_every_valid_filter_key():
         elif value_source == "enum":
             assert isinstance(result["values"], dict) and result["values"]
         elif value_source == "composite":
-            # NOT identity-with-the-source (Round I1 finding: `result["structure"] ==
+            # NOT identity-with-the-source (`result["structure"] ==
             # CONDITIONS[key].value_domain` is true for ANY content whatsoever, since
             # it just proves the two sides are the same object/value regardless of
             # what that value actually is) -- falsifiable content checks per composite
@@ -72,13 +71,13 @@ def test_browse_filter_values_legal_shape_for_every_valid_filter_key():
             assert result["structure"], (
                 f"'{key}': structure must not be empty/None -- a composite shipped "
                 f"without its own caller_shape would satisfy `None == None` on the "
-                f"line below and stay green (Smell H, Round I2); this catches a "
+                f"line below and stay green; this catches a "
                 f"future composite added without one"
             )
             assert result["structure"] == CONDITIONS[key].caller_shape
             assert result["structure"] != CONDITIONS[key].value_domain, (
                 f"'{key}': structure must be the caller-facing SHAPE (caller_shape), "
-                f"never the caveat prose (value_domain) -- Bug A, Round I1"
+                f"never the caveat prose (value_domain)"
             )
         else:  # codes-only / numeric / free-text -- no values/structure key at all
             assert "values" not in result
@@ -100,8 +99,8 @@ def test_expect_pay_structure_matches_what_validate_filters_actually_requires():
 def test_work_exp_time_structure_carries_min_and_max():
     structure = _browse_filter_values("work_exp_time", None)["structure"]
     assert {"mode", "min", "max"} <= set(structure), (
-        f"work_exp_time's structure is missing min/max entirely (Round I1 Bug A "
-        f"finding) -- got {structure}"
+        f"work_exp_time's structure is missing min/max entirely "
+        f"-- got {structure}"
     )
 
 
@@ -200,7 +199,7 @@ def test_completeness_note_text_differs_across_all_three_values():
     """The three possible `domain_completeness` values must map to three DIFFERENT
     note strings -- tested directly against the template function rather than
     requiring today's CONDITIONS table to already contain a real example of all
-    three (steering/structure.md's rule against population-membership assertions:
+    three (the rule against population-membership assertions:
     'the oracle ran', not 'the population happens to contain one')."""
     notes = {
         value: _completeness_note(value)
@@ -219,7 +218,7 @@ def test_plast_action_date_type_and_update_date_type_are_now_domain_certified():
     answers, so both flip from the earlier round's `measured-subset` to `certified`.
     This superseded an earlier test that pinned `measured-subset` for these two keys
     -- exactly the "measurement got better, don't let the test punish it" case
-    steering/structure.md itself warns about, not a hard-coded population count."""
+    that must not be punished, not a hard-coded population count."""
     for key in ("plastActionDateType", "updateDateType"):
         assert CONDITIONS[key].domain_completeness == "certified", (
             f"'{key}': domain (the CODE SET) is now fully bounded by 104's own "
@@ -241,7 +240,7 @@ def test_domain_completeness_and_label_completeness_stay_separate_axes():
     gone: code 2 was corroborated against a wide population the same day (1,564 rows,
     every sampled updateDayDesc the current date). The old assertion required an
     incomplete row to exist, so **improving the measurement broke the test** -- the
-    failure mode steering/structure.md warns about, and its own docstring predicted.
+    failure mode this project guards against, and its own docstring predicted.
 
     So the separation is now asserted structurally, on synthetic rows rather than on
     whichever real row happens to be worst-measured. Both combinations must remain
@@ -452,10 +451,10 @@ def test_terminal_agrees_with_resolve_for_both_jobcat_json_conditions():
         )
 
 
-# ── codes-only: no CONDITIONS row uses this value_source today (the plan's own full
-# sweep: enum 16, dataset 11, numeric 3, composite 3, free-text 2 = 35 rows), so the
+# ── codes-only: no CONDITIONS row uses this value_source today (the full sweep
+# over CONDITIONS: enum 16, dataset 11, numeric 3, composite 3, free-text 2 = 35 rows), so the
 # sweep above never exercises this branch -- exercised directly here with a synthetic
-# Condition instead of waiting for a real row (steering/structure.md's rule is against
+# Condition instead of waiting for a real row (the rule is against
 # asserting a SAMPLE exists in real data, not against direct unit tests of a branch on
 # synthetic input). ───────────────────────────────────────────────────────────────────
 
@@ -474,7 +473,7 @@ def test_browse_codes_only_key_has_no_values_and_names_no_dataset():
 
 # ── describe_result_fields ───────────────────────────────────────────────────────────
 #
-# Bug B (Round I1): the payload used to be keyed on 104's raw camelCase names, but a
+# The payload used to be keyed on 104's raw camelCase names, but a
 # DELIVERED row has been through `_convert_resume_row`'s snake_case conversion plus the
 # idNo -> candidate_id rename -- the intersection with a real row's own keys was 4 of
 # 35. Every case below checks against what a row ACTUALLY carries (either the live
@@ -559,7 +558,7 @@ def test_describe_result_fields_template_row_type():
 def test_describe_result_fields_unknown_row_type_names_the_four_legal_values():
     """T-74: adding row_type="template" as a fourth describer means the unknown-value
     error must now name FOUR legal values, not three -- this test (name and content
-    both) is the one place design.md warns will not "follow along" on its own."""
+    both) is the one place that will not "follow along" on its own."""
     result = _describe_result_fields("not-a-real-row-type")
     assert "error" in result
     assert "fields" not in result
@@ -631,7 +630,7 @@ def test_unmeasured_fields_carry_the_unmeasured_mark_and_their_own_raw_field_nam
 
 
 def test_idno_and_contact_privacy_glosses_do_not_reference_nonexistent_entries():
-    """Round I1 findings: the old idNo gloss pointed at a nonexistent 'id_no' row, and
+    """Past defects: the old idNo gloss pointed at a nonexistent 'id_no' row, and
     the old contactPrivacy gloss named camelCase phoneDescAll/callTimeDesc even though
     those fields never appear on a ROW at all (they are get_resume_detail-only)."""
     assert "id_no" not in RESUME_ROW_FIELD_GLOSS
@@ -829,7 +828,7 @@ def test_no_tool_module_import_touches_the_network_or_session_layer():
     for forbidden in forbidden_names:
         assert forbidden not in vars(discovery_mod), (
             f"tools/discovery.py imports '{forbidden}' directly -- this module must "
-            f"never call guarded_page/guarded_api (steering/structure.md: public "
+            f"never call guarded_page/guarded_api (public "
             f"category data must not be routed through them or the throttle)"
         )
 # ── UNMEASURED_EVENT_ROUTE_NOTE — event-sends T-59 (interface) ──────────────────────
@@ -845,16 +844,16 @@ def test_unmeasured_event_route_note_says_unmeasured_unconfirmed_and_do_not_rese
     assert "重送" in note
 
 
-# ── applicants-and-job-reads (Phase 1 task 11): describe_result_fields' two new row types
+# ── applicant and job-list rows: describe_result_fields' two new row types
 #
 # T-27, T-28, T-29, T-49, T-59. The expected published keys are derived here, not read
-# back from the module: the design's own rename (idNo -> candidate_id, pId -> p_id, and
+# back from the module: the published rename (idNo -> candidate_id, pId -> p_id, and
 # jobNo -> jobno for the job list) plus a plain camelCase -> snake_case step. Using the
 # module's own key transform would make these checks agree with whatever it does.
 
 _RENAMED_ROW_KEYS = {"idNo": "candidate_id", "pId": "p_id", "jobNo": "jobno"}
 
-# The ten fields design.md C4 says a applicant row must not publish, by 104 name.
+# The ten fields an applicant row must not publish, by 104 name.
 _APPLICANT_EXCLUDED = (
     "personalPic", "remark", "remarkWithoutHtml", "otherCourse", "fitness",
     "autoNo", "snapshotId", "documentSnapshotId", "jobNo", "jobName",
@@ -872,9 +871,8 @@ def test_applicant_and_resume_describers_give_shared_fields_word_for_word_identi
     applicant = _describe_result_fields("applicant")["fields"]
     resume = _describe_result_fields("resume")["fields"]
     shared = set(discovery_mod.APPLICANT_ROW_FIELD_GLOSS) & set(RESUME_ROW_FIELD_GLOSS)
-    compared = shared - discovery_mod.APPLICANT_OWN_GLOSS_FIELDS
-    assert compared, "sanity: the applicant and resume allow-lists share no 104 field name outside the own-gloss set"
-    for name in sorted(compared):
+    assert "expJobArr" in shared, "sanity: the list-row job history is one shared field"
+    for name in sorted(shared):
         key = _row_key(name)
         assert key in applicant, f"{name}: shared field is not published by the applicant describer as {key!r}"
         assert key in resume, f"{name}: shared field is not published by the resume describer as {key!r}"
@@ -940,9 +938,8 @@ def test_resume_describer_still_succeeds_and_publishes_candidate_id():
 
 
 def test_resume_describe_output_is_identical_to_the_pre_cycle_baseline_fixture():
-    # T-49 clause: the "resume" output is unchanged, byte for byte, from before this round.
-    # The baseline is a committed fixture captured from the pre-cycle tree; this test fails
-    # with FileNotFoundError until that fixture exists.
+    # T-49 clause: the "resume" output matches the committed fixture byte for byte, so a
+    # change to what the describer publishes shows up as a reviewed fixture diff.
     baseline = load_fixture("describe_result_fields_resume_baseline.json")
     current = _describe_result_fields("resume")
     assert "error" not in current
@@ -967,8 +964,8 @@ def test_job_describer_covers_every_allow_listed_field_under_its_row_name():
     assert not missing, f"job describer does not publish: {sorted(missing)}"
 
 
-# ── T-26 (R6.1): describe_result_fields covers every key a real list row carries ──────
-# applicants-and-job-reads Phase 2 task 7. The harness (session, fetch spy, fixtures) is
+# ── T-26: describe_result_fields covers every key a real list row carries ──────
+# The harness (session, fetch spy, fixtures) is
 # tests/test_jobs.py's; the rows come from the tools, not from a hand-written key list.
 
 @pytest.mark.asyncio

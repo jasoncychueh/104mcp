@@ -1,8 +1,8 @@
 """Tests for the four template tools in src/mcp104/tools/templates.py: create_template,
 update_template, delete_template and list_templates (moved here from tests/test_messaging.py).
 
-Written against design.md's declared interfaces and the measured shapes in
-docs/104-site-facts.md §8.33 only (spec-tester Mode 1). The transport seam is the one
+Written against the tools' declared public interfaces and the measured shapes in
+docs/104-site-facts.md §8.33 only. The transport seam is the one
 tests/test_events.py uses: tests/conftest.py's _SeqFetchSpy is patched into
 browser.api_client.fetch and tools.helpers.fetch and replays scripted responses in call order.
 classify(), guarded_sequence, the throttle window and the SQLite file are all real.

@@ -1,25 +1,24 @@
-"""stdio-cdp-rearchitecture design.md Testing Strategy §C8 — the guard and
+"""The guard and
 endpoint declarations (`src/mcp104/tools/helpers.py`, `src/mcp104/browser/api_client.py`).
 
-Written BLIND to helpers.py's and api_client.py's implementations (spec-tester
-Mode 1 rule): every assertion below comes from design.md's declared Interfaces/Data
-Models for §C8 and §C6 (verify_session/logout_session endpoint declarations, the
-throttle-exemption mechanism, ThrottleAbort, ServerLogoutResult) and
-requirements.md R3.5/R3.8/R4.6 — never from reading helpers.py or api_client.py.
-`mcp104.browser.session` and `mcp104.browser.throttle` (already implemented,
-explicitly readable per this dispatch) are used only to construct fixtures
-(SessionInfo, ThrottleState) — their own decision logic (evaluate/classify) is
-exercised for real, never mocked, per §Testing Strategy's "not mocked" list.
+Written BLIND to helpers.py's and api_client.py's implementations: every
+assertion below comes from the declared public interfaces
+(verify_session/logout_session endpoint declarations, the
+throttle-exemption mechanism, ThrottleAbort, ServerLogoutResult) and the
+documented restore/logout behavior — never from reading helpers.py or api_client.py.
+`mcp104.browser.session` and `mcp104.browser.throttle` (readable) are used only
+to construct fixtures (SessionInfo, ThrottleState) — their own decision logic
+(evaluate/classify) is exercised for real, never mocked.
 
 Cases: T-18, T-21, T-26, T-75, T-76, T-115.
 
-Field-name note: design.md's §C8 prose names ENDPOINTS' new dict keys directly
-("ENDPOINTS[\"verify_session\"]", "ENDPOINTS[\"logout_session\"]"), so those are
-hardcoded here. It does NOT name the new throttle-exemption field it says
-`Endpoint` gains ("a field with no default... whether this route goes through
-throttle enforcement") — that field's name is discovered at runtime via
-`dataclasses.fields(Endpoint)` rather than guessed, both because the design
-doesn't supply a name and because T-76 independently requires exactly this kind
+Field-name note: ENDPOINTS' dict keys ("ENDPOINTS[\"verify_session\"]",
+"ENDPOINTS[\"logout_session\"]") are the public names, so those are
+hardcoded here. The throttle-exemption field `Endpoint` gains (a field with no
+default: whether this route goes through throttle enforcement) has no
+documented name — it is discovered at runtime via
+`dataclasses.fields(Endpoint)` rather than guessed, both because no name is
+documented and because T-76 independently requires exactly this kind
 of introspection (its whole point is not comparing against a list hand-written
 in the test).
 """
@@ -65,7 +64,6 @@ class _FakeCtx:
 
 @pytest.fixture(autouse=True)
 def _guard_env(monkeypatch, tmp_path):
-    monkeypatch.setenv("MCP104_ACCOUNT", "test-account")
     monkeypatch.setenv("MCP104_DATA_DIR", str(tmp_path))
 
 
@@ -98,7 +96,7 @@ class _RawResponseStub:
     """Minimal stand-in matching api_client.RawResponse's declared shape
     (status/location/content_type/body/parsed_json — established for real by
     the already-implemented module's `fetch` contract, per docs/104-site-facts.md
-    and design.md §C8's family/envelope description)."""
+    and the documented family/envelope description)."""
 
     def __init__(self, status, content_type, body, parsed_json, location=None):
         self.status = status
@@ -134,14 +132,14 @@ def _install_fake_fetch(monkeypatch, response_or_factory):
     return calls
 
 
-# ── T-18 — R3.5: restore-verification declares the endpoint measured to NOT
+# ── T-18 — restore-verification declares the endpoint measured to NOT
 #    consume the résumé-browsing quota, not the resume-detail endpoint ──────
 
 def test_t018_verify_session_endpoint_is_the_quota_free_route():
     endpoint = ENDPOINTS["verify_session"]
     # .host is a short label (e.g. "vip"), not the full domain — resolved via
     # hostname_for (already implemented, contract not spelled out in
-    # design.md; discovered from the T-115 traceback, not by reading
+    # the docs; discovered from the T-115 traceback, not by reading
     # helpers.py's decision logic).
     assert hostname_for(endpoint) == "vip.104.com.tw"
     assert endpoint.path == "/api/search/getSearchRsNum"
@@ -188,7 +186,7 @@ async def test_t115a_logout_request_bypasses_the_throttle_gate_while_others_are_
 
     logout_calls = _install_fake_fetch(
         monkeypatch,
-        # A 302 to boidc — the measured logout response shape (§C8) — is fine
+        # A 302 to boidc — the measured logout response shape — is fine
         # here: this case only cares whether the gate let the request through,
         # not what guarded_api does with the result afterwards.
         _RawResponseStub(
@@ -226,10 +224,10 @@ async def test_t115a_control_endpoint_is_blocked_under_the_same_throttle_state(m
 
 def test_t115b_exempt_endpoint_set_is_exactly_logout_session():
     # Endpoint.throttle_gated: bool — True means "goes through the throttle
-    # gate", False means "exempt" (design.md §C8, settled during Mode-2 review).
+    # gate", False means "exempt".
     exempt = {key for key, ep in ENDPOINTS.items() if not ep.throttle_gated}
     assert exempt == {"logout_session"}, (
-        "design.md §C8: the throttle-gate exemption must apply to exactly one "
+        "the throttle-gate exemption must apply to exactly one "
         "route today; widening it must be a visible, deliberate edit to this "
         "expected set (T-115)"
     )
@@ -256,12 +254,12 @@ async def test_t115c_logout_request_is_still_counted_in_the_ledger_despite_gate_
 
     after = len(info.throttle.request_timestamps)
     assert after == before + 1, (
-        "the exemption is the gate, not the ledger (§C6/§C8): note_request must "
+        "the exemption is the gate, not the ledger: note_request must "
         "still run for the logout request"
     )
 
 
-# ── T-21 — R3.8: the restore-verification request is counted toward the
+# ── T-21 — the restore-verification request is counted toward the
 #    request-throttle ledger like any other call ───────────────────────
 
 @pytest.mark.asyncio
@@ -276,7 +274,7 @@ async def test_t021_verify_session_request_is_counted_by_the_throttle(monkeypatc
 
     after = len(info.throttle.request_timestamps)
     assert after == before + 1, (
-        "R3.8: restore verification must not be an unthrottled bypass — its "
+        "restore verification must not be an unthrottled bypass — its "
         "request must be counted exactly like any other guarded_api call"
     )
 
@@ -296,7 +294,7 @@ def test_t026_restore_verify_403_wording_lives_in_the_existing_blocked_family():
         and isinstance(getattr(helpers_mod, name).get("error"), str)
     }
     assert "ERROR_BLOCKED_API_RESTORE_VERIFY" in blocked_constants, (
-        "design.md §C8 names this constant explicitly, co-located with the "
+        "this constant must exist, co-located with the "
         "existing two 403 wordings in tools/helpers.py"
     )
     # The restore-verify wording must be a THIRD-or-later member of an

@@ -1,9 +1,8 @@
 """Tests for tools/categories.py's bundled datasets and tiered category-name
 resolver.
 
-Written blind to tools/categories.py's implementation (spec-driven-development
-Mode 1/2). Every expected outcome below comes from one of two independent
-oracles, never from reading the resolver's own code:
+Written blind to tools/categories.py's implementation: every expected outcome
+below comes from one of two independent oracles, never from reading the resolver's own code:
 
 - The committed dataset files under `src/mcp104/assets/104-categories/`, parsed here by
   this test's own small JSON walker (`_load_raw_nodes`) -- never through
@@ -12,25 +11,21 @@ oracles, never from reading the resolver's own code:
 - `docs/104-site-facts.md` §6b.3g's measured resolution trials and its own
   name-decoration/prefix-family census.
 
-**`Resolution` is now fully pinned by design.md's Components §6** (round-2
-design revision): a named tuple `(code, tier, candidates, status)`, where
+**`Resolution` is a named tuple** `(code, tier, candidates, status)`, where
 `status` (`"resolved"` / `"ambiguous"` / `"branch"` / `"unknown"`) is the
 discriminator for which of the other three fields are populated, and
-`candidates` is `tuple[Candidate, ...]` with `Candidate = (code, name)` —
-never bare codes, because the entire point of returning candidates is that
+`candidates` is `tuple[Candidate, ...]` with
+`Candidate = (code, name, terminal, has_children)` — never bare codes, because the entire point of returning candidates is that
 the *caller* chooses, and a bare code is not choosable. Tests below access
 fields via `_get()`, which accepts either attribute or dict-key access; that
 narrower hedge (dataclass vs. dict *shape*, not field *names*) is the one
 assumption this file still carries knowingly, alongside one more:
 
-- The literal tier identifiers design.md's prose names ("Normalised exact",
-  "Prefix", "Substring") are assumed to surface as the lowercase strings
-  `TIER_EXACT` / `TIER_PREFIX` / `TIER_SUBSTRING` below, following
-  structure.md's snake_case convention — design.md does not pin a literal
-  for these the way it now pins `status`'s four values. If the
-  implementation reports different literals, that is a join mismatch to
-  adjudicate, not necessarily a defect in either side. (In this session's
-  Mode 1 run, "exact" and "prefix" both matched the live implementation.)
+- The tier identifiers ("normalised exact", "prefix", "substring") surface as
+  the lowercase strings `TIER_EXACT` / `TIER_PREFIX` / `TIER_SUBSTRING` below,
+  while `status`'s four values are fixed literals. A resolver reporting
+  different tier literals would fail here, and the mismatch is for the two
+  sides to adjudicate, not necessarily a defect in either.
 """
 from __future__ import annotations
 
@@ -60,11 +55,11 @@ _ALL_DATASET_FILES = [
     "Major.json", "Tool.json", "Skill.json", "Abroad.json",
 ]
 
-# Round I9: load_dataset() gained a required `condition_key` parameter -- branch-code
+# load_dataset() takes a required `condition_key` parameter -- branch-code
 # acceptance is now measured per (dataset, condition) pair, not per dataset file alone
 # (workExpJob binds to JobCat.json but was never measured to accept a branch the way
 # jobcat was, so a shared per-file default would let it silently inherit an acceptance
-# nobody measured for it). This is design.md's own "Bundled datasets" table -- the
+# nobody measured for it). This table gives the
 # PRIMARY condition each file serves, for tests that only need any one valid condition
 # to load a dataset under and are not about branch-acceptance specifics themselves.
 # Where a dataset backs two conditions, the one already used in this file's existing
@@ -82,7 +77,7 @@ _DATASET_TO_CONDITION = {
 
 # T-69's sweep is the one case that must cover EVERY (dataset, condition) pair, not
 # just one per file: terminality (a candidate's `terminal` flag) is now
-# condition-relative (design.md / this round's report: jobcat accepts the same branch
+# condition-relative (jobcat accepts the same branch
 # code workExpJob refuses, on the identical JobCat.json file), so a sweep keyed only by
 # dataset file would silently skip the exact divergence this property exists to catch.
 _ALL_DATASET_CONDITION_PAIRS = [
@@ -101,8 +96,8 @@ _ALL_DATASET_CONDITION_PAIRS = [
 
 
 def _get(resolution, field):
-    """Resolution's exact representation (dataclass vs dict) is not pinned
-    by design.md; accept either so assertions target values, not shape."""
+    """Resolution's exact representation (dataclass vs dict) is not part of
+    the public contract; accept either so assertions target values, not shape."""
     if hasattr(resolution, field):
         return getattr(resolution, field)
     return resolution[field]
@@ -136,11 +131,11 @@ def _load_raw_nodes(filename: str) -> list[dict]:
 
 # ── T-51 (load_dataset, interface): each dataset loads and contains its
 # documented codes. Each (dataset, code, name) triple below is independently
-# confirmed against the committed JSON files in this session, and six of the
+# confirmed against the committed JSON files, and six of the
 # eight also appear in docs/104-site-facts.md §6b.3g's own verification
 # table ("八份分類資料集對應到哪個條件").
 #
-# load_dataset's own return shape (`Dataset`) is not pinned by design.md
+# load_dataset's own return shape (`Dataset`) is not specified
 # beyond "loads from src/mcp104/assets/104-categories/, no network access", so this
 # exercises it through resolve()'s specified interface rather than assuming
 # an internal node/field layout: an exact-name resolution can only succeed
@@ -174,15 +169,14 @@ def test_load_dataset_contains_its_documented_codes(dataset_name, code, name):
     assert _get(resolution, "code") == code
 
 
-# ── T-33 (R9.1, R9.2): documented resolution trials resolve at their
+# ── T-33: documented resolution trials resolve at their
 # measured tier. docs/104-site-facts.md §6b.3g's "十個真實輸入" table
 # records tier-1-exact and tier-3-substring hit counts but not tier-2, so
 # the deciding tier below is computed directly from the committed dataset
-# files using the exact three-tier algorithm design.md specifies
+# files using the exact three-tier algorithm resolve() is specified to follow
 # (normalised exact -> prefix -> substring, first tier yielding exactly one
 # match wins) -- every expected value is still derived from the datasets,
-# never from tools/categories.py. See this session's report for the
-# computation.
+# never from tools/categories.py.
 
 _TRIALS_RESOLVE = [
     # (query, dataset, expected code, expected tier)
@@ -229,7 +223,7 @@ def test_documented_trial_yields_candidates_not_a_resolution(
     assert len(_get(resolution, "candidates")) == expected_candidate_count
 
 
-# ── T-34 (R9.3): a tier yielding several matches returns candidates, no
+# ── T-34: a tier yielding several matches returns candidates, no
 # resolved code.
 
 def test_ambiguous_tier_returns_candidates_and_no_code():
@@ -237,8 +231,8 @@ def test_ambiguous_tier_returns_candidates_and_no_code():
     # leaf (4002036027) and a branch (4023001000) sharing a name, confirmed
     # against the committed file and matching §6b.3g's own account of this
     # exact pair. The textbook case a tier yielding several matches must
-    # refuse rather than guess between. `status == "ambiguous"` per
-    # Components §6's status table; `candidates` holds every tied hit as
+    # refuse rather than guess between. `status == "ambiguous"`;
+    # `candidates` holds every tied hit as
     # `Candidate(code, name)` pairs, not bare codes, so a caller can choose
     # between them.
     dataset = load_dataset("Skill.json", "certificates")
@@ -249,7 +243,7 @@ def test_ambiguous_tier_returns_candidates_and_no_code():
     assert {("4002036027", "專案管理"), ("4023001000", "專案管理")} <= candidate_pairs
 
 
-# ── T-35 (R9.4): an exact hit with longer same-prefix names resolves and
+# ── T-35: an exact hit with longer same-prefix names resolves and
 # names them.
 
 def test_exact_hit_with_longer_names_resolves_and_names_the_family():
@@ -278,7 +272,7 @@ def test_exact_hit_with_longer_names_resolves_and_names_the_family():
     assert "4002004004" not in {c.code for c in _get(resolution, "candidates")}
 
 
-# ── T-36 (R9.6): a branch name without recorded branch acceptance is
+# ── T-36: a branch name without recorded branch acceptance is
 # refused with candidate leaves, never expanded.
 
 def test_branch_name_without_recorded_branch_acceptance_is_refused_with_leaves():
@@ -289,7 +283,7 @@ def test_branch_name_without_recorded_branch_acceptance_is_refused_with_leaves()
     # this dataset is not one where branch acceptance is recorded as
     # working. "亞洲" is a real branch node (7001000000) with 49 leaf
     # children (confirmed against the committed file), so an exact-name
-    # resolution finds it -- and per design.md's Components §6 must refuse
+    # resolution finds it -- and must refuse
     # rather than resolve to a branch code that would silently widen the
     # search into a multi-code query the caller did not write. Per the
     # status table this is `status == "branch"`, with `candidates` holding
@@ -307,7 +301,7 @@ def test_branch_name_without_recorded_branch_acceptance_is_refused_with_leaves()
     assert len(candidates) == 49
 
 
-# ── Regression (R9.6): branch-code acceptance is a MEASURED PER-DATASET
+# ── Regression: branch-code acceptance is a MEASURED PER-DATASET
 # property, and it must be driven by configuration, not asserted from one
 # sampled dataset in each direction. A defect shipped past the full suite
 # because branch acceptance was hard-coded to a single dataset (only
@@ -339,12 +333,12 @@ def test_branch_name_without_recorded_branch_acceptance_is_refused_with_leaves()
 #   Tool.json     REFUSE (measured) — goodTools=<branch> -> total unchanged
 #     (0 rows); leaf (AIX) -> 539. The exact branch code used in that
 #     measurement is not recorded in the facts document, so "作業系統類"
-#     (AIX's real parent in the committed file, confirmed independently in
-#     this session) exercises the dataset-level refuse verdict; it is not
+#     (AIX's real parent in the committed file, confirmed against that file)
+#     exercises the dataset-level refuse verdict; it is not
 #     claimed to be the literally-tested node.
 #   Indust.json, Major.json, Skill.json — NEVER MEASURED for branch
-#     acceptance. Per Components §6, "where branch acceptance is not
-#     recorded, a branch name is refused" — a DEFAULT, not a finding. Rows
+#     acceptance. Where branch acceptance is not
+#     recorded, a branch name is refused — a DEFAULT, not a finding. Rows
 #     are marked as such so that a future measurement adding one of these
 #     to the accept list changes this test on purpose, rather than the
 #     change reading as an unexplained regression.
@@ -352,7 +346,7 @@ def test_branch_name_without_recorded_branch_acceptance_is_refused_with_leaves()
 _BRANCH_ACCEPTANCE_FIXTURES = [
     # (dataset_file, condition_key, branch_name, branch_code, expected_status, provenance)
     # condition_key is the condition each measurement below was actually taken
-    # under (Round I9: branch acceptance is per (dataset, condition) pair, not per
+    # under (branch acceptance is per (dataset, condition) pair, not per
     # dataset file alone -- see _DATASET_TO_CONDITION's docstring above).
     ("JobCat.json", "jobcat", "操作／技術類人員", "2010001000", "resolved", "measured: accept"),
     ("AreaWork.json", "city", "新竹縣市", "6001006000", "resolved", "measured: accept"),
@@ -409,11 +403,10 @@ def test_resolve_reports_code_tier_and_empty_family_together():
 # bundled dataset. Oracle: each node's own name is ground truth for what it
 # should resolve back to. This drives resolve() itself, not a
 # hand-reproduced algorithm, so a rule change that damages precision fails
-# here rather than being silently re-baselined. Per design.md's Testing
-# Strategy, the sweep's headline "misresolution rate" needs a
+# here rather than being silently re-baselined. The sweep's headline "misresolution rate" needs a
 # population-size caveat to state correctly (§6b.3g already carries that
 # caveat for its own run); this test instead asserts the property the
-# design commits to: prefix and substring tiers misresolve zero times.
+# resolver commits to: prefix and substring tiers misresolve zero times.
 #
 # The input-generation method mirrors research/probes/sweep_resolution_
 # precision.py (read for method only; this test never reads
@@ -547,15 +540,15 @@ def test_no_dataset_node_name_is_all_digits_and_no_code_is_duplicated_within_a_d
         )
 
 
-# ── T-69 (R9.7, R9.8): every candidate's `terminal` flag matches what passing its own
+# ── T-69: every candidate's `terminal` flag matches what passing its own
 # code back into resolve() actually does, swept over every node of every bundled
 # dataset (via each unique raw name, which resolve() folds every tied node under).
 #
-# Round I5's own finding is the brief for this case: T-68 already catches the field
+# The brief for this case: T-68 already catches the field
 # being discarded at the tool boundary using one concrete instance; this case catches a
 # DIFFERENT possible defect -- the flag surviving to the boundary but being WRONG for
 # some node the one concrete instance does not exercise. The oracle is the round trip
-# itself, exactly as design.md specifies: "take the stated flag, pass the code back,
+# itself, exactly as the contract specifies: "take the stated flag, pass the code back,
 # compare against what happens — never the rule that produced the flag." Re-deriving
 # the branch/tie refusal rule here to predict the expected boolean would make this test
 # unable to fail when THAT rule is wrong, which is precisely the gap the brief warns
@@ -566,9 +559,8 @@ def _round_trip_resolves(dataset, code: str) -> bool:
 
 
 def test_every_candidates_terminal_flag_matches_its_own_round_trip():
-    # Round I9: branch-code acceptance (and therefore `terminal`) is now measured per
-    # (dataset, condition) pair, not per dataset file -- the report that landed this
-    # round found jobcat ACCEPTS a branch code on JobCat.json that workExpJob, the
+    # Branch-code acceptance (and therefore `terminal`) is measured per
+    # (dataset, condition) pair, not per dataset file -- jobcat ACCEPTS a branch code on JobCat.json that workExpJob, the
     # same file, REFUSES. A sweep keyed only by dataset file would load exactly one
     # of those two acceptance configurations and silently never exercise the other,
     # missing precisely the divergence this property exists to catch. So this drives
@@ -645,9 +637,9 @@ def test_prefix_and_substring_tiers_never_misresolve():
     )
 
 
-# ── load_dataset interface pin (Round I9): `condition_key` is required, no default ──
+# ── load_dataset interface pin: `condition_key` is required, no default ──
 #
-# design.md: acceptance is recorded per (dataset, condition) pair specifically so an
+# Acceptance is recorded per (dataset, condition) pair specifically so an
 # unaware call site cannot silently inherit a measured acceptance. A default value
 # would reopen exactly that hole -- any caller who forgot to pass a condition would
 # get SOME condition's acceptance table by accident rather than an error. This pins
@@ -659,11 +651,11 @@ def test_load_dataset_requires_condition_key_with_no_default():
         load_dataset("JobCat.json")  # type: ignore[call-arg]
 
 
-# ── T-75 (R9.6): a condition newly bound to a dataset does NOT inherit a branch
+# ── T-75: a condition newly bound to a dataset does NOT inherit a branch
 # acceptance measured for a DIFFERENT condition on that dataset; a measured refusal
 # DOES apply consistently to conditions sharing a dataset ───────────────────────────
 #
-# design.md: "acceptance is recorded per (dataset, condition) pair and is never
+# The rule: "acceptance is recorded per (dataset, condition) pair and is never
 # inherited by a condition newly bound to a dataset; a refusal, being the
 # conservative answer, transfers freely." The asymmetry is deliberate and is what
 # this case protects, not incidentally exercises: inheriting a refusal costs a
@@ -689,7 +681,7 @@ def test_load_dataset_requires_condition_key_with_no_default():
 # MECHANISM, not about any particular pair diverging today.
 #
 # So: discover a real diverging pair structurally first (never hard-coded to
-# jobcat/workExpJob -- every dataset file design.md's Bundled datasets table binds
+# jobcat/workExpJob -- every dataset file bound
 # to more than one condition is checked, using one of that dataset's own branch
 # nodes). If one exists, use it -- the strongest form. If none does, prove the
 # mechanism SYNTHETICALLY: clone a real, currently-loaded `Dataset` (measured to

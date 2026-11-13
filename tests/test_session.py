@@ -60,7 +60,7 @@ def test_activate_session(pool):
 
 
 def test_remove_session_removes_entry(pool):
-    # SessionPool.remove() is synchronous (§C7): there is no BrowserContext
+    # SessionPool.remove() is synchronous: there is no BrowserContext
     # left to close post-login, cookies are the session's sole credential
     # holder — so this only asserts removal itself, not a close() call.
     pool.add_pending("t1", PendingLogin(mcp_session_id="s1"))

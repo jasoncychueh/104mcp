@@ -8,16 +8,17 @@ enum, a composite structure, or nothing browsable at all; and given the fixed se
 fields `tools/search.py` keeps on a résumé row, what does each one mean.
 
 Deliberately does not: touch the network, the session, the guard or the throttle —
-`structure.md` already rules that public category data must not be routed through
+public category data is not routed through
 `guarded_api` or the throttle (it is unauthenticated, off the protected
-host, zero anti-bot exposure), and that rule extends here without modification: these two
+host, zero anti-bot exposure), and that extends here without modification: these two
 tools read only bundled package data (`tools/categories.py`'s datasets, `tools/
 filters.py`'s `CONDITIONS`) and are registered WITHOUT `require_login` — see
 `register_discovery_tools`. Neither tool decides what `search_resumes` accepts; both only
 report what `tools/filters.py` and `tools/categories.py` already decided, which is why
 every user-facing sentence below is generated from those modules' own exports rather than
-retyped (steering/structure.md's Documentation Standards rule — the same rule `tools/
-search.py`'s docstrings already follow for the filter-key list and `RESOLVE_ACCEPTS_ZH`).
+retyped (a sentence stating what a tool accepts or returns is generated from the definition
+that decides it — the same approach `tools/search.py`'s docstrings already follow for the
+filter-key list and `RESOLVE_ACCEPTS_ZH`).
 
 This module also owns the résumé-row field allow-list (`RESUME_ROW_FIELD_GLOSS`) and the
 `p_id` second-identifier note (`SECOND_IDENTIFIER_NOTE`) — moved OUT of `tools/search.py`
@@ -99,10 +100,10 @@ RESUME_ROW_FIELD_GLOSS: dict[str, str] = {
                        "這些聯絡欄位本身不在列（row）的回傳範圍內，只有本旗標會出現在列上",
     "documentSnapshotId": "未量測，104 自己的欄位名稱（documentSnapshotId）照登",
     "eduDesc": "最高學歷敘述（文字）",
-    "expJobArr": "工作經歷陣列，每筆一份工作（104 自己的 19 個欄位）。值為 null／空字串／"
-                 "空陣列的欄位不列出（0 與 false 不是空值，照列）；exp_job_note（工作內容）"
-                 "104 給的是富文字編輯器的 HTML，本工具已轉成純文字，段落與清單項目以換行"
-                 "分隔。要看完整經歷請用 get_resume_detail",
+    "expJobArr": "工作經歷陣列，每筆一份工作，只有 exp_firm（公司）、exp_title（職稱）、"
+                 "exp_start／exp_end（起訖）四個欄位；要看工作內容與完整經歷請用 "
+                 "get_resume_detail。exp_end 為 1900/01/01（應徵者列為 1900-01-01 00:00:00）"
+                 "表示仍在職，不是日期",
     "expPeriodDesc": "工作年資敘述（文字）",
     "hasInRecruitFlow": "未量測，104 自己的欄位名稱（hasInRecruitFlow）照登",
     "hunterStatus": "未量測，104 自己的欄位名稱（hunterStatus）照登",
@@ -180,7 +181,7 @@ UNMEASURED_EVENT_ROUTE_NOTE = (
 # ── earlier draft of the migration plan sketched, because describe_result_fields() must ──
 # ── generate the event_progress/event_polarity gloss text FROM the same table
 # ── _event_labels() consults, and this module cannot read a table living downstream of
-# ── it without inverting the dependency direction structure.md requires. ─────────────────
+# ── it without inverting the one-way dependency (messaging imports discovery). ─────────────
 #
 # Both allow-lists are the measured field-name sets from
 # research/results/messaging_contract.json's own field-name sweep (inbox_id_mapping.
@@ -188,7 +189,7 @@ UNMEASURED_EVENT_ROUTE_NOTE = (
 # respectively, cross-checked against docs/104-site-facts.md §6b.7's table (same counts,
 # independently derived) rather than typed from that table's prose, per this project's
 # own "a captured/measured artifact outranks a hand-typed transcription of it" rule
-# (structure.md's ★★, and D2-V's `metadata`/`fitnessReportStatus` transcription loss).
+# (a hand-typed transcription of the field list once lost `metadata` and `fitnessReportStatus`).
 
 INBOX_ROW_FIELD_GLOSS: dict[str, str] = {
     "candidateName": "候選人姓名；本工具轉換後的鍵名是 candidate_name",
@@ -457,9 +458,8 @@ def _browse_scalar_key(condition: filters_mod.Condition) -> dict:
 
 
 def _browse_filter_values(key: str, code: str | None) -> dict:
-    """Pure decision logic behind the `browse_filter_values` tool — module-level per
-    steering/structure.md ("決策邏輯必須抽成模組層級的函式"), directly testable without
-    an MCP Context.
+    """Pure decision logic behind the `browse_filter_values` tool — module-level so it is
+    directly testable without an MCP Context.
 
     Unknown-key check consumes `filters_mod.VALID_FILTER_KEYS` — the same tuple `tools/
     filters.py`'s own `validate_filters` and `tools/search.py`'s `_filter_key_reference`
@@ -667,25 +667,15 @@ APPLICANT_UNMEASURED_FIELDS: frozenset[str] = frozenset(
     {"isDuplicateApply", "currentJobProcess", "skills"}
 )
 
-# Fields the résumé row also carries but whose meaning differs on an applicant row, so
-# they are described here instead of borrowing the résumé row's gloss.
-APPLICANT_OWN_GLOSS_FIELDS: frozenset[str] = frozenset({"expJobArr"})
-
-_APPLICANT_ROW_OWN_GLOSS: dict[str, str] = {
-    "expJobArr": "工作經歷陣列，每筆一份工作，只有 exp_firm（公司）、exp_title（職稱）、"
-                 "exp_start／exp_end（起訖）四個欄位；要看完整經歷請用 get_resume_detail",
-}
-
 _APPLICANT_ROW_SHARED_WITH_RESUME: tuple[str, ...] = (
     "idNo", "pId", "userName", "age", "sex", "sexDesc", "eduDesc", "titleCatDesc",
-    "areaDesc", "expPeriodDesc", "readStatus", "isContact", "isSave",
+    "areaDesc", "expJobArr", "expPeriodDesc", "readStatus", "isContact", "isSave",
     "hasInRecruitFlow", "latestMemo", "switchStatusView", "isTalent50",
     "resumeVersion", "resumeType",
 )
 
 APPLICANT_ROW_FIELD_GLOSS: dict[str, str] = {
     **{k: RESUME_ROW_FIELD_GLOSS[k] for k in _APPLICANT_ROW_SHARED_WITH_RESUME},
-    **{k: _APPLICANT_ROW_OWN_GLOSS[k] for k in sorted(APPLICANT_OWN_GLOSS_FIELDS)},
     **{k: _unmeasured_gloss(k) for k in sorted(APPLICANT_UNMEASURED_FIELDS)},
 }
 
@@ -803,7 +793,7 @@ def _describe_result_fields(row_type: str = "resume") -> dict:
     return describer()
 
 
-# ── Docstrings — generated, per steering/structure.md's rule that a sentence stating ──
+# ── Docstrings — generated, because a sentence stating ──
 # ── what a tool accepts/returns must come from the definition deciding it. ────────────
 
 def _browse_filter_values_description() -> str:
@@ -880,7 +870,7 @@ _BROWSE_FILTER_VALUES_DESCRIPTION = _browse_filter_values_description()
 
 def register_discovery_tools(mcp: FastMCP):
     """Registers WITHOUT `require_login` — see this module's own docstring and
-    steering/structure.md: public category data must not be gated the way a real 104
+    public category data must not be gated the way a real 104
     request is, and requiring login here would make the one free tool in the set look
     expensive for no measured security reason (the data is public on 104's own CDN and
     this server is reached only through the operator's own MCP configuration).

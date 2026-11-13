@@ -21,10 +21,7 @@ class Config:
     # Which 104 account the stored credentials belong to — the login e-mail
     # 104 itself reports for the signed-in session (event/last-info's
     # metadata.userEmail, measured 2026-09-04), fetched once after login and
-    # cached here next to cookies.json. Nothing is configured by the operator:
-    # the old MCP104_ACCOUNT label was dropped on 2026-09-04 because it only
-    # ever restated something 104 already knows, and getting it wrong made the
-    # server refuse to start.
+    # cached here next to cookies.json. The operator configures nothing.
     identity_path: Path
     login_timeout_seconds: int  # How long _watch_for_login waits for a human to finish login
     max_daily_messages: int
@@ -67,6 +64,36 @@ class Config:
     # actual bind/announce behavior from it, belongs to web/auth_server.py's
     # resolve_auth_binding — this module only carries the two raw values
     # through from the environment.
+
+
+# The integer settings this package used to read under bare, generic names.
+# They are read as MCP104_<name> now; a bare name left in the environment would
+# be silently ignored, which for MAX_DAILY_MESSAGES means the operator's lower
+# cap quietly reverts to the default. So get_config() refuses to start while any
+# of them is set. This set must equal the names get_config() reads through
+# _parse_int_env, minus the MCP104_ prefix.
+RETIRED_ENV_NAMES = (
+    "MAX_DAILY_MESSAGES",
+    "LOGIN_TIMEOUT_SECONDS",
+    "MAX_REQUESTS_PER_HOUR",
+    "MAX_INLINE_WAIT_SECONDS",
+    "ACTIVITY_STREAK_LIMIT_MINUTES",
+    "REST_DURATION_MINUTES",
+    "MIN_CALL_INTERVAL_SECONDS",
+)
+
+
+def _reject_retired_env_names() -> None:
+    lines = []
+    for old in RETIRED_ENV_NAMES:
+        raw = os.getenv(old)
+        if raw is not None and raw.strip():
+            lines.append(
+                f"環境變數 {old} 已停用，本套件不再讀取；"
+                f"請改名為 MCP104_{old} 後重新啟動。"
+            )
+    if lines:
+        raise ConfigError("\n".join(lines))
 
 
 def _parse_int_env(name: str, default: int) -> int:
@@ -130,6 +157,8 @@ def resolve_data_dir() -> Path:
 
 
 def get_config() -> Config:
+    _reject_retired_env_names()
+
     data_dir = resolve_data_dir()
 
     auth_bind_port = _parse_optional_int_env("MCP104_AUTH_BIND_PORT")
@@ -152,8 +181,8 @@ def get_config() -> Config:
         # "already signed in elsewhere" dialog. A live login measured at
         # 265s; the old hard-coded 300s left almost no margin and two
         # earlier attempts timed out before the user could finish.
-        login_timeout_seconds=_parse_int_env("LOGIN_TIMEOUT_SECONDS", 900),
-        max_daily_messages=_parse_int_env("MAX_DAILY_MESSAGES", 50),
+        login_timeout_seconds=_parse_int_env("MCP104_LOGIN_TIMEOUT_SECONDS", 900),
+        max_daily_messages=_parse_int_env("MCP104_MAX_DAILY_MESSAGES", 50),
         # Lowered from 1800: sized for a client that issues 1 HTTP request per
         # tool call, so the old value (sized for ~44 DOM requests per page
         # load) would never bind. After the JSON-API messaging migration this
@@ -163,11 +192,11 @@ def get_config() -> Config:
         # numbers are still a conservative guess, not a derived safe
         # threshold, and why the migration makes that caveat apply MORE
         # broadly rather than retiring it.
-        max_requests_per_hour=_parse_int_env("MAX_REQUESTS_PER_HOUR", 300),
-        max_inline_wait_seconds=_parse_int_env("MAX_INLINE_WAIT_SECONDS", 20),
-        activity_streak_limit_minutes=_parse_int_env("ACTIVITY_STREAK_LIMIT_MINUTES", 20),
-        rest_duration_minutes=_parse_int_env("REST_DURATION_MINUTES", 3),
-        min_call_interval_seconds=_parse_int_env("MIN_CALL_INTERVAL_SECONDS", 5),
+        max_requests_per_hour=_parse_int_env("MCP104_MAX_REQUESTS_PER_HOUR", 300),
+        max_inline_wait_seconds=_parse_int_env("MCP104_MAX_INLINE_WAIT_SECONDS", 20),
+        activity_streak_limit_minutes=_parse_int_env("MCP104_ACTIVITY_STREAK_LIMIT_MINUTES", 20),
+        rest_duration_minutes=_parse_int_env("MCP104_REST_DURATION_MINUTES", 3),
+        min_call_interval_seconds=_parse_int_env("MCP104_MIN_CALL_INTERVAL_SECONDS", 5),
         throttle_state_path=data_dir / "throttle_state.log",
         resume_files_dir=data_dir / "resume-files",
         logout_unconfirmed_path=data_dir / "logout_unconfirmed",

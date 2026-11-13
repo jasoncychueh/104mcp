@@ -58,8 +58,7 @@ red with a message that points back to this file or fails on the missing structu
     the echo with what was sent); other `searchForm` keys must be 104's own defaults, and
     `searchForm` has a `jobcat` key;
   - at least one row has a `masterUrl`, and at least one row has `latestMemo: null`;
-  - at least one row has an `expJobArr` entry with an empty field (`null`, `""` or `[]`) and at
-    least one entry whose `expJobNote` contains HTML;
+  - at least one row has an `expJobArr` entry whose `expEnd` is `1900/01/01` (a job still held);
   - every key on row 1 is one of the fields 104 really sends for résumé rows (the field-description
     tool must document every key it finds there).
 
@@ -69,8 +68,8 @@ red with a message that points back to this file or fails on the missing structu
 - Shape: like `rows_search.json`; rows in `result.data`, `result.pageInfo` is
   `{this_page, total_page, total}`, `result.browseLimit` as above.
 - Conditions: at least 1 row; `pageInfo.this_page`, `total_page` and `total` are three different
-  numbers; `expJobArr` entries follow the same two conditions as `rows_search.json` (an empty
-  per-job field, and an `expJobNote` with HTML, each somewhere in the file).
+  numbers; `expJobArr` entries follow the same condition as `rows_search.json` (an `expEnd`
+  of `1900/01/01`, though the tests do not require it of this file).
 
 ### `rows_match.json` — bare body
 
@@ -79,7 +78,8 @@ red with a message that points back to this file or fails on the missing structu
   `result.data`); `result.pageInfo` is `{total, start, end, pageRow, total_page, thisPage, prePage,
   nextPage}` (there is **no** `this_page`); `result.browseLimit` as above.
 - Conditions: at least 1 row; row 1 has an `idNo` of at least 12 digits; `expJobArr` entries follow
-  the same two conditions as `rows_search.json`.
+  the same condition as `rows_search.json` (an `expEnd` of `1900/01/01`, though the tests do not
+  require it of this file).
 
 ### `rows_applicants.json` — bare body
 

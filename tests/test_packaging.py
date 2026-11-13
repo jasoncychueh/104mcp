@@ -1,18 +1,17 @@
-"""Packaging / release-artifact tests — feature stdio-cdp-rearchitecture, §C9.
+"""Packaging / release-artifact tests.
 
-Cases covered (design.md §Testing Strategy Test Cases table):
-  T-34 (R6.4)  — runtime dependency set literally equals a reviewed allowlist.
-  T-47 (R11.1) — .gitignore covers real candidate data, login-state files, and
-                 measurement-capture artifacts.
-  T-48 (R11.3) — the ignore check still exists after .dockerignore's removal,
-                 and something explains why that line of defense disappeared.
-  T-88 (R11.2) — the actual built release artifact's member list contains none
-                 of the above.
+Cases covered:
+  T-34 — runtime dependency set literally equals a reviewed allowlist.
+  T-47 — .gitignore covers real candidate data, login-state files, and
+         measurement-capture artifacts.
+  T-48 — the ignore check still exists after .dockerignore's removal,
+         and something explains why that line of defense disappeared.
+  T-88 — the actual built release artifact's member list contains none
+         of the above.
 
-Written blind to this cycle's in-flight changes to pyproject.toml,
-requirements.txt, .mcp.json, .gitignore, and the Docker files — see the
-spec-tester dispatch note. Assertions are grounded in design.md / CLAUDE.md /
-steering docs, not in a peek at those files' new content.
+Written without reading the new contents of pyproject.toml,
+requirements.txt, .mcp.json, .gitignore, or the Docker files. Assertions are
+grounded in CLAUDE.md's description of those files, not in a peek at them.
 """
 from __future__ import annotations
 
@@ -61,11 +60,11 @@ REVIEWED_RUNTIME_DEPENDENCY_ALLOWLIST = {
 
 
 def test_runtime_dependencies_equal_reviewed_allowlist():
-    """T-34 (R6.4): the declared [project] dependencies set is literally the
+    """T-34: the declared [project] dependencies set is literally the
     reviewed allowlist — no more, no less. A new dependency must be reviewed
     for whether it writes to stdout by default before this list changes.
 
-    This allowlist is the set reviewed on 2026-09-02 per design.md §C9
+    This allowlist is the set reviewed on 2026-09-02
     (aiosqlite/tzdata already present pre-cycle; uvicorn dropped this cycle
     with the streamable-http server's removal; nothing new added). Any drift
     must be adjudicated by a human before this list changes.
@@ -84,8 +83,8 @@ def test_runtime_dependencies_equal_reviewed_allowlist():
 
 # T-47 / T-48 — representative paths for each protected category, grounded in
 # CLAUDE.md (data/cookies.json — login state; SQLite persistence under data/)
-# and structure.md (research/captures/ — real candidate résumés, names,
-# e-mails, explicitly marked "❌ .gitignore" in the target directory tree).
+# and .gitignore's own research/captures/ entry (real candidate résumés,
+# names, e-mails).
 _LOGIN_STATE_SAMPLE = "data/cookies.json"
 _CANDIDATE_DATA_SAMPLE = "data/104.db"
 _MEASUREMENT_CAPTURE_SAMPLE = "research/captures/sample_page.html"
@@ -113,7 +112,7 @@ def _git_check_ignore(rel_path: str) -> bool:
     list(_PROTECTED_SAMPLE_PATHS.items()),
 )
 def test_gitignore_covers_pii_and_login_state_categories(label, rel_path):
-    """T-47 (R11.1): version control's ignore rules cover real candidate
+    """T-47: version control's ignore rules cover real candidate
     data, login-state files, and measurement-capture artifacts."""
     assert _git_check_ignore(rel_path), (
         f"{label} sample path {rel_path!r} is not ignored by version control"
@@ -121,13 +120,13 @@ def test_gitignore_covers_pii_and_login_state_categories(label, rel_path):
 
 
 def test_ignore_check_still_covers_pii_after_dockerignore_removed():
-    """T-48 (R11.3): with .dockerignore gone (one of the two original lines
+    """T-48: with .dockerignore gone (one of the two original lines
     of defense), the remaining check (.gitignore) is still automatically
     checked, and something in the repo explains why the other line
     disappeared rather than leaving the gap looking like an oversight."""
     dockerignore_path = REPO_ROOT / ".dockerignore"
     assert not dockerignore_path.exists(), (
-        ".dockerignore still exists — R11.3 anchors on it having been removed "
+        ".dockerignore still exists — this check anchors on it having been removed "
         "as part of this cycle's architecture change"
     )
 
@@ -154,13 +153,13 @@ def test_ignore_check_still_covers_pii_after_dockerignore_removed():
             break
     assert explanation_found, (
         "no candidate document (.gitignore, tests/test_ignore_files.py) "
-        "mentions .dockerignore — R11.3 requires the remaining check to explain "
+        "mentions .dockerignore — the remaining check must explain "
         "why the other line of defense disappeared, not just silently drop it"
     )
 
 
 def test_built_release_artifact_excludes_pii_and_login_state(tmp_path):
-    """T-88 (R11.2): the actual built release artifact's member list —not the
+    """T-88: the actual built release artifact's member list —not the
     declared inclusion rules— contains no real candidate data, login-state
     file, or measurement-capture artifact.
 
@@ -240,13 +239,13 @@ def test_built_release_artifact_excludes_pii_and_login_state(tmp_path):
         shutil.rmtree(leftover_egg_info, ignore_errors=True)
 
 
-# ── T-46 (R10.5): the three version declarations agree ────────────────────────────────
+# ── T-46: the three version declarations agree ────────────────────────────────
 
 _SEMVER = re.compile(r"^\d+\.\d+\.\d+$")
 
 
 def test_three_version_declarations_agree():
-    """T-46 (R10.5): pyproject.toml, .claude-plugin/plugin.json and the mcp104 plugin entry in
+    """T-46: pyproject.toml, .claude-plugin/plugin.json and the mcp104 plugin entry in
     .claude-plugin/marketplace.json declare the same X.Y.Z version. The number itself is not
     pinned here: the test guards "the three are bumped together", and a pinned number would go
     red on every release."""

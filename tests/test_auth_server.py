@@ -1,14 +1,13 @@
-"""stdio-cdp-rearchitecture design.md Testing Strategy §C5 — login view page and
+"""Login view page and
 local endpoints (`src/mcp104/web/auth_server.py`).
 
-Written BLIND to auth_server.py's implementation (spec-tester Mode 1 rule): every
-assertion below comes from design.md's declared Interfaces/Data Models for §C5
+Written BLIND to auth_server.py's implementation: every
+assertion below comes from its public interfaces
 (`create_auth_app`, `start_auth_site`, `AuthEndpoint`, `resolve_auth_binding`,
-`Binding`), the §Architecture lifecycle state table (the render-precedence rule for
+`Binding`), the login lifecycle state table (the render-precedence rule for
 the four view-page screens, the token-rejection byte-identity rule), and
-requirements.md R1.10/R1.11/R1.13/R1.15/R10.1-3 — never from reading auth_server.py
-itself. `mcp104.browser.cdp_stream` (§C4, already implemented, explicitly readable
-per this dispatch) is used only to model the shape `get_admissible_stream` must
+the documented login behavior — never from reading auth_server.py
+itself. `mcp104.browser.cdp_stream` (readable) is used only to model the shape `get_admissible_stream` must
 return (`state` property, `add_viewer`/`remove_viewer`/`refresh_for_new_viewer`/
 `dispatch_input`), via a hand-rolled `FakeStream` — no real page/CDP session is
 created.
@@ -19,8 +18,8 @@ Scope note on T-7/T-46/T-105 (the four-screen distinguishability trio): which of
 the four screens the client actually renders for a given connection (the
 render-precedence rule) is not in this suite's automated coverage — client-side
 rendering logic runs as inline JS shipped inside the served HTML page, and this
-suite never executes it (no browser). That is Phase 5's manual visual acceptance
-checklist item 2, a real human looking at the page, not a case in this file. What
+suite never executes it (no browser). That is a manual visual check, a real
+human looking at the page, not a case in this file. What
 these three cases pin down instead is the server-observable half of the contract
 the client-side rendering logic depends on: all four screen copy strings exist,
 pairwise distinct as full sentences (not just by shared prefix); the two live
@@ -52,8 +51,7 @@ from mcp104.web.auth_server import (
 # ── Fakes ─────────────────────────────────────────────────────────────────
 
 class FakeStream:
-    """Stands in for browser.cdp_stream.CdpLoginStream (§C4, already
-    implemented) at the shape get_admissible_stream is declared to hand back:
+    """Stands in for browser.cdp_stream.CdpLoginStream at the shape get_admissible_stream is declared to hand back:
     a `state` property plus add_viewer/remove_viewer/refresh_for_new_viewer/
     dispatch_input. No real page or CDP session — auth_server.py only ever
     needs this shape."""
@@ -80,9 +78,9 @@ class FakeStream:
 
     async def refresh_for_new_viewer(self) -> None:
         """Real CdpLoginStream restarts the screencast here, which produces a
-        new frame; frame fan-out re-asserts whatever state was last read
-        (§C4). Mimicked by pushing one frame+state pair to every registered
-        sink (per Mode-2 correction: the view page never gets a bare `state`
+        new frame; frame fan-out re-asserts whatever state was last read.
+        Mimicked by pushing one frame+state pair to every registered
+        sink (the view page never gets a bare `state`
         push on connect — it rides along with a frame)."""
         self.refresh_count += 1
         await self.push_state_frame()
@@ -92,7 +90,7 @@ class FakeStream:
 
     async def push_state_frame(self) -> None:
         """Test-only hook standing in for "the next screencast frame arrives"
-        — used to simulate the reassertion §C4 describes happening on every
+        — used to simulate the reassertion the real stream performs on every
         frame during `settling`, since this fake has no real screencast
         loop to drive it automatically."""
         for sink in list(self.viewers):
@@ -101,7 +99,7 @@ class FakeStream:
 
     async def stop(self) -> None:
         """Models the one documented effect of the real CdpLoginStream.stop()
-        that this suite can observe without a browser (§C4/§Data Models: no
+        that this suite can observe without a browser (no
         online value ever carries "closed" — the only server-observable
         signal that the source ended is the socket itself closing): it
         closes every registered viewer sink. auth_server.py registers the
@@ -116,7 +114,7 @@ class FakeStream:
 
 def _stream_lookup(streams: dict):
     """token -> CdpLoginStream | None, matching get_admissible_stream's declared
-    shape (design.md §C5)."""
+    shape."""
 
     def get_admissible_stream(token: str):
         return streams.get(token)
@@ -126,11 +124,8 @@ def _stream_lookup(streams: dict):
 
 @pytest.fixture(autouse=True)
 def _auth_env(monkeypatch, tmp_path):
-    """get_config() requires an identity value and a writable data dir
-    (mcp104/config.py, already implemented, explicitly readable). Neither is
-    what any of these cases are about, so it's set once here rather than per
-    test."""
-    monkeypatch.setenv("MCP104_ACCOUNT", "test-account")
+    """get_config() needs a writable data dir. That is not what any of these
+    cases are about, so it's set once here rather than per test."""
     monkeypatch.setenv("MCP104_DATA_DIR", str(tmp_path))
     monkeypatch.delenv("MCP104_AUTH_BIND_PORT", raising=False)
     monkeypatch.delenv("MCP104_AUTH_BASE_URL", raising=False)
@@ -225,14 +220,14 @@ async def test_t065_auth_site_access_log_is_disabled(caplog):
         await endpoint.close()
 
 
-# ── T-85 — R1.13: once a login is finished or abandoned, both routes for
+# ── T-85 — once a login is finished or abandoned, both routes for
 #    that token get "not found" ────────────────────────────────────────
 
 @pytest.mark.asyncio
 async def test_t085_finished_or_abandoned_token_is_not_found_on_both_routes():
     # From auth_server's own vantage point, "finished" and "abandoned" both
     # collapse into "get_admissible_stream no longer returns anything for
-    # this token" — that boundary is exactly what §C5 says the route layer
+    # this token" — that boundary is exactly what the route layer
     # is allowed to know (admission is closed either way; the pool layer
     # above owns which of the two happened).
     app = create_auth_app(_stream_lookup({}))
@@ -243,7 +238,7 @@ async def test_t085_finished_or_abandoned_token_is_not_found_on_both_routes():
         assert ws_resp.status == 404
 
 
-# ── T-92 — R1.15: three causes x two routes = six byte-identical responses,
+# ── T-92 — three causes x two routes = six byte-identical responses,
 #    Date header excluded, body length in scope ────────────────────────
 
 @pytest.mark.asyncio
@@ -349,8 +344,8 @@ _ONLINE_STATE_VOCABULARY = {"waiting", "completed"}
 #    the two ways of driving them (online `state` value vs. socket close)
 #    are separate mechanisms. Which screen the client actually RENDERS for
 #    a given connection (the render-precedence rule) is client-side JS this
-#    suite never executes (no browser) -- that is Phase 5's manual visual
-#    acceptance checklist item 2, not an automated case. This case only
+#    suite never executes (no browser) -- that is a manual visual
+#    check, not an automated case. This case only
 #    pins the server-observable half: the four copy strings all exist,
 #    pairwise differ as full sentences, and are driven by two disjoint
 #    mechanisms (state pushes vs. socket close) with no third
@@ -412,7 +407,7 @@ async def test_t007_four_screens_are_pairwise_distinguishable():
 #    events on the server side. (c) the disconnect copy is present in the
 #    served page for the never-completed precondition -- the CLIENT-side
 #    choice of which copy actually renders is out of scope here (client JS,
-#    no browser in this suite; Phase 5 manual visual acceptance item 2) ───
+#    no browser in this suite; a manual visual check) ───
 
 @pytest.mark.asyncio
 async def test_t046_never_completed_connection_carries_disconnect_copy_precondition():
@@ -455,7 +450,7 @@ async def test_t046_never_completed_connection_carries_disconnect_copy_precondit
 # ── T-105 ─ a successful login leaves a different trace online than an
 #    abandoned one: whether the completion message arrived before close.
 #    Which screen the client then renders from that trace is out of scope
-#    here (client JS, no browser; Phase 5 manual visual acceptance item 2);
+#    here (client JS, no browser; a manual visual check);
 #    (b) "close happens after the settle window elapses" is pinned by
 #    T-8/T-120, not repeated here ───────────────────────────────────
 

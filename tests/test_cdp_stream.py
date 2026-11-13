@@ -20,30 +20,28 @@ from mcp104.browser.cdp_stream import (
 import mcp104.browser.cdp_stream as cdp_stream_module
 
 # ---------------------------------------------------------------------------
-# Blindness note (see spec-tester dispatch): this file is written against
-# design.md §C4 / §Architecture (生命週期狀態表) / §Data Models only. It does
-# NOT read src/mcp104/browser/cdp_stream.py or research/probes/probe_headless_cdp.py.
+# Blindness note: this file is written against the public interface of
+# CdpLoginStream only. It does NOT read src/mcp104/browser/cdp_stream.py or
+# research/probes/probe_headless_cdp.py.
 # Every CDP method/event name used below (Page.startScreencast,
 # Page.stopScreencast, Page.screencastFrame, Page.screencastFrameAck,
 # Input.dispatchKeyEvent, Input.dispatchMouseEvent) is the literal Chrome
-# DevTools Protocol name referenced directly in design.md's prose, not a guess
-# at this module's internals.
+# DevTools Protocol name, not a guess at this module's internals.
 # ---------------------------------------------------------------------------
 
 
-# --- Fakes: shaped per design.md's own description of the CDP session/page
-# call shape (`send(method, params)`), plus a minimal aiohttp-WebSocketResponse
-# -like sink (`closed` attribute + `async send_str(str)`), as instructed for
-# cases whose concrete type the design doesn't name. ---------------------------
+# --- Fakes: shaped like the CDP session/page call shape
+# (`send(method, params)`), plus a minimal aiohttp-WebSocketResponse
+# -like sink (`closed` attribute + `async send_str(str)`) for cases whose
+# concrete type is not otherwise named. -------------------------------------
 
 
 class FakeCdpSession:
-    # design.md §C4 constraint 2 & the self-heal section state, as fact, that
-    # real Chromium emits a fresh screencastFrame the instant
+    # Real Chromium emits a fresh screencastFrame the instant
     # Page.startScreencast is (re)issued. This fake reproduces exactly that
     # documented protocol behavior so a stop/start watchdog restart is
     # observable at the sink -- it is not a guess about this module's
-    # internals, it is CDP's own contract as design.md states it.
+    # internals, it is CDP's own contract.
     def __init__(self):
         self.sent: list[tuple[str, dict | None]] = []
         self._handlers: dict[str, object] = {}
@@ -485,7 +483,7 @@ def _find_function_defs(tree: ast.AST, names: set[str]) -> list[ast.AST]:
 
 
 def test_t009b_frame_path_has_no_direct_file_write_or_frame_bearing_log_call():
-    """R1.x / privacy: the screencast-frame handler (Page.screencastFrame's
+    """Privacy: the screencast-frame handler (Page.screencastFrame's
     handler, whatever it is named) and dispatch_input must not write frame
     bytes to a file, nor log/print anything at all from within their own
     function bodies -- not just calls that happen to name a variable
@@ -697,7 +695,7 @@ async def test_t100_input_is_gated_by_completion_and_the_gate_is_push_independen
 
 @pytest.mark.asyncio
 async def test_announce_completed_is_bounded_by_a_sink_whose_send_str_never_returns(monkeypatch):
-    # I2-H follow-up: announce_completed() fans out over asyncio.gather, so a
+    # announce_completed() fans out over asyncio.gather, so a
     # single sink whose send_str() never returns must not hang the whole
     # call forever -- it is bounded by VIEWER_TEARDOWN_TIMEOUT_SECONDS, and
     # the other, well-behaved sink must still receive the push (gather
@@ -722,8 +720,7 @@ async def test_announce_completed_is_bounded_by_a_sink_whose_send_str_never_retu
 
 
 # ---------------------------------------------------------------------------
-# Self-healing stall recovery (R1.9). Per the coordinator's Mode 2 direction,
-# §C4 now names the two watchdog constants used below:
+# Self-healing stall recovery. The two watchdog constants used below:
 #   WATCHDOG_IDLE_SECONDS  -- how long without a new frame counts as stalled
 #   WATCHDOG_POLL_SECONDS  -- the watchdog's own polling interval
 # Both are module-level attributes on mcp104.browser.cdp_stream, shortened
@@ -815,7 +812,7 @@ async def test_t099_settling_period_still_refreshes_frames_and_reasserts_complet
 
 @pytest.mark.asyncio
 async def test_stop_closes_every_registered_viewer_sink():
-    # I2-H: design.md Sec.C4's stop() teardown closes each fanned-out sink, not
+    # stop() teardown closes each fanned-out sink, not
     # just this stream's own CDP session. Two viewers registered, one stop()
     # call, both must be closed and the viewer set left empty.
     session = FakeCdpSession()
@@ -835,7 +832,7 @@ async def test_stop_closes_every_registered_viewer_sink():
 
 @pytest.mark.asyncio
 async def test_stop_bounds_wait_on_a_sink_whose_close_never_returns(monkeypatch):
-    # I2-H: a single uncooperative viewer must not hang stop() forever --
+    # A single uncooperative viewer must not hang stop() forever --
     # VIEWER_TEARDOWN_TIMEOUT_SECONDS bounds the total viewer-teardown wait,
     # and the other sink must still get a chance to close within that budget.
     monkeypatch.setattr(cdp_stream_module, "VIEWER_TEARDOWN_TIMEOUT_SECONDS", 0.05)
@@ -862,7 +859,7 @@ async def test_stop_bounds_wait_on_a_sink_whose_close_never_returns(monkeypatch)
 
 @pytest.mark.asyncio
 async def test_stop_bounds_wait_on_a_never_finishing_pending_send_task(monkeypatch):
-    # I2-H: a per-frame sink send that never returns (queued into
+    # A per-frame sink send that never returns (queued into
     # self._pending_tasks by the frame fan-out path) must not hang stop()
     # forever either -- it is drained under the same
     # VIEWER_TEARDOWN_TIMEOUT_SECONDS budget as the viewer-close loop, and

@@ -1,38 +1,22 @@
 """Repo-wide test fixtures and shared test doubles.
 
-The autouse fixture below exists for exactly one reason (design.md
-§Testing Strategy "既有測試套件的處置" item 四) — a conftest full of
-autouse fixtures makes "why does this test behave differently in another
-file" a real investigation, so this file is kept to a single autouse
-fixture on purpose. `_SeqFetchSpy` is a plain (non-fixture, non-autouse)
+A conftest full of autouse fixtures makes "why does this test behave
+differently in another file" a real investigation, so this file keeps to the
+two autouse fixtures every test needs (identity/data-dir environment, and
+no real browser tab) on purpose. `_SeqFetchSpy` is a plain (non-fixture, non-autouse)
 test double shared by tests/test_helpers.py and tests/test_messaging.py,
 which both drove guarded_api/guarded_sequence's scripted sub-request
 sequences through byte-for-byte identical copies of this class before it
 was consolidated here.
 
-`get_config()` now raises ConfigError when MCP104_ACCOUNT is unset
-(config.py) — the identity value has no machine-derivable default (see that
-module's docstring for why). Several existing fake app-context classes
-(tests/test_api_client.py, tests/test_helpers.py, tests/test_messaging.py,
-tests/test_search.py — and any future one, e.g. this cycle's AppContext
-field-list change) call get_config() in their own __init__, so leaving the
-env var unset would turn every one of those constructions into a startup
-failure at test collection/setup time, not an assertion failure.
-
-autouse + monkeypatch.setenv (function-scoped, restored after each test) is
-deliberate: it supplies a value that is obviously a test value, while still
-letting a test that needs to see "the variable is unset" delenv it itself
-inside its own body — see tests/test_config.py and
-tests/test_contract_docs.py, both of which do exactly that to exercise
-MCP104_ACCOUNT's own required-value validation (T-104). An
-unconditional supply here is what would make that validation permanently
-untestable, so this fixture must never become the thing that guarantees the
-value always has a value from a caller's point of view — it only supplies a
-default a test can still override or remove.
-
-MCP104_DATA_DIR is set alongside it, pointed at tmp_path, so a test that
-happens to construct a real Config (rather than mocking one) does not touch
-this machine's actual per-user data directory.
+Several fake app-context classes (tests/test_api_client.py,
+tests/test_helpers.py, tests/test_messaging.py, tests/test_search.py) call
+get_config() in their own __init__. The autouse fixture points
+MCP104_DATA_DIR at tmp_path, so a test that constructs a real Config (rather
+than mocking one) does not touch this machine's actual per-user data
+directory, and it removes the retired bare setting names: get_config()
+refuses to start while any of them is set, and a developer's shell must not
+turn every such construction into a failure.
 
 `load_fixture` is how every test reads tests/fixtures/*.json. Those files are
 built from real 104 responses and carry candidates' personal data, so they are
@@ -50,6 +34,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+
+from mcp104.config import RETIRED_ENV_NAMES
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
@@ -69,6 +55,8 @@ def load_fixture(name: str) -> Any:
 @pytest.fixture(autouse=True)
 def _default_identity_env(monkeypatch, tmp_path):
     monkeypatch.delenv("MCP104_ACCOUNT", raising=False)  # dropped 2026-09-04; must not be needed
+    for retired in RETIRED_ENV_NAMES:
+        monkeypatch.delenv(retired, raising=False)
     monkeypatch.setenv("MCP104_DATA_DIR", str(tmp_path))
 
 

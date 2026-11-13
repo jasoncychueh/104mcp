@@ -1,22 +1,22 @@
 """Tests for the job tools (list_applicants, list_jobs, get_job_detail, list_refreshable_jobs,
 refresh_jobs), their pure builders, and the job-number helpers in tools/helpers.py --
-applicants-and-job-reads, plus the job-dates change (dated list_jobs rows, get_job_detail,
-refresh_jobs). The bodies of the job-dates change's routes (jobList, jobUpdate, the refresh
+the applicant list and job reads, plus dated list_jobs rows, get_job_detail and
+refresh_jobs. The bodies of the job-dates routes (jobList, jobUpdate, the refresh
 PUT) are synthesised in this file; no local fixture is read for them.
 
-Cases in this file (design.md Testing Strategy, "Test Cases" table):
-  Phase 1 (task 11):  T-45, T-46
-  Phase 2 (task 7):   T-1 .. T-26, T-30 .. T-44, T-47, T-48, T-50 .. T-55
+Cases in this file:
+  job-number helpers:  T-45, T-46
+  job tools:           T-1 .. T-26, T-30 .. T-44, T-47, T-48, T-50 .. T-55
   (T-26 lives in tests/test_discovery.py, which imports this file's harness.)
 
-Written against design.md's declared interfaces only (spec-tester Mode 1 blindness rule):
+Assertions come from the public interfaces only, not from the implementation:
 the three tools are reached through their registration entry (register_job_tools), the
 pure builders through their module attributes, and every 104 request goes through the
 real guard + classifier with only the transport (`fetch`) replaced by a scripted spy.
 Nothing is mocked across the classify / guard seam.
 
 Import discipline: tools/jobs.py is imported lazily (see _jobs()), so a missing module fails
-the Phase 2 tests with ImportError but does not stop collection of the Phase 1 tests above.
+the job-tool tests with ImportError but does not stop collection of the job-number helper tests above.
 
 Fixture use: every body comes from tests/fixtures/. Two things are built in the
 test body, not read from a fixture, and each says so where it happens:
@@ -372,7 +372,7 @@ def _applicant_raw(mutate) -> RawResponse:
     return _raw_from_body(body)
 
 
-# ══ Phase 1 (task 11) — T-45, T-46 ═══════════════════════════════════════════════════════
+# ══ Job-number helpers — T-45, T-46 ═══════════════════════════════════════════════════════
 
 # -- T-45: normalise_jobno --------------------------------------------------------
 
@@ -407,9 +407,9 @@ def test_jobno_error_refuses_non_string_empty_or_padded_input_and_names_list_job
     )
 
 
-# ══ Phase 2 (task 7) ══════════════════════════════════════════════════════════════════════
+# ══ Job tools ══════════════════════════════════════════════════════════════════════
 
-# -- T-1 / T-2 (R1.1): the window is 60 days ending on Taipei's today -------------------
+# -- T-1 / T-2: the window is 60 days ending on Taipei's today -------------------
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
@@ -433,7 +433,7 @@ async def test_applicant_window_is_sixty_days_ending_on_taipei_today(tmp_path, m
     assert result["date_range"] == {"start_date": "2026/09/13", "end_date": "2026/11/12"}
 
 
-# -- T-3 (R1.2): candidate_id is idNo, p_id is pId; no raw idNo on the row -------------
+# -- T-3: candidate_id is idNo, p_id is pId; no raw idNo on the row -------------
 
 @pytest.mark.asyncio
 async def test_each_applicant_row_carries_candidate_id_from_id_no_and_p_id_from_p_id(tmp_path, monkeypatch):
@@ -449,7 +449,7 @@ async def test_each_applicant_row_carries_candidate_id_from_id_no_and_p_id_from_
         assert "id_no" not in row and "idNo" not in row
 
 
-# -- T-4 (R1.2, e2e): the two identifiers are accepted by the tools they are meant for --
+# -- T-4: the two identifiers are accepted by the tools they are meant for --
 
 @pytest.mark.asyncio
 async def test_p_id_reaches_get_conversation_and_candidate_id_reaches_get_resume_detail(tmp_path, monkeypatch):
@@ -468,7 +468,7 @@ async def test_p_id_reaches_get_conversation_and_candidate_id_reaches_get_resume
     assert row["candidate_id"] in _request_text(*detail_spy.calls[0])
 
 
-# -- T-5 (R1.3): the row carries only allowlisted fields (plus input_date) -------------
+# -- T-5: the row carries only allowlisted fields (plus input_date) -------------
 
 def _converted_applicant_name(raw: str) -> str:
     renames = {"idNo": "candidate_id", "pId": "p_id"}
@@ -494,7 +494,7 @@ async def test_applicant_row_keys_are_within_the_allowlist_and_every_present_all
                 assert name in row, f"allowed field {raw!r} is in the fixture row but missing as {name!r}"
 
 
-# -- T-6 (R1.4): exp_job_arr keeps four fields per entry; no note -----------------------
+# -- T-6: exp_job_arr keeps four fields per entry; no note -----------------------
 
 @pytest.mark.asyncio
 async def test_exp_job_arr_entries_keep_only_four_fields_with_fixture_values(tmp_path, monkeypatch):
@@ -517,7 +517,7 @@ async def test_exp_job_arr_entries_keep_only_four_fields_with_fixture_values(tmp
                     assert entry[snake] == _text(raw_entry[camel]), f"{snake} differs from the fixture"
 
 
-# -- T-7 (R1.5): excluded fields never appear, at any level of the response ------------
+# -- T-7: excluded fields never appear, at any level of the response ------------
 
 _FORBIDDEN_ROW_KEYS = {
     "personal_pic", "personalPic", "remark", "remark_without_html", "remarkWithoutHtml",
@@ -538,12 +538,12 @@ async def test_excluded_applicant_fields_never_reach_the_caller(tmp_path, monkey
     assert not ({"ncc_log_base_data", "nccLogBaseData"} & set(_walk_keys(result)))
 
 
-# -- T-8 (R1.6): the today group ----------------------------------------------------------
+# -- T-8: the today group ----------------------------------------------------------
 
 @pytest.mark.asyncio
 async def test_a_today_group_row_has_null_input_date_and_leads_the_list(tmp_path, monkeypatch):
     # No capture has a non-empty resumeGroups.today, so the today group is built here by
-    # moving one row out of a two-row day group into `today`. Design §C2 gives `today` as a
+    # moving one row out of a two-row day group into `today`. `today` is a
     # plain row list (its rows carry no group date), which is also unmeasured.
     body = load_fixture("rows_applicants.json")
     groups = body["result"]["resumeGroups"]
@@ -565,7 +565,7 @@ async def test_a_today_group_row_has_null_input_date_and_leads_the_list(tmp_path
     assert all(r["input_date"] is not None for r in rows[1:])
 
 
-# -- T-9 (R1.7): the job header -----------------------------------------------------------
+# -- T-9: the job header -----------------------------------------------------------
 
 @pytest.mark.asyncio
 async def test_job_header_carries_jobno_as_a_string_plus_name_switch_and_role(tmp_path, monkeypatch):
@@ -581,7 +581,7 @@ async def test_job_header_carries_jobno_as_a_string_plus_name_switch_and_role(tm
     assert result["job"]["role"] == source["jobRole"]
 
 
-# -- T-10 (R1.8): resume_number is four ints ----------------------------------------------
+# -- T-10: resume_number is four ints ----------------------------------------------
 
 @pytest.mark.asyncio
 async def test_resume_number_buckets_are_ints_equal_to_the_fixture_strings(tmp_path, monkeypatch):
@@ -600,7 +600,7 @@ async def test_resume_number_buckets_are_ints_equal_to_the_fixture_strings(tmp_p
     assert all(isinstance(v, int) for v in result["resume_number"].values())
 
 
-# -- T-11 (R1.9): a populated other bucket is named; zero buckets are not ------------------
+# -- T-11: a populated other bucket is named; zero buckets are not ------------------
 
 @pytest.mark.asyncio
 async def test_a_nonzero_other_bucket_adds_a_warning_naming_the_count_and_unmeasured_scope(tmp_path, monkeypatch):
@@ -632,7 +632,7 @@ async def test_all_three_other_buckets_at_zero_add_no_such_warning(tmp_path, mon
     assert not any("未量測" in w for w in result["warnings"]), result["warnings"]
 
 
-# -- T-12 (R1.10): zero applicants is a legal empty result --------------------------------
+# -- T-12: zero applicants is a legal empty result --------------------------------
 
 @pytest.mark.asyncio
 async def test_zero_applicant_job_is_an_empty_success_not_an_error(tmp_path, monkeypatch):
@@ -647,7 +647,7 @@ async def test_zero_applicant_job_is_an_empty_success_not_an_error(tmp_path, mon
     assert result["pagination"]["total"] == 0
 
 
-# -- T-13 (R1.11): pagination mirrors pageInfo; more pages are named --------------------
+# -- T-13: pagination mirrors pageInfo; more pages are named --------------------
 
 @pytest.mark.asyncio
 async def test_pagination_mirrors_the_page_info_of_the_response(tmp_path, monkeypatch):
@@ -677,7 +677,7 @@ async def test_a_second_page_is_named_as_unmeasured_in_a_warning(tmp_path, monke
     assert any("未量測" in w and "2" in w for w in result["warnings"]), result["warnings"]
 
 
-# -- T-14 (R1.12): no browse quota on the applicant list ----------------------------------
+# -- T-14: no browse quota on the applicant list ----------------------------------
 
 @pytest.mark.asyncio
 async def test_applicant_list_reports_no_browse_limit(tmp_path, monkeypatch):
@@ -689,7 +689,7 @@ async def test_applicant_list_reports_no_browse_limit(tmp_path, monkeypatch):
     assert result["browse_limit"] is None
 
 
-# -- T-15 (R2.1): a bad jobno is refused before any request --------------------------------
+# -- T-15: a bad jobno is refused before any request --------------------------------
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("bad", ["", "abc", "117 06763", "11706763a"])
@@ -704,7 +704,7 @@ async def test_non_digit_jobno_is_refused_naming_list_jobs_and_sends_nothing(tmp
     assert spy.calls == []
 
 
-# -- T-16 (R3.1): apply_count60 per job, as int ---------------------------------------------
+# -- T-16: apply_count60 per job, as int ---------------------------------------------
 
 @pytest.mark.asyncio
 async def test_list_jobs_carries_apply_count60_as_an_int_per_job(tmp_path, monkeypatch):
@@ -717,7 +717,7 @@ async def test_list_jobs_carries_apply_count60_as_an_int_per_job(tmp_path, monke
         assert type(row["apply_count60"]) is int
 
 
-# -- T-17 (R3.2): no all-time apply count, even when the fixture carries one ----------------
+# -- T-17: no all-time apply count, even when the fixture carries one ----------------
 
 @pytest.mark.asyncio
 async def test_list_jobs_rows_never_carry_apply_count(tmp_path, monkeypatch):
@@ -729,7 +729,7 @@ async def test_list_jobs_rows_never_carry_apply_count(tmp_path, monkeypatch):
         assert "apply_count" not in row and "applyCount" not in row
 
 
-# -- T-18 (R3.3): same order as jobs/apply, jobno as string, list fields present ------------
+# -- T-18: same order as jobs/apply, jobno as string, list fields present ------------
 
 @pytest.mark.asyncio
 async def test_list_jobs_keeps_jobs_apply_order_with_string_jobnos_and_the_listed_fields(tmp_path, monkeypatch):
@@ -745,7 +745,7 @@ async def test_list_jobs_keeps_jobs_apply_order_with_string_jobnos_and_the_liste
         assert set(row["department"]) == set(source["department"])
 
 
-# -- T-19 (R3.4): the allowlist, not the upstream body, decides the row ---------------------
+# -- T-19: the allowlist, not the upstream body, decides the row ---------------------
 
 @pytest.mark.asyncio
 async def test_an_unlisted_upstream_field_is_not_on_the_row(tmp_path, monkeypatch):
@@ -758,7 +758,7 @@ async def test_an_unlisted_upstream_field_is_not_on_the_row(tmp_path, monkeypatc
     assert "zz-sentinel" not in json.dumps(result, ensure_ascii=False)
 
 
-# -- T-20 (R4.1): 21-40 jobs -> jobs list, then a 20-job batch and a remainder batch ----------
+# -- T-20: 21-40 jobs -> jobs list, then a 20-job batch and a remainder batch ----------
 
 @pytest.mark.asyncio
 async def test_more_than_twenty_jobs_send_a_list_then_two_count_batches_and_each_row_gets_its_own_counts(
@@ -777,7 +777,7 @@ async def test_more_than_twenty_jobs_send_a_list_then_two_count_batches_and_each
         assert type(row["today_match_count"]) is int and type(row["total_match_count"]) is int
 
 
-# -- T-21 (R4.2): a missing or unreadable count nulls that row and names its jobno ----------
+# -- T-21: a missing or unreadable count nulls that row and names its jobno ----------
 
 @pytest.mark.asyncio
 async def test_a_job_missing_from_the_match_response_is_null_and_named(tmp_path, monkeypatch):
@@ -817,7 +817,7 @@ async def test_a_non_numeric_total_count_is_null_and_named(tmp_path, monkeypatch
     assert any(bad in w for w in result["warnings"]), result["warnings"]
 
 
-# -- T-22 (R4.3): only the first MATCH_CAP (60) jobs get counts ----------------------------
+# -- T-22: only the first MATCH_CAP (60) jobs get counts ----------------------------
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("count", [MATCH_CAP + 1, MATCH_CAP], ids=["61-jobs", "60-jobs"])
@@ -847,7 +847,7 @@ async def test_only_the_first_sixty_jobs_are_matched_and_the_sixty_first_is_name
     assert len(info.throttle.request_timestamps) - before == 5
 
 
-# -- T-23 (R4.4): a session failure on the second segment is the same error as elsewhere --
+# -- T-23: a session failure on the second segment is the same error as elsewhere --
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
@@ -871,7 +871,7 @@ async def test_second_segment_session_failure_returns_the_error_list_matched_res
     assert "error" in result and "results" not in result
 
 
-# -- T-50 (R4.5): a count batch the window cannot take is skipped and warned; other count
+# -- T-50: a count batch the window cannot take is skipped and warned; other count
 #    failures keep the job list too ----------------------------------------------------------
 
 @pytest.mark.asyncio
@@ -920,7 +920,7 @@ async def test_count_failures_keep_the_job_list_and_null_the_counts(tmp_path, mo
     assert result["warnings"], "the reason the counts are missing must be stated"
 
 
-# -- T-24 (R5.1): refreshable rows are {jobno, job, appear_date} --------------------------
+# -- T-24: refreshable rows are {jobno, job, appear_date} --------------------------
 
 @pytest.mark.asyncio
 async def test_refreshable_rows_are_jobno_job_and_appear_date(tmp_path, monkeypatch):
@@ -939,7 +939,7 @@ async def test_refreshable_rows_are_jobno_job_and_appear_date(tmp_path, monkeypa
         assert row["appear_date"] == src["appearDate"]
 
 
-# -- T-25 (R5.2): no update permission is named; permission is silent --------------------
+# -- T-25: no update permission is named; permission is silent --------------------
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
@@ -959,7 +959,7 @@ async def test_missing_update_permission_is_named_in_a_warning(tmp_path, monkeyp
     assert mentions_permission is expect_warning, result["warnings"]
 
 
-# -- T-30 (R7.1): auth failures on the first request match list_matched_resumes ----------
+# -- T-30: auth failures on the first request match list_matched_resumes ----------
 
 _FAILURE_SCENARIOS = {
     "expired-html-200": lambda: _raw_from_wrapper("failure_family_a_expired.json"),
@@ -997,7 +997,7 @@ async def test_company_switch_html_on_applicants_reads_as_expired_not_unrecognis
     assert "無法辨識" not in result["error"]
 
 
-# -- T-31 (R7.1): a non-SUCCESS applyDetail is an error, never an empty list ---------------
+# -- T-31: a non-SUCCESS applyDetail is an error, never an empty list ---------------
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
@@ -1030,7 +1030,7 @@ async def test_missing_job_404_is_an_error_saying_the_job_does_not_exist(tmp_pat
     assert "此職務不存在" in result["error"]
 
 
-# -- T-32 (R7.2): structural mismatches are structural errors ------------------------------
+# -- T-32: structural mismatches are structural errors ------------------------------
 
 def _drop_resume_groups(body):
     del body["result"]["resumeGroups"]
@@ -1066,7 +1066,7 @@ async def test_structural_mismatch_is_a_structural_error_not_an_empty_result(tmp
     assert "104 回應結構異常" in result["error"]
 
 
-# -- T-60 (R7.2, R1.2): an applicant row without its identifiers is structural --------------
+# -- T-60: an applicant row without its identifiers is structural --------------
 
 def _first_other_group(body):
     return next(g for g in body["result"]["resumeGroups"]["others"] if g["resumes"])
@@ -1137,7 +1137,7 @@ async def test_an_applicant_row_without_its_identifiers_is_a_structural_error(tm
     assert "104 回應結構異常" in result["error"]
 
 
-# -- T-33 (R7.3): no session and no credential file ----------------------------------------
+# -- T-33: no session and no credential file ----------------------------------------
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("tool", ["list_applicants", "list_jobs", "list_refreshable_jobs"])
@@ -1151,7 +1151,7 @@ async def test_no_session_and_no_credential_file_answers_please_login_without_a_
     assert spy.calls == []
 
 
-# -- T-34 (R8.1): every request is a GET with no body --------------------------------------
+# -- T-34: every request is a GET with no body --------------------------------------
 
 _SCRIPTS = {
     "list_applicants": lambda: [_raw_from_body(load_fixture("rows_applicants.json"))],
@@ -1174,7 +1174,7 @@ async def test_every_request_is_a_get_with_no_body(tmp_path, monkeypatch, tool):
         assert body is None
 
 
-# -- T-35 (R8.2): one request for the two single-request tools ------------------------------
+# -- T-35: one request for the two single-request tools ------------------------------
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("tool", ["list_applicants", "list_refreshable_jobs"])
@@ -1187,7 +1187,7 @@ async def test_a_successful_call_sends_exactly_one_request(tmp_path, monkeypatch
     assert len(spy.calls) == 1
 
 
-# -- T-36 (R8.3): the rolling window counts every request of the multi-request call ---------
+# -- T-36: the rolling window counts every request of the multi-request call ---------
 
 @pytest.mark.asyncio
 async def test_list_jobs_with_more_than_twenty_jobs_adds_four_entries_to_the_rolling_window(tmp_path, monkeypatch):
@@ -1203,7 +1203,7 @@ async def test_list_jobs_with_more_than_twenty_jobs_adds_four_entries_to_the_rol
     assert len(info.throttle.request_timestamps) - before == 4
 
 
-# -- T-37 (R8.4): the cold-path worst case of list_jobs, computed not waited ---------------
+# -- T-37: the cold-path worst case of list_jobs, computed not waited ---------------
 
 def test_list_jobs_cold_path_worst_case_leaves_fifteen_seconds_under_the_120_second_timeout():
     from mcp104.browser.api_client import FETCH_TIMEOUT_SECONDS
@@ -1341,7 +1341,7 @@ def test_build_refreshable_jobs_on_an_empty_permitted_list_is_empty_with_no_remi
     assert result["warnings"] == []
 
 
-# -- T-47 (interface, R6.2 values): HTML in text fields converts exactly like search rows --
+# -- T-47: HTML in text fields converts exactly like search rows --
 
 @pytest.mark.asyncio
 async def test_applicant_text_fields_convert_exactly_like_search_resumes_rows(tmp_path, monkeypatch):
@@ -1398,7 +1398,7 @@ async def test_register_all_tools_registers_the_job_tools_once_within_budget_and
         assert "ctx" not in served[name].inputSchema.get("properties", {}), f"{name} exposes ctx to the caller"
 
 
-# -- T-51 (R7.2): object-shaped jobs/apply data is structural and sends no count request ---
+# -- T-51: object-shaped jobs/apply data is structural and sends no count request ---
 
 @pytest.mark.asyncio
 async def test_jobs_apply_object_data_sends_only_the_jobs_request(tmp_path, monkeypatch):
@@ -1412,7 +1412,7 @@ async def test_jobs_apply_object_data_sends_only_the_jobs_request(tmp_path, monk
     assert "results" not in result
 
 
-# -- T-52 (R8.2): a full window refuses the first request of each tool before any send -----
+# -- T-52: a full window refuses the first request of each tool before any send -----
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("tool", ["list_applicants", "list_jobs", "list_refreshable_jobs"])
@@ -1461,7 +1461,7 @@ def test_mark_match_counts_unavailable_nulls_every_row_and_appends_the_reminder(
     assert degraded["warnings"][-1] == reminder
 
 
-# -- T-55 (R7.2): an applyDetail that does not match the request is structural -------------
+# -- T-55: an applyDetail that does not match the request is structural -------------
 
 def _other_job(body):
     body["result"]["jobNo"] = "99999999"
@@ -1483,10 +1483,10 @@ async def test_applydetail_for_another_job_or_with_no_name_is_a_structural_error
     assert "104 回應結構異常" in result["error"]
 
 
-# -- Moved from tests/test_search.py (tasks.md Phase 2 task 7): the list_jobs cases ----------
+# -- Moved from tests/test_search.py: the list_jobs cases ----------
 # Expectations follow the new route and the new fields (switch is "on"/"off" as jobs/apply
-# returns it; counts come from the match-number follow-up). The old R5.3 docstring check that
-# lived beside them is not carried here; see the report.
+# returns it; counts come from the match-number follow-up). The old docstring check that
+# lived beside them is not carried here.
 
 _SYNTHETIC_JOB_LIST = {
     "data": [
@@ -2354,9 +2354,9 @@ async def test_with_only_two_slots_left_the_whole_refresh_is_refused_before_any_
     assert spy.calls == []
 
 
-# ── job-switch-delete, Phase 1 (design Testing Strategy T-59, T-60, T-61) ───────
-# The jobList result is synthesised here in the measured key set (design §C2,
-# docs/104-site-facts.md §8.31): rows carry jobno, switch, canDelete, isInVerify,
+# ── job-switch-delete (T-59, T-60, T-61) ───────
+# The jobList result is synthesised here in the measured key set
+# (docs/104-site-facts.md §8.31): rows carry jobno, switch, canDelete, isInVerify,
 # job_setting; the account level carries permit, coStatus, isHunter, isDispatch,
 # isNewModel, poNum, isWeb; the operator identity fields are present so the
 # tests can prove they never reach the parsed value.
@@ -2527,7 +2527,7 @@ def test_session_and_gate_failures_are_raised_not_reread(kind):
     assert _jobs().write_failure_disposition(_failure(kind), batch_size=2) == "raise"
 
 
-# ── job-edit-create, Phase 2 (design Testing Strategy T-59) ─────────────────────
+# ── job-edit-create (T-59) ─────────────────────
 # permit_state, JobList.add_on_tables and JobList.add_ons. The jobList result is the
 # job-switch synthesiser above (_switch_result / _switch_row); the four add-on tables
 # arrive as overrides, never from a fixture. Cases named here are job-edit-create's T-59;

@@ -383,8 +383,8 @@ async def test_upsert_candidate_no_fields_creates_bare_row_when_absent(db):
     assert candidate["name"] is None
 
 
-# ── T-28 (R5.1, R5.5): two independent lines of defense ────────────────────
-# design.md §C2 is explicit that these are meant to be independently true:
+# ── T-28: two independent lines of defense ─────────────────────────────────
+# These two are meant to be independently true:
 # different keys, AND different directories, each on their own must keep
 # records apart. Testing only one half would prove only one line of defense.
 

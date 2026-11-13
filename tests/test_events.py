@@ -1,9 +1,9 @@
 """Tests for the event-send skeleton (tools/events.py) and the send_inquiry route.
 
 The send_inquiry tests below were moved here verbatim from tests/test_messaging.py
-(event-sends task 12): assertions and test names are unchanged; only the tool
-acquisition (register_event_tools) and the imports changed. The new cases cite
-their design Testing Strategy ID in the docstring.
+when the event tools got their own module: assertions and test names are unchanged;
+only the tool acquisition (register_event_tools) and the imports changed. The new
+cases cite their case ID in the docstring.
 
 Same transport seam as tests/test_messaging.py: api_client.fetch and helpers.fetch
 are substituted; classify(), guarded_sequence and the SQLite file are real.
@@ -152,7 +152,7 @@ async def _new_session(tmp_path) -> tuple[FakeCtx, SessionInfo, Database]:
     ctx = FakeCtx(pool, database)
     sid = get_session_id(ctx)
     # guarded_api reads credentials straight off SessionInfo.cookies now —
-    # there is no BrowserContext left to fake post-login (§C7).
+    # there is no BrowserContext left to fake post-login.
     info = SessionInfo(cookies=[], account_label="test@104.com")
     pool.activate_direct(sid, info)
     return ctx, info, database
@@ -261,7 +261,7 @@ _PID_SHAPED_ID = "073748"
 
 
 def _outbound_success_envelope(event_id: str = "") -> dict:
-    """§Testing Strategy's "成功信封" — identical on both send_message and
+    """The success envelope — identical on both send_message and
     send_willingness_event; only eventId differs by route (send_message
     measures "" [T-4], send_inquiry measures non-empty [T-36])."""
     return {
@@ -453,7 +453,7 @@ async def test_T23_send_inquiry_resolve_missing_idno_is_malformed_before_last_in
 
 @pytest.mark.asyncio
 async def test_send_inquiry_exception_after_send_attempted_never_logs_body_or_cookie(tmp_path, monkeypatch, caplog):
-    """T-81 (R7.3) — send tool, exception on the third sub-request (the send
+    """T-81 — send tool, exception on the third sub-request (the send
     itself), raised after _before_third has run. _issue_one catches it, logs an
     ERROR under the 104-mcp logger tree, and turns it into an abort. That log
     record must never leak the letter body, the emailCC value, the resolved
@@ -884,7 +884,7 @@ _RECRUITER_RAW = [{"id": "r1", "email": "r1@example.invalid"}]
 
 
 def _full_success_envelope(*, stream_id: str = "073748_12355016") -> dict:
-    """design Testing Strategy「完整成功形狀」."""
+    """The full success shape: every field of a complete event-send response."""
     return {
         "data": [{
             "pId": "073748",
@@ -900,7 +900,7 @@ def _full_success_envelope(*, stream_id: str = "073748_12355016") -> dict:
 
 
 def _standard_script(*, last_info_data: dict | None = None, third=None) -> list:
-    """design Testing Strategy「標準腳本」: bridge -> last-info -> send body."""
+    """The standard script: bridge -> last-info -> send body."""
     info = {"emailCC": [_CC]} if last_info_data is None else last_info_data
     return [
         _raw_from_body({"data": {"idNo": _BRIDGE_IDNO}, "metadata": {}}),

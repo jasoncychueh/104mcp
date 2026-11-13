@@ -536,7 +536,7 @@ async def _run_with_slots_left(tmp_path, monkeypatch, tool_name, script, *, slot
     # requests in the hour.
     cap = 6
     spent = cap - slots_left
-    monkeypatch.setenv("MAX_REQUESTS_PER_HOUR", str(cap))
+    monkeypatch.setenv("MCP104_MAX_REQUESTS_PER_HOUR", str(cap))
     ctx, info = await _new_session(tmp_path)
     spend = _install(monkeypatch, [_json(200, {}) for _ in range(spent)])
     for _ in range(spent):

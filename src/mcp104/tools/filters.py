@@ -12,7 +12,7 @@ module only reports the facts (a wire pair list, a validation error) for those l
 act on. The bundled category datasets are public and unauthenticated
 (`src/mcp104/assets/104-categories/README.md`), so `tools/categories.py` reads them
 directly here — that file access is local and not routed through
-`guarded_api` or the throttle (steering/structure.md, steering/tech.md).
+`guarded_api` or the throttle.
 
 **Drop detection (`detect_dropped`, the certification corpus, echo-evidence derivation)
 lives in `tools/drop_detection.py`, not here.** This module has no corpus read and no
@@ -386,7 +386,7 @@ CONDITIONS: dict[str, Condition] = {
                           "(file, condition) pair (`categories._BRANCH_ACCEPTANCE`): "
                           "the same branch code, 2010001000, submitted through "
                           "`workExpJob` → echo ['2010001000'], baseline 531,943 → "
-                          "73,304 (2026-08-14, live session, Phase 6 task 3) — "
+                          "73,304 (2026-08-14, live session) — "
                           "certified, and independently earned rather than inherited "
                           "from `jobcat`'s own acceptance of that branch. `jobcat` run "
                           "through the identical code the same session is the control: "
@@ -786,7 +786,7 @@ CONDITIONS: dict[str, Condition] = {
         # claim the row contradicted on the next line. It survived because a composite
         # is not `value_source == "enum"` and every domain sweep this project has run
         # enumerates enum rows — the classification deciding what gets measured was
-        # never itself among the things checked. See bl-c4e719.
+        # never itself among the things checked.
         domain_completeness="certified",
         matching_note="abilities 是**階層比對**（2026-08-15 反證確認）：送某一級會連同"
                       "更高等級一起收進來。直接證據——`ability=4`（略懂，最低級）的 20 "

@@ -2,11 +2,9 @@
 atomic handoff block, the RestoreVerdict disposition table, ServerLogoutResult,
 and the logout_unconfirmed marker.
 
-Written blind against .spec/specs/stdio-cdp-rearchitecture/design.md (Section C6,
-Architecture lifecycle table, Data Models, Error Handling) while tools/auth.py is
-being implemented in parallel -- this file does not import anything from
-tools/auth.py's internals, only the public surface the design document names.
-Where the design does not name an internal wiring detail (how `ctx` reaches
+Written without reading tools/auth.py's implementation -- this file does not
+import anything from tools/auth.py's internals, only its public surface.
+Where an internal wiring detail is not part of that surface (how `ctx` reaches
 AppContext, the watcher's function name), a best-effort assumption is made and
 flagged below under "CONTRACT UNCLEAR".
 """
@@ -58,9 +56,9 @@ _CURRENT_APP_CTXS: list = []  # registry for the autouse watcher-cleanup fixture
 
 
 def make_app_ctx(tmp_path: Path, pool: SessionPool | None = None, **overrides):
-    """A stand-in for AppContext (design.md Section C1), shaped per its declared
-    field list: config, db, session_pool, _pending_logins, _finished_logins,
-    _watcher_tasks, auth_site, logout_epoch."""
+    """A stand-in for AppContext, shaped like its field list: config, db,
+    session_pool, _pending_logins, _finished_logins, _watcher_tasks,
+    auth_site, logout_epoch."""
     base = types.SimpleNamespace(
         config=make_config(tmp_path),
         db=None,
@@ -239,8 +237,8 @@ async def _cleanup_watcher_tasks():
 
 def make_ctx(app_ctx, mcp_session_id: str = "s1"):
     """A stand-in for the MCP `Context` object passed into tool functions.
-    AppContext comes from `ctx.request_context.lifespan_context` (assumed;
-    design.md does not name this wiring). The guard's real
+    AppContext comes from `ctx.request_context.lifespan_context` (assumed
+    wiring). The guard's real
     `get_session_id(ctx)` (tools/helpers.py) does NOT use any
     "mcp_session_id" of the kind this file used to assume -- it stamps a
     uuid onto `ctx.session` the first time it is called and reuses it
@@ -269,7 +267,7 @@ def make_session(cookies=None, account_label="acct", has_succeeded=False):
 
 def guard_abort(kind: str, payload: dict | None = None):
     """Construct a GuardAbort with the given kind/payload.
-    GuardAbort(payload, kind) -- kind is required, per the implementer."""
+    GuardAbort(payload, kind) -- kind is required."""
     from mcp104.tools.helpers import GuardAbort
 
     payload = payload if payload is not None else {"error": "(" + kind + ")"}
@@ -584,7 +582,7 @@ def test_t115_endpoints_throttle_exempt_set_is_exactly_logout_session():
 # --- T-69 / T-112: logout_unconfirmed marker write/clear rules -----------
 
 def test_t069_marker_written_regardless_of_server_logout_value(tmp_path, monkeypatch):
-    """Section C6 step 5: every logout() writes the marker, independent of
+    """Every logout() writes the marker, independent of
     the resulting server_logout value."""
     from mcp104.tools import auth
 
@@ -628,7 +626,7 @@ def test_t112_marker_existence_is_not_coupled_to_cookie_file_existence(tmp_path)
 # ===========================================================================
 
 def _find_first_attr(module, candidates):
-    """Best-effort lookup for an internal symbol design.md does not name
+    """Best-effort lookup for an internal symbol outside the public surface
     (the dual-factor completion predicate, the watcher coroutine). Returns
     (name, obj) for the first candidate that exists, else (None, None)."""
     for name in candidates:
@@ -638,7 +636,7 @@ def _find_first_attr(module, candidates):
     return None, None
 
 
-# --- T-1 (R1.1): login() returns immediately, does not wait for the human ---
+# --- T-1: login() returns immediately, does not wait for the human ---
 
 @pytest.mark.asyncio
 async def test_t001_login_returns_immediately_without_waiting_for_human(tmp_path, monkeypatch):
@@ -670,7 +668,7 @@ async def test_t001_login_registers_a_pending_login_not_a_completed_one(tmp_path
     assert app_ctx.session_pool.get_session("s1") is None
 
 
-# --- T-12 (R2.2): fresh process restores without human action ------------
+# --- T-12: fresh process restores without human action ------------
 
 @pytest.mark.asyncio
 async def test_t012_fresh_process_restores_without_human_action(tmp_path, monkeypatch):
@@ -692,7 +690,7 @@ async def test_t012_fresh_process_restores_without_human_action(tmp_path, monkey
     assert "token" not in result
 
 
-# --- T-13 (R2.4): both clauses, (b) not by (a)'s absence alone -----------
+# --- T-13: both clauses, (b) not by (a)'s absence alone -----------
 
 @pytest.mark.asyncio
 async def test_t013a_logout_removes_persisted_login_state(tmp_path, monkeypatch):
@@ -745,7 +743,7 @@ async def test_t013b_residual_cookie_file_still_gets_reverified_and_rejected(tmp
 async def test_t013b_residual_cookie_file_alive_is_not_silent_restore(tmp_path, monkeypatch):
     """The 104-answers-alive half: this must NOT read as a silent restore --
     it must carry the logout_unconfirmed warning (the only cross-process
-    notice channel for this scenario, per Section C6)."""
+    notice channel for this scenario)."""
     from mcp104.tools import auth
 
     app_ctx = make_app_ctx(tmp_path)
@@ -765,7 +763,7 @@ async def test_t013b_residual_cookie_file_alive_is_not_silent_restore(tmp_path, 
     assert result["warning"]
 
 
-# --- T-14 (R2.5): removed login state actually gets removed --------------
+# --- T-14: removed login state actually gets removed --------------
 
 @pytest.mark.asyncio
 async def test_t014_definitively_unusable_login_state_is_removed(tmp_path, monkeypatch):
@@ -785,7 +783,7 @@ async def test_t014_definitively_unusable_login_state_is_removed(tmp_path, monke
     assert not app_ctx.config.cookies_path.exists()
 
 
-# --- T-15 (R3.1, R3.2): parseable-but-rejected state is not "restored" ---
+# --- T-15: parseable-but-rejected state is not "restored" ---
 
 @pytest.mark.asyncio
 async def test_t015_parseable_but_rejected_state_is_not_restore_success(tmp_path, monkeypatch):
@@ -805,7 +803,7 @@ async def test_t015_parseable_but_rejected_state_is_not_restore_success(tmp_path
     assert result.get("status") not in ("restored", "already_logged_in")
 
 
-# --- T-16 (R3.3): after restore success, a login-required call is not "please login" ---
+# --- T-16: after restore success, a login-required call is not "please login" ---
 
 @pytest.mark.asyncio
 async def test_t016_restore_success_leaves_session_resolvable_by_pool(tmp_path, monkeypatch):
@@ -828,7 +826,7 @@ async def test_t016_restore_success_leaves_session_resolvable_by_pool(tmp_path, 
     assert app_ctx.session_pool.is_logged_in("s1") is True
 
 
-# --- T-17 (R3.4): failed confirmation still hands back an openable login address ---
+# --- T-17: failed confirmation still hands back an openable login address ---
 
 @pytest.mark.asyncio
 async def test_t017_confirmation_failure_carries_an_openable_login_url(tmp_path, monkeypatch):
@@ -849,7 +847,7 @@ async def test_t017_confirmation_failure_carries_an_openable_login_url(tmp_path,
     assert result.get("token")
 
 
-# --- T-19 (R3.6): the whole restore-confirmation path runs with no browser ---
+# --- T-19: the whole restore-confirmation path runs with no browser ---
 
 @pytest.mark.asyncio
 async def test_t019_restore_confirmation_needs_no_browser_object(tmp_path, monkeypatch):
@@ -869,7 +867,7 @@ async def test_t019_restore_confirmation_needs_no_browser_object(tmp_path, monke
     assert verdict.alive is True
 
 
-# --- T-20 (R3.7): cookie expiry attribute alone must not decide aliveness ---
+# --- T-20: cookie expiry attribute alone must not decide aliveness ---
 
 @pytest.mark.asyncio
 async def test_t020_verification_ignores_cookie_expiry_attribute_and_asks_104(tmp_path, monkeypatch):
@@ -896,7 +894,7 @@ async def test_t020_verification_ignores_cookie_expiry_attribute_and_asks_104(tm
     assert verdict.alive is False
 
 
-# --- T-22..T-25, T-27 (R4.x): verify_restored_session's response shapes --
+# --- T-22..T-25, T-27: verify_restored_session's response shapes --
 
 @pytest.mark.asyncio
 async def test_t022_accepted_means_usable_and_no_error(tmp_path, monkeypatch):
@@ -973,10 +971,9 @@ async def test_t025_transport_failure_reports_unknown_and_keeps_state(tmp_path, 
 
 @pytest.mark.asyncio
 async def test_t027_html_redirect_body_is_judged_failure_not_success(tmp_path, monkeypatch):
-    """CONTRACT-ADJACENT LIMITATION: the design requires this judgment to go
-    through the real classify() (an un-mockable seam per Test Approach), but
-    api_client.py is off-limits to read this round (it is being rewritten in
-    parallel). This test therefore stays at the verify_restored_session
+    """CONTRACT-ADJACENT LIMITATION: this judgment must go through the real
+    classify() (an un-mockable seam), but this test was written without
+    reading api_client.py. It therefore stays at the verify_restored_session
     boundary: whatever kind classify() would have produced for a
     COMPANY_SWITCH-style HTML redirect body, verify_restored_session must
     not treat it as alive just because the HTTP status was 200."""
@@ -1084,7 +1081,7 @@ def make_driven_pending_login(app_ctx, token: str, page_url="https://bsignin.104
     return resource, page, context, browser, stream
 
 
-# --- T-42, T-43, T-44 (R9.1, R9.2): two-factor completion predicate ------
+# --- T-42, T-43, T-44: two-factor completion predicate ------
 
 async def _drive_to_watching(app_ctx, token: str):
     """Starts auth._watch_for_login as a background task and lets it run
@@ -1101,7 +1098,7 @@ async def _drive_to_watching(app_ctx, token: str):
 
 @pytest.mark.asyncio
 async def test_t042_hostname_alone_is_not_enough_keeps_waiting(tmp_path, monkeypatch, caplog):
-    """R9.1/R9.2: the main frame settles on vip.104.com.tw, but the
+    """The main frame settles on vip.104.com.tw, but the
     app-session cookie never shows up -- the predicate must not treat the
     hostname alone as completion; the login must still be judged
     incomplete (here: abandoned once the shared deadline passes), not
@@ -1125,7 +1122,7 @@ async def test_t042_hostname_alone_is_not_enough_keeps_waiting(tmp_path, monkeyp
     assert not app_ctx.config.cookies_path.exists()
     assert app_ctx._finished_logins.get(token) == "abandoned"
     assert token not in app_ctx._pending_logins
-    # I2-D: the abandon reason must be that the cookie never showed up
+    # The abandon reason must be that the cookie never showed up
     # AFTER the hostname was already seen -- not "never navigated at
     # all", which is a different failure this case does not exercise.
     assert "vip.104.com.tw session cookie never appeared" in caplog.text
@@ -1134,7 +1131,7 @@ async def test_t042_hostname_alone_is_not_enough_keeps_waiting(tmp_path, monkeyp
 
 @pytest.mark.asyncio
 async def test_t043_browser_session_only_cookie_is_not_enough(tmp_path, monkeypatch, caplog):
-    """R9.1: a cookie that only lives in the browser session (PHPSESSID)
+    """A cookie that only lives in the browser session (PHPSESSID)
     must not satisfy the second factor -- only its/ithp count, per the
     VIP_SESSION_COOKIE_NAMES contract."""
     from mcp104.tools import auth
@@ -1159,7 +1156,7 @@ async def test_t043_browser_session_only_cookie_is_not_enough(tmp_path, monkeypa
     assert not app_ctx.config.cookies_path.exists()
     assert app_ctx._finished_logins.get(token) == "abandoned"
     assert token not in app_ctx._pending_logins
-    # I2-D: hostname WAS seen, only the session cookie is missing -- the
+    # Hostname WAS seen, only the session cookie is missing -- the
     # abandon reason must reflect that, not "never navigated".
     assert "vip.104.com.tw session cookie never appeared" in caplog.text
     assert "timed out waiting for vip.104.com.tw navigation" not in caplog.text
@@ -1171,7 +1168,7 @@ async def test_t043_browser_session_only_cookie_is_not_enough(tmp_path, monkeypa
     ["https://evil-vip.104.com.tw/rms/index", "https://x.vip.104.com.tw/rms/index"],
 )
 async def test_t044_hostname_match_is_exact_not_substring(tmp_path, monkeypatch, caplog, bad_hostname):
-    """R9.1: hostname comparison must be an exact match against
+    """Hostname comparison must be an exact match against
     vip.104.com.tw -- neither a prefixed nor a subdomain-prefixed
     look-alike host may pass. The app-session cookie is made available
     immediately, so if the hostname check were buggy (substring/suffix
@@ -1195,13 +1192,13 @@ async def test_t044_hostname_match_is_exact_not_substring(tmp_path, monkeypatch,
     assert not app_ctx.config.cookies_path.exists()
     assert app_ctx._finished_logins.get(token) == "abandoned"
     assert token not in app_ctx._pending_logins
-    # I2-D: the look-alike hostname never counts as "vip.104.com.tw seen",
+    # The look-alike hostname never counts as "vip.104.com.tw seen",
     # so this must time out on navigation itself, not on the cookie factor.
     assert "timed out waiting for vip.104.com.tw navigation" in caplog.text
     assert "vip.104.com.tw session cookie never appeared" not in caplog.text
 
 
-# --- T-45 (R9.3, R9.4): abandon-on-timeout releases every resource -------
+# --- T-45: abandon-on-timeout releases every resource -------
 
 @pytest.mark.asyncio
 async def test_t045_abandon_on_timeout_releases_every_resource(tmp_path, monkeypatch):
@@ -1427,7 +1424,7 @@ async def test_t068_check_login_does_no_io(tmp_path, monkeypatch):
     assert result["status"] == "unknown"
 
 
-# --- T-77 (R3.1, R4.2) e2e: rejected persisted state -> address, no contradictions ---
+# --- T-77 e2e: rejected persisted state -> address, no contradictions ---
 
 @pytest.mark.asyncio
 async def test_t077_rejected_persisted_state_gives_consistent_answers(tmp_path, monkeypatch):
@@ -1451,14 +1448,14 @@ async def test_t077_rejected_persisted_state_gives_consistent_answers(tmp_path, 
     assert check_result["status"] != "success"
 
 
-# --- T-79 (R1.4): typed input never leaks through any of four channels ---
+# --- T-79: typed input never leaks through any of four channels ---
 
 def test_t079_input_value_absent_from_agent_response_channel(tmp_path):
     """CONTRACT-ADJACENT LIMITATION: full coverage of all four channels
     (Agent response, protocol channel, diagnostic output, disk) requires
     driving a real login interaction through CdpLoginStream.dispatch_input
-    and the watcher, whose wiring into tools/auth.py is not named in
-    design.md's C6 Interfaces. This narrows to the one channel testable
+    and the watcher, whose wiring into tools/auth.py is not part of its
+    public surface. This narrows to the one channel testable
     without that wiring: login()'s own return value must never echo back
     typed content (it only ever carries login_url/token/status/warning/error)."""
     import asyncio as _asyncio
@@ -1472,7 +1469,7 @@ def test_t079_input_value_absent_from_agent_response_channel(tmp_path):
     assert secret not in json.dumps(result)
 
 
-# --- T-80, T-81, T-82 (R3.9, R3.10) ---------------------------------------
+# --- T-80, T-81, T-82 ---------------------------------------
 
 @pytest.mark.asyncio
 async def test_t080_never_issued_token_is_undetermined_not_failed(tmp_path):
@@ -1518,7 +1515,7 @@ async def test_t082_unknown_response_points_to_login_as_the_authority(tmp_path):
     assert "login" in blob.lower()
 
 
-# --- T-83 (R4.8): 403 is its own fourth shape, keeps the cookie file -----
+# --- T-83: 403 is its own fourth shape, keeps the cookie file -----
 
 @pytest.mark.asyncio
 async def test_t083_blocked_is_its_own_shape_and_keeps_cookie_file(tmp_path, monkeypatch):
@@ -1541,7 +1538,7 @@ async def test_t083_blocked_is_its_own_shape_and_keeps_cookie_file(tmp_path, mon
     assert app_ctx.config.cookies_path.exists()
 
 
-# --- T-84 (R4.9): uncovered result keeps cookie file and reports plainly -
+# --- T-84: uncovered result keeps cookie file and reports plainly -
 
 @pytest.mark.asyncio
 async def test_t084_uncovered_result_keeps_jar_and_names_itself(tmp_path, monkeypatch):
@@ -1565,7 +1562,7 @@ async def test_t084_uncovered_result_keeps_jar_and_names_itself(tmp_path, monkey
     assert app_ctx.config.cookies_path.exists()
 
 
-# --- T-86 (R1.14): repeated login() returns the original, uninterrupted --
+# --- T-86: repeated login() returns the original, uninterrupted --
 
 @pytest.mark.asyncio
 async def test_t086_repeated_login_returns_original_pending_login(tmp_path):
@@ -1584,15 +1581,14 @@ async def test_t086_repeated_login_returns_original_pending_login(tmp_path):
     assert first["token"] in app_ctx._pending_logins
 
 
-# --- T-87 (R9.5): default human-wait budget >= measured full login time --
+# --- T-87: default human-wait budget >= measured full login time --
 
 def test_t087_login_timeout_seconds_default_is_at_least_measured_human_login_time(monkeypatch):
-    """R9.5: the default human-wait budget must not undercut the measured
+    """The default human-wait budget must not undercut the measured
     265s full human login time (MFA + product selection + repeatLogin)."""
     from mcp104.config import get_config
 
-    monkeypatch.setenv("MCP104_ACCOUNT", "acct")
-    monkeypatch.delenv("LOGIN_TIMEOUT_SECONDS", raising=False)
+    monkeypatch.delenv("MCP104_LOGIN_TIMEOUT_SECONDS", raising=False)
 
     assert get_config().login_timeout_seconds >= 265
 
@@ -1724,12 +1720,12 @@ async def test_t112c_no_warning_when_verdict_not_alive(tmp_path, monkeypatch):
 #
 # CONTRACT UNCLEAR (applies to the whole batch): the watcher coroutine that
 # performs "reread AppContext.logout_epoch -> judge -> save_cookies ->
-# activate() -> flip -> CdpLoginStream.mark_completed()" is not named among
-# C6's public Interfaces list. design.md's Test Approach for T-93/T-116
-# assumes the test can find and statically inspect this block, but does not
-# name the function it lives in. Below, a source-scan over the whole
-# tools/auth.py module is used instead of naming one function -- it looks
-# for any async function whose body calls something ending in
+# activate() -> flip -> CdpLoginStream.mark_completed()" is not part of
+# tools/auth.py's public surface. T-93/T-116 need to find and statically
+# inspect this block, but the function it lives in is not named. Below, a
+# source-scan over the whole tools/auth.py module is used instead of naming
+# one function -- it looks for any async function whose body calls something
+# ending in
 # "save_cookies", something ending in "activate", and "mark_completed" (or,
 # failing that, "announce_completed") in sequence, and asserts no `await`
 # node falls between the first of those calls and the last. This is
@@ -1795,7 +1791,7 @@ def _stmt_calls_mark_completed(stmt):
 
 
 def _find_atomic_handoff_watcher_function():
-    """Per design.md SS C6, the atomic handoff block lives in exactly one
+    """The atomic handoff block lives in exactly one
     coroutine: the one that both rereads AppContext.logout_epoch (an
     attribute access, not just a textual mention) and calls
     mark_completed(). This is a narrower, more specific identity than
@@ -1856,7 +1852,7 @@ def _find_atomic_block_spans():
     assert len(candidates) == 1, (
         "expected exactly one function in tools/auth.py that both rereads "
         "AppContext.logout_epoch and calls mark_completed() (the watcher's "
-        "atomic-block coroutine per design.md SS C6); found "
+        "atomic-block coroutine); found "
         f"{len(candidates)}: {[getattr(c, 'name', '?') for c in candidates]}"
     )
     func = candidates[0]
@@ -1908,7 +1904,7 @@ def test_t093_t116_atomic_handoff_block_contains_no_await():
         "the watcher function (identified as the sole function reading "
         "AppContext.logout_epoch and calling mark_completed()) has no "
         "sibling-statement span running from a logout_epoch read to a "
-        "mark_completed() call -- design.md SS C6's atomic block "
+        "mark_completed() call -- the atomic block "
         "(epoch-check -> save_cookies -> activate -> flip -> "
         "mark_completed) could not be located inside it."
     )
@@ -1930,17 +1926,17 @@ def test_t116_mark_completed_is_not_a_coroutine_function():
     assert not inspect.iscoroutinefunction(CdpLoginStream.mark_completed)
 
 
-# --- T-94, T-97 (R1.11/R1.13, R1.2/R1.13): admission around the settling edge ---
+# --- T-94, T-97: admission around the settling edge ---
 #
 # Both routes (viewer page, WebSocket) share exactly one admission source:
 # `_make_get_admissible_stream(app)`'s returned `token -> CdpLoginStream |
-# None` lookup (design.md Section C5 / Interfaces: create_auth_app's sole
-# input). That function is what these two cases drive directly -- it is
-# named in C6's public Interfaces list, so this is not fabricated wiring.
+# None` lookup (create_auth_app's sole input). That function is what these
+# two cases drive directly -- it is what tools/auth.py hands to
+# create_auth_app, so this is not fabricated wiring.
 
 @pytest.mark.asyncio
 async def test_t097_pre_judgment_admission_is_open(tmp_path):
-    """R1.2/R1.13: before the dual-factor judgment holds (state is still
+    """Before the dual-factor judgment holds (state is still
     awaiting_human), a new connection is admitted -- get_admissible_stream
     hands back the live stream, which is what both routes key off of."""
     from mcp104.tools import auth
@@ -1958,7 +1954,7 @@ async def test_t097_pre_judgment_admission_is_open(tmp_path):
 async def test_t094_settling_admission_closes_but_existing_stream_survives_to_settle(
     tmp_path, monkeypatch
 ):
-    """R1.11/R1.13: the instant the judgment holds (state flips to
+    """The instant the judgment holds (state flips to
     settling), a new connection is rejected (get_admissible_stream ->
     None) -- but the existing stream is not torn down: it stays alive,
     receives the completion notice, and only actually closes once the
@@ -1997,7 +1993,7 @@ async def test_t094_settling_admission_closes_but_existing_stream_survives_to_se
     assert get_admissible_stream(token) is None
 
 
-# --- Regression (I1-A): _start_human_login closes browser/context on a
+# --- Regression: _start_human_login closes browser/context on a
 # failed startup step, before any pending registration exists to own them ---
 
 @pytest.mark.asyncio
@@ -2043,7 +2039,7 @@ async def test_regression_start_human_login_closes_browser_and_context_on_goto_f
     assert app_ctx._pending_logins == {}
 
 
-# --- Regression (I1-B): an exception after the atomic completion block
+# --- Regression: an exception after the atomic completion block
 # (succeeded=True) still runs _finalize_pending_login, not left stuck in
 # `settling` ---
 
@@ -2075,7 +2071,7 @@ async def test_regression_post_success_exception_still_finalizes_not_stuck_in_se
     assert stream.state == "closed"
 
 
-# --- T-98 (R2.4): logout() during an in-flight (not yet completed) login ---
+# --- T-98: logout() during an in-flight (not yet completed) login ---
 
 @pytest.mark.asyncio
 async def test_t098_logout_during_pending_login_tears_down_that_login(tmp_path, monkeypatch):
@@ -2119,7 +2115,7 @@ async def test_t098_login_after_logout_during_pending_opens_a_new_login(tmp_path
     assert second["login_url"] != first["login_url"]
 
 
-# --- T-109 (R2.4): a watcher landing "login complete" after logout() must not write ---
+# --- T-109: a watcher landing "login complete" after logout() must not write ---
 
 class _SlowCancelContext(_ControllableContext):
     """A context whose first cookies() call ignores its first
@@ -2145,7 +2141,7 @@ class _SlowCancelContext(_ControllableContext):
 
 @pytest.mark.asyncio
 async def test_t109_watcher_that_completes_after_logout_writes_nothing(tmp_path, monkeypatch):
-    """R2.4: a watcher whose cancellation does not land within
+    """A watcher whose cancellation does not land within
     WATCHER_CANCEL_TIMEOUT (logout() therefore returns
     teardown_confirmed: False) must still discard itself once it resumes
     and finds the login epoch has moved on -- it must not write the
@@ -2225,13 +2221,13 @@ async def test_t109_reverse_without_logout_watcher_writes_normally(tmp_path, mon
     assert app_ctx.session_pool.get_session("s1") is not None
 
 
-# --- T-120 (R1.13): logout() during `settling` is the handed_off 4th path ---
+# --- T-120: logout() during `settling` is the handed_off 4th path ---
 
 @pytest.mark.asyncio
 async def test_t120_logout_during_settling_closes_early_and_next_login_is_a_fresh_human_login(
     tmp_path, monkeypatch
 ):
-    """R1.13: calling logout() while a login is `settling` takes the 4th
+    """Calling logout() while a login is `settling` takes the 4th
     handed_off path, distinct from the other three in two ways:
     (a) the stream/socket close early -- the caller does not wait out the
     remainder of POST_SUCCESS_SETTLE_SECONDS;
@@ -2284,10 +2280,10 @@ async def test_t120_logout_during_settling_closes_early_and_next_login_is_a_fres
         await asyncio.wait_for(task, timeout=2)
 
     # (b) next login() does not take the pool branch (branch B) -- this
-    # logout() already emptied the pool, per the Architecture lifecycle
-    # table's handed_off row ("等 logout() 回傳之後兩份狀態都不存在 -> C").
-    # Branch C attempts the credential file; logout()'s own Step 3 also
-    # cleared it, so C's own fallthrough to a fresh human login is what's
+    # logout() already emptied the pool: once logout() has returned, neither
+    # the pool session nor the credential file exists, so the next login()
+    # opens a fresh human login. Branch C attempts the credential file;
+    # logout()'s own Step 3 also cleared it, so C's own fallthrough to a fresh human login is what's
     # observable here -- the assertion that matters is that this is NOT
     # branch B's stale "already_logged_in"/"restored" pool answer.
     assert app_ctx.session_pool.get_session("s1") is None
@@ -2297,11 +2293,11 @@ async def test_t120_logout_during_settling_closes_early_and_next_login_is_a_fres
     assert result["token"] != token
 
 
-# --- T-8 (R1.11): settle survives for exactly the named constant ----------
+# --- T-8: settle survives for exactly the named constant ----------
 
 @pytest.mark.asyncio
 async def test_t008_settle_window_survives_for_exactly_the_named_duration(tmp_path, monkeypatch):
-    """R1.11: after dual-factor completion, the viewer page gets the
+    """After dual-factor completion, the viewer page gets the
     completion notice (announce_completed()) first, and only after
     surviving a duration equal to the named POST_SUCCESS_SETTLE_SECONDS
     constant does the stream actually close (stop()). The duration must

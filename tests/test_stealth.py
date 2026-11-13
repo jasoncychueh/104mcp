@@ -96,10 +96,10 @@ async def test_t053_launch_args_declare_full_chromium_and_exclude_display_params
 
 
 # =========================================================================
-# T-39 (R8.3): the "browser binary not found" error names the cause and
+# T-39: the "browser binary not found" error names the cause and
 # the cache location, and — the reason this case exists — must NOT
 # contain any install command line (no line has ever been verified to
-# work for a uvx-installed user, per Design C3).
+# work for a uvx-installed user).
 # =========================================================================
 
 @pytest.mark.asyncio
@@ -161,7 +161,7 @@ async def test_t039_missing_browser_error_names_cause_and_location_without_a_com
 
 
 # =========================================================================
-# T-78 (R1.3): the login path has no display-server dependency anywhere —
+# T-78: the login path has no display-server dependency anywhere —
 # not in launch parameters, not in spawned processes, not in the runtime
 # dependency set. Scoped to functional code, not comments/prose that
 # merely mention the retired noVNC design (a documentation-freshness
@@ -181,7 +181,7 @@ def test_t078_login_path_has_no_display_server_dependency():
 
 
 # =========================================================================
-# T-113 (R3.6): outside the login path, nothing in src/mcp104/ touches a
+# T-113: outside the login path, nothing in src/mcp104/ touches a
 # browser page — an explicit, file-named allowlist.
 # =========================================================================
 

@@ -131,11 +131,11 @@ _DATA_KINDS = frozenset({"list", "object", "bool", "any"})
 # now-removed page-navigation guard (guarded_page) this value was carried
 # over from without reason to diverge, and it is kept unchanged here for
 # the same reason: combined with the interval floor in browser/throttle.py
-# (MIN_CALL_INTERVAL_SECONDS), a JSON call's worst case inside the session
+# (MCP104_MIN_CALL_INTERVAL_SECONDS), a JSON call's worst case inside the session
 # lock is the floor plus this timeout, which must stay under the MCP
 # client's own default request timeout — a client that gives up while 104
 # is still answering reports a failure that did not happen (measured once
-# already, on read_messages, before MAX_INLINE_WAIT_SECONDS existed).
+# already, on read_messages, before MCP104_MAX_INLINE_WAIT_SECONDS existed).
 #
 # This arithmetic no longer covers every tool: the asset path
 # (fetch_asset) has its OWN, longer timeout (ASSET_FETCH_TIMEOUT_SECONDS
@@ -205,7 +205,7 @@ class FamilyBShape:
     `sibling_keys` names top-level envelope keys that ride ALONGSIDE
     `data`/`metadata` — not under either of them — and that classify()
     should copy into the Verdict's payload when they are present. The
-    motivating case is `failed`, the outbound-contact event/message
+    motivating case is `failed`, the event/message send
     routes' own per-recipient failure list [M docs/104-site-facts.md
     §8.13/§8.17]: it is a THIRD top-level key, not a `data` or `metadata`
     field, so neither the data_kind branch nor the inner_key branch below

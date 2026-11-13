@@ -67,15 +67,14 @@ log = logging.getLogger("104-mcp.search")
 #
 # Candidates write several résumé fields in 104's rich-text editor, and 104 returns
 # those values as the editor's HTML verbatim — `<p>`, `<ol>/<li>`, `<span style=...>`,
-# `&nbsp;` — on the list rows (`expJobArr[].expJobNote`, `remark`) and on the détail
-# (`auto`, `introduction`, `workDesc`, `specialty[].desc`, `achievement[].desc`, the
-# same `expJobNote`). Measured 2026-09-04 on the committed fixtures: the markup is
-# ~17% of a 50-row search page and carries no information a caller can use — the
-# Agent has no renderer, it re-presents the text to a human. Converting it to plain
-# text here (block-level tags become line breaks, every other tag is dropped, entities
-# are decoded) keeps the WORDS the candidate wrote and drops only the markup. Strings
+# `&nbsp;` — on the list rows (`remark`) and on the détail (`auto`, `introduction`,
+# `workDesc`, `specialty[].desc`, `achievement[].desc`, `expJobArr[].expJobNote`). The
+# markup carries no information a caller can use — the Agent has no renderer, it
+# re-presents the text to a human. Converting it to plain text here (block-level tags
+# become line breaks, every other tag is dropped, entities are decoded) keeps the
+# WORDS the candidate wrote and drops only the markup. Strings
 # without any tag pass through byte-identical — the restricted-contact placeholders
-# (tests T-16) and every code/date/e-mail value are untouched.
+# and every code/date/e-mail value are untouched.
 _HTML_TAG_RE = re.compile(r"<[A-Za-z/!][^>]*>")
 _HTML_BLOCK_TAG_RE = re.compile(
     r"</?(?:p|div|br|li|ol|ul|tr|h[1-6]|table|blockquote)\b[^>]*>", re.IGNORECASE
@@ -156,35 +155,30 @@ def _convert_resume_row(raw: dict) -> dict:
     """
     picked = {k: v for k, v in raw.items() if k in _RESUME_ROW_FIELDS}
     if isinstance(picked.get("expJobArr"), list):
-        picked["expJobArr"] = [_compact_exp_job(entry) for entry in picked["expJobArr"]]
+        picked["expJobArr"] = [compact_exp_job(entry) for entry in picked["expJobArr"]]
     converted = _convert(picked)
     if "id_no" in converted:
         converted["candidate_id"] = converted.pop("id_no")
     return converted
 
 
-def _compact_exp_job(entry):
-    """One expJobArr entry with its empty fields removed. An entry carries 19 fields
-    and, on the committed fixtures (436 entries, 2026-09-04), 8 of them are empty on
-    most jobs (`expFirmLogo`, `expManagementDesc`, `expWage*`, `expJobSkill*`, ...):
-    forwarding `"exp_wage_year": null` for 4 jobs × 50 rows was ~30k characters of a
-    ~230k page saying nothing. "Empty" is what 104 itself uses for "not filled in" —
-    None, "" and [] all occur on the fixtures, nothing else stands in for absence; 0
-    and False are values, not absence, and are kept. Row-level fields are NOT
-    compacted — a row's key set stays stable and fully published by
-    describe_result_fields(); only these nested per-job objects, whose keys are 104's
-    own and vary by what the candidate filled in, drop their empties. A non-dict entry
-    (never observed) passes through untouched rather than raising.
+# The only keys of an `expJobArr` entry that survive onto a list row (résumé rows and
+# applicant rows alike): a list row is for choosing whom to open, and one entry carries
+# 19 fields of which the job description alone dominated the page. The full history
+# is get_resume_detail's.
+EXP_JOB_KEPT_KEYS = ("expFirm", "expTitle", "expStart", "expEnd")
+
+
+def compact_exp_job(entry):
+    """One `expJobArr` entry reduced to company, title and start/end. A key 104 left
+    out stays out; a key it sent keeps its value as-is, null or "" included; a non-dict
+    entry (never observed) passes through untouched rather than raising. Row-level
+    fields are NOT compacted — a row's key set stays stable and fully published by
+    describe_result_fields().
     """
     if not isinstance(entry, dict):
         return entry
-    return {k: v for k, v in entry.items() if not _is_empty_exp_job_value(v)}
-
-
-def _is_empty_exp_job_value(value) -> bool:
-    # Type-by-type on purpose: `value in (None, "", [])` would also be True for
-    # 0 == False-style coincidences the moment a comparable sentinel is added.
-    return value is None or value == "" or (isinstance(value, list) and not value)
+    return {k: entry[k] for k in EXP_JOB_KEPT_KEYS if k in entry}
 
 
 # ── Route-specific container/page extraction ─────────────────────────────
@@ -601,8 +595,8 @@ _SECOND_IDENTIFIER_NOTE = discovery_mod.SECOND_IDENTIFIER_NOTE
 # What a list row deliberately is NOT (2026-09-04): the same note on all three list
 # tools, so an Agent reading any one of them knows where the rest of the résumé lives.
 _ROW_NOTE = (
-    "列上不含 master_url（需登入的網頁連結，使用者開不了）；exp_job_arr 略過空欄位、"
-    "HTML 已轉純文字；完整履歷用 get_resume_detail。"
+    "列上不含 master_url（需登入的網頁連結，使用者開不了）；exp_job_arr 每筆只有公司、"
+    "職稱、起訖，工作內容與完整履歷用 get_resume_detail。"
 )
 
 _SEARCH_RESUMES_DESCRIPTION = f"""搜尋 104 履歷（走 JSON API，不再解析頁面 DOM）。

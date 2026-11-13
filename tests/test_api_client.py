@@ -1,10 +1,10 @@
-"""Phase 1 transport/guard tests — design.md Testing Strategy, Components §2-4, §8.
+"""Transport/guard tests: Endpoint, classify, guarded_api, and the auth-host predicate.
 
-Written BLIND to browser/api_client.py's and tools/helpers.py's *logic* (spec-tester
-Mode 1 rule): every assertion below is derived from design.md's declared interfaces
-plus docs/104-site-facts.md's measured facts, never from reading what a function
+Written BLIND to browser/api_client.py's and tools/helpers.py's *logic*: every
+assertion below is derived from the declared public interfaces plus
+docs/104-site-facts.md's measured facts, never from reading what a function
 decides. Structural mismatches that surfaced only as bare `TypeError`s on the first
-run (module-level pure dataclasses this design declares as public interfaces — the
+run (module-level pure dataclasses that are public interfaces — the
 `Endpoint`/`RawResponse`/`Verdict` field names, and `guarded_api`'s parameter types)
 were resolved via `inspect.signature()` on the already-implemented functions rather
 than by guessing repeatedly against the live system or by opening the module's
@@ -14,10 +14,10 @@ after seeing which body shapes a function accepts or rejects.
 
 Cases: T-19, T-20, T-21, T-22, T-23, T-24, T-25, T-44, T-45, T-46, T-54, T-55, T-56, T-57.
 
-Seams substituted per Testing Strategy ("not mocked: the pure decision functions...
-The HTTP transport and the browser context are the seams that are substituted"):
-`fetch` is monkeypatched to return canned `RawResponse`s built from tests/fixtures/.
-There is no BrowserContext seam left post-login (§C7) — `guarded_api` reads
+Seams: the pure decision functions are never mocked; the HTTP transport is the
+seam that is substituted. `fetch` is monkeypatched to return canned `RawResponse`s
+built from tests/fixtures/.
+There is no BrowserContext seam left post-login — `guarded_api` reads
 credentials straight off `SessionInfo.cookies`, so a session under test is built
 by handing that field a cookie list directly. `classify`, `select_cookies_for_host`
 and `matches_auth_host` are exercised directly and are never mocked.
@@ -96,7 +96,7 @@ def deterministic_throttle(monkeypatch):
     """Neutralizes the pacing floor's inline sleep for every test in this file —
     this file exercises the guard's lock/identity/error-mapping behaviour, not
     pacing (that's tests/test_throttle.py). Only `_sleep` needs patching: the
-    pacing rework (design.md Components §7) replaced the drawn-delay distribution
+    pacing rework replaced the drawn-delay distribution
     with a deterministic interval floor, which needs no randomness source, so
     there is no `_rng` to neutralize any more (see tests/test_helpers.py's
     matching fixture for the same fix applied there)."""
@@ -122,7 +122,7 @@ def _new_ctx_and_session():
     ctx = FakeCtx(pool)
     sid = get_session_id(ctx)
     # guarded_api reads credentials straight off SessionInfo.cookies now —
-    # there is no BrowserContext left to fake post-login (§C7).
+    # there is no BrowserContext left to fake post-login.
     info = SessionInfo(cookies=[], account_label="test@104.com")
     pool.activate_direct(sid, info)
     return pool, ctx, info
@@ -131,9 +131,9 @@ def _new_ctx_and_session():
 def _endpoints_matching(*, family: str | None = None, host: str | None = None,
                          path_contains: str | None = None, method: str | None = None):
     """Look endpoints up by declared property rather than by guessing the
-    ENDPOINTS dict's key strings — design.md never names those keys, only the
-    five tools' own names (Components §9), so matching on `.path`/`.family`/
-    `.host` (all explicitly declared, per Data Models) is the only
+    ENDPOINTS dict's key strings — the keys are not part of the public
+    contract, so matching on `.path`/`.family`/
+    `.host` (all explicitly declared) is the only
     blindness-safe way to find "the search endpoint" etc. Returns (key, Endpoint)
     pairs; guarded_api/classify take the Endpoint object itself, not the key."""
     out = []
@@ -155,7 +155,7 @@ def _headers_lower(ep: Endpoint) -> set[str]:
     # against docs/104-site-facts.md §6b.3h's independently-built reference table
     # (the docs->declaration direction). Repaired to read the NAME out of each
     # declared (name, value) pair after `required_headers` (a frozenset of bare
-    # names) became `extra_headers` (name/value pairs, §1) — the property this
+    # names) became `extra_headers` (name/value pairs) — the property this
     # function tests is unchanged: a tuple-of-pairs is not made redundant by this
     # repair, since a name-only set can't tell a typo'd VALUE from a correct one,
     # which is exactly what T-8 (declaration->wire, below) exists to catch instead.
@@ -198,10 +198,10 @@ _REFERENCE_ENDPOINTS = [
     ("/api/recommend/resumeListAll", "vip", "A", False, True),
     ("/api/match/matchResult", "vip", "A", True, True),
     ("/vipapi/resume/search", "auth", "B", None, False),
-    # The company job list (list_jobs) moved to the apply route in applicants-and-job-reads;
+    # The company job list (list_jobs) moved to the apply route;
     # /job-api/jobs/apply carries applyCount60 and the same 21-job set in the same order.
     ("/job-api/jobs/apply", "auth", "B", None, False),
-    # applicants-and-job-reads: three more auth-host routes, none measured for Referer.
+    # Three more auth-host routes, none measured for Referer.
     ("/api/apply/applyDetail", "auth", "A", None, False),
     ("/vipapi/search/match-number", "auth", "B", None, False),
     ("/vipapi/job/over-seven-day-job", "auth", "B", None, False),
@@ -331,7 +331,7 @@ def test_classify_family_selected_by_endpoint_declaration_not_body_shape():
     verdict_a_declared_b = classify(ep_b, raw_a)
     assert verdict_a_declared_b.ok is False, (
         "family-A body's top-level `data` is null, which fails family B's "
-        "'data present and a mapping' floor (Components §4) — accepting it "
+        "'data present and a mapping' floor — accepting it "
         "means family wasn't actually taken from the endpoint declaration"
     )
 
@@ -339,8 +339,8 @@ def test_classify_family_selected_by_endpoint_declaration_not_body_shape():
     assert verdict_b_declared_a.ok is False, (
         "family-B body carries no 'status' key at all, so family A's "
         "status==SUCCESS check must reject it — admitting it here is exactly "
-        "the 'default the key to success' failure mode Components §4 warns "
-        "about, and would mean every family-B error is silently accepted too"
+        "the 'default the key to success' failure mode, "
+        "and would mean every family-B error is silently accepted too"
     )
 
 
@@ -353,7 +353,7 @@ def test_endpoint_construction_enforces_family_b_shape_invariant():
     # shape, or a family-A endpoint carrying one, now fails at construction —
     # at module import, when ENDPOINTS is built — rather than the first time
     # classify() happens to see it. That invariant had no test pinning it
-    # (the implementer had only verified it by hand), so it is exactly the
+    # (it had only been verified by hand), so it is exactly the
     # kind of construction-time guard that quietly becomes optional if a
     # later refactor drops the check and nothing goes red.
     with pytest.raises(ValueError):
@@ -367,7 +367,7 @@ def test_endpoint_construction_enforces_family_b_shape_invariant():
 
 
 def test_opaque_family_endpoint_classifies_a_bare_redirect_as_ok():
-    # I2-B(a): family "non_json" was renamed to "opaque" (Verdict.kind for
+    # Family "non_json" was renamed to "opaque" (Verdict.kind for
     # the non-JSON *failure* case is unaffected — it stays "non_json", see
     # the neighbouring family-A non-JSON case above). An "opaque" endpoint,
     # declared the same shape logout_session uses (family_b_shape=None,
@@ -385,7 +385,7 @@ def test_opaque_family_endpoint_classifies_a_bare_redirect_as_ok():
 
 
 def test_endpoint_construction_rejects_unknown_family():
-    # I2-B(b): only "A", "B" and "opaque" are valid `family` values. "C"
+    # Only "A", "B" and "opaque" are valid `family` values. "C"
     # (never a real family) and "non_json" (the old, pre-rename spelling)
     # must both be rejected at construction, alongside the existing method
     # whitelist case's ValueError-on-construction pattern.
@@ -401,9 +401,8 @@ def test_endpoint_construction_rejects_unknown_family():
 # ── T-56 (interface): matches_auth_host ──────────────────────────────────
 
 def test_auth_vip_host_is_not_classified_as_auth_host():
-    # design.md Components §8: "auth.vip.104.com.tw is a working host, not an
-    # authentication host... its docstring states that auth.vip.104.com.tw is
-    # a working host and must return false."
+    # auth.vip.104.com.tw is a working host, not an authentication host, and
+    # must return false.
     assert matches_auth_host("auth.vip.104.com.tw") is False
     assert matches_auth_host("vip.104.com.tw") is False
     # Positive control — docs/104-site-facts.md line 28 and tests/test_session.py:
@@ -412,13 +411,13 @@ def test_auth_vip_host_is_not_classified_as_auth_host():
     assert matches_auth_host("boidc.104.com.tw") is True
 
 
-# ── T-19..T-25, T-57 (behavior/e2e): guarded_api's Error Handling mapping ─
-# All routed through guarded_api (not classify() directly): design.md
-# Components §3 states guarded_api "Maps every Error Handling scenario to its
-# own abort payload" via `raise GuardAbort subclasses`, and T-19's claim ("no
-# results key") is about that final tool-facing payload, not classify()'s raw
-# Verdict. GuardAbort's `except GuardAbort as e: return e.payload` convention
-# is reused as-is per Components §3 and confirmed by tests/test_helpers.py.
+# ── T-19..T-25, T-57 (behavior/e2e): guarded_api's error mapping ─────────
+# All routed through guarded_api (not classify() directly): guarded_api maps
+# every failure scenario to its own abort payload by raising GuardAbort
+# subclasses, and T-19's claim ("no results key") is about that final
+# tool-facing payload, not classify()'s raw Verdict. GuardAbort's
+# `except GuardAbort as e: return e.payload` convention is reused as-is and
+# confirmed by tests/test_helpers.py.
 
 @pytest.mark.asyncio
 async def test_every_failure_fixture_produces_error_with_no_results_key(monkeypatch):
@@ -490,7 +489,7 @@ async def test_unrecognised_status_reported_verbatim_with_stop_instruction(monke
         async with guarded_api(ctx, ep, params=[]):
             pass  # pragma: no cover
 
-    # Error Handling scenario 9: "report the status and message verbatim".
+    # An unrecognised status is reported with its status and message verbatim.
     text = json.dumps(exc_info.value.payload, ensure_ascii=False)
     assert "ANOTHER_NOVEL_STATUS_7c21" in text
     assert "唯一可辨識字串XYZ789" in text
@@ -498,7 +497,7 @@ async def test_unrecognised_status_reported_verbatim_with_stop_instruction(monke
 
 @pytest.mark.asyncio
 async def test_family_b_healthy_body_accepted_and_family_b_error_rejected(monkeypatch):
-    # T-21's complementary pair (design.md Components §4): a healthy family-B
+    # T-21's complementary pair: a healthy family-B
     # body must not be rejected for lacking a `status` key, and a family-B
     # error body must not be admitted.
     _resume_key, resume_ep = _endpoints_matching(path_contains="/vipapi/resume/search")[0]
@@ -525,7 +524,7 @@ async def test_both_family_a_expiry_bodies_report_expired_session(monkeypatch):
     # tests/fixtures/README.md: as re-measured, neither body parses as JSON
     # and the two are byte-different from each other — the only thing they
     # share is the /company/status/switchCompany redirect-target string
-    # (Error Handling scenario 4), which is exactly what the check must key on.
+    # (expired-session detection), which is exactly what the check must key on.
     _key, ep = _endpoints_matching(path_contains="/api/search/searchResult")[0]
 
     for fixture_name in ("failure_family_a_logged_out.json", "failure_family_a_expired.json"):
@@ -551,7 +550,7 @@ async def test_challenge_body_produces_stop_and_wait_error_not_empty_result(monk
     # challenge-page markers are pinned directly in
     # tests/test_helpers.py's _detect_cloudflare_challenge coverage
     # (guarded_page, which exercised this same detector against a live
-    # page, no longer exists post-§C7; the fixture below is this file's
+    # page, no longer exists; the fixture below is this file's
     # own carrier for that string).
     raw = _raw(
         200,
@@ -575,8 +574,8 @@ async def test_404_html_and_404_json_produce_different_errors(monkeypatch):
     # No committed fixture exists for the "wrong host" HTML-404 shape (only
     # the JSON-404 DATA_NOT_FOUND shape is captured, per tests/fixtures/README.md)
     # — see this module's completion report. The HTML body below is
-    # synthesized to match Error Handling scenario 1's description ("HTTP 404
-    # with an HTML body... resembles nothing about 'wrong host'").
+    # synthesized as an HTTP 404 with an HTML body, which resembles nothing
+    # about "wrong host".
     _key, ep = _endpoints_matching(path_contains="/api/match/matchResult")[0]
 
     _pool_json, ctx_json, _info_json = _new_ctx_and_session()
@@ -611,11 +610,11 @@ async def test_404_html_and_404_json_produce_different_errors(monkeypatch):
 @pytest.mark.asyncio
 async def test_guarded_api_holds_lock_and_rechecks_identity_after_acquiring(monkeypatch):
     # Same race guarded_api's own docstring describes for guarded_api itself
-    # (Components §3/§C8) — logout()+login() replacing the pool entry with a
+    # — logout()+login() replacing the pool entry with a
     # brand-new SessionInfo while a second caller is still parked on the old
     # entry's lock. The guarded_page-era sibling of this test
     # (tests/test_helpers.py::test_guarded_page_rejects_when_pool_entry_replaced_while_queued)
-    # no longer exists post-§C7 — guarded_page itself is gone — so this is
+    # no longer exists — guarded_page itself is gone — so this is
     # now the sole test pinning that identity re-check for the API path.
     pool = SessionPool()
     ctx = FakeCtx(pool)
@@ -692,7 +691,7 @@ async def test_guarded_api_does_not_follow_redirect_and_reports_auth_host_redire
     # Exactly one HTTP call — the 3xx is read, never chased into a second request.
     assert calls["n"] == 1
     assert "已過期" in exc_info.value.payload.get("error", "")
-    # Payload and kind are independent (Round I1 Bug A): the wording alone does
+    # Payload and kind are independent: the wording alone does
     # not prove this raise site declared "expired" rather than "transport" —
     # this is the site that must NOT fall in with the transport kind raised
     # earlier in guarded_api for a plain fetch() exception.
@@ -703,7 +702,7 @@ async def test_guarded_api_does_not_follow_redirect_and_reports_auth_host_redire
 async def test_guarded_api_throttled_rejection_carries_throttled_kind(monkeypatch):
     _pool, ctx, _info = _new_ctx_and_session()
 
-    # enforce_throttle's contract (§C10): a rejection is a ThrottleAbort, not
+    # enforce_throttle's contract: a rejection is a ThrottleAbort, not
     # a bare dict — guarded_api reads .kind/.payload off it directly.
     async def rejecting_throttle(*args, **kwargs):
         return ThrottleAbort(
@@ -741,7 +740,7 @@ async def test_logged_out_session_on_list_tool_returns_expired_error_never_empty
     assert "已過期" in exc_info.value.payload.get("error", "")
 
 
-# ── §1: Endpoint.method (no default), fetch()'s POST dispatch, extra_headers ────────
+# ── Endpoint.method (no default), fetch()'s POST dispatch, extra_headers ────────
 
 def test_endpoint_method_has_no_default_and_is_required():
     with pytest.raises(TypeError):
@@ -862,7 +861,7 @@ async def test_fetch_emits_every_declared_extra_header_verbatim_and_nothing_unde
     assert "X-Test-Header" not in headers2
 
 
-# ── build_url: two placeholders in one hyphen-joined path segment (§2) ──────────────
+# ── build_url: two placeholders in one hyphen-joined path segment ──────────────────
 
 def test_build_url_fills_two_placeholders_in_one_hyphen_joined_segment():
     from mcp104.browser.api_client import build_url
@@ -912,7 +911,7 @@ def test_classify_family_b_404_with_only_error_key_still_behaves_as_before():
     assert verdict.detail == "找不到資料"
 
 
-# ── §1 constructions: all four pre-existing Endpoint(...) sites gain method= and
+# ── Constructions: all four pre-existing Endpoint(...) sites gain method= and
 # the renamed header field — a construction failure here is the no-default rule
 # doing its job at the exact call sites the plan enumerates. ────────────────────────
 
@@ -933,8 +932,8 @@ def test_all_declared_endpoints_construct_without_error():
 
 
 # =========================================================================
-# T-67 (R2.1, R3.1, behavior) - the four new C7 endpoints are declared
-# exactly as the design's table states: host="auth", family="B", method,
+# T-67 (behavior) - the four message-event endpoints are declared
+# exactly as the expected table states: host="auth", family="B", method,
 # path, and throttle_gated=True, item by item.
 # =========================================================================
 
@@ -947,8 +946,8 @@ def _endpoint_by_exact_path(path: str, method: str):
     return matches[0]
 
 
-# (path, method, expect_list, inner_key, sibling_keys) - C7's table verbatim.
-_NEW_C7_ENDPOINTS = [
+# (path, method, expect_list, inner_key, sibling_keys) - the expected table verbatim.
+_MESSAGING_ENDPOINTS = [
     ("/bc-comm/template", "GET", True, None, ()),
     ("/bc-comm/message/resume/{job_no}-{p_id}", "GET", False, "idNo", ()),
     ("/bc-comm/event/last-info", "GET", False, None, ()),
@@ -957,7 +956,7 @@ _NEW_C7_ENDPOINTS = [
 
 
 def test_the_four_new_c7_endpoints_are_declared_exactly_per_the_table():
-    for path, method, expect_list, inner_key, sibling_keys in _NEW_C7_ENDPOINTS:
+    for path, method, expect_list, inner_key, sibling_keys in _MESSAGING_ENDPOINTS:
         ep = _endpoint_by_exact_path(path, method)
         assert ep.host == "auth", f"{path}: expected host=auth, got {ep.host!r}"
         assert ep.family == "B", f"{path}: expected family=B, got {ep.family!r}"
@@ -1041,7 +1040,7 @@ def test_family_b_shape_rejects_data_or_metadata_as_a_sibling_key():
 
 
 # =========================================================================
-# T-71 (R2.6, behavior) - resolve_candidate_idno's response body missing
+# T-71 (behavior) - resolve_candidate_idno's response body missing
 # idNo is judged malformed by classify()'s inner_key floor, at the
 # transport layer, before any tool-level code ever sees it.
 # =========================================================================
@@ -1386,7 +1385,7 @@ def test_event_route_failed_is_present_empty_or_absent_on_the_ok_payload(key):
     assert "failed" not in absent.payload
 
 
-# ── applicants-and-job-reads (Phase 1 task 11): T-56, T-57, T-58 ──────────────────
+# ── applicants-and-job-reads: T-56, T-57, T-58 ────────────────────────────────────
 #
 # The company-switch envelope and the family-A non-SUCCESS shapes, through the real
 # classify() with nothing mocked. Named by behaviour; the case IDs sit in the comments
@@ -1463,10 +1462,10 @@ def test_family_a_401_without_a_status_key_is_unrecognised_and_its_detail_names_
     assert "None" not in verdict.detail, f"{key}: detail must not fall back to a literal None"
 
 
-# ── job-switch-delete, Phase 1 (design Testing Strategy T-55..T-58, T-75) ──────
-# Written against design.md's declared interfaces only: the seven declarations
-# are read by key, the new Endpoint/FamilyBShape keywords (body_encoding,
-# data_kind) are used as the design names them, and the envelope family is
+# ── job-switch-delete: T-55..T-58, T-75 ────────────────────────────────────────
+# Written against the declared interfaces only: the seven declarations
+# are read by key, the Endpoint/FamilyBShape keywords (body_encoding,
+# data_kind) are used by their public names, and the envelope family is
 # exercised through classify() with nothing mocked across it.
 
 
@@ -1713,10 +1712,10 @@ def test_family_b_string_error_keeps_its_existing_detail():
     assert verdict.detail == "SYNTH-NOT-FOUND-TEXT"
 
 
-# ── Template management, Phase 1 (design Testing Strategy T-68..T-73) ────────────────
-# Written against design.md's declared interfaces: the six template declarations are read
-# by key from ENDPOINTS, Endpoint and FamilyBShape are built with the keywords the design
-# names, and classify() is called with nothing mocked across it.
+# ── template-management: T-68..T-73 ────────────────────────────────────────────────
+# Written against the declared interfaces: the six template declarations are read
+# by key from ENDPOINTS, Endpoint and FamilyBShape are built with their public
+# keywords, and classify() is called with nothing mocked across it.
 
 
 _TEMPLATE_DECLARATIONS = {
@@ -1846,9 +1845,9 @@ def test_T73_list_and_object_kinds_keep_their_shape_rules():
     assert classify(_kind_probe("object"), _jobswitch_json_raw(200, {"data": [1], "metadata": {}})).kind == "malformed"
 
 
-# ── job-edit-create, Phase 2 (design Testing Strategy T-56, T-57, T-58) ────────────
+# ── job-edit-create: T-56, T-57, T-58 ──────────────────────────────────────────────
 # The four declarations are read by key; ENDPOINTS is never counted. Written from
-# design.md §C1 only. The text_check rows follow the §C1 classify() rules.
+# the declared interfaces only. The text_check rows follow classify()'s text_check rules.
 
 _JOB_EDIT_REFERER = "https://vip.104.com.tw/"
 _JOB_EDIT_WRITE_HEADERS = {"Referer": _JOB_EDIT_REFERER, "X-Requested-With": "XMLHttpRequest"}
