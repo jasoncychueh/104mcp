@@ -1518,7 +1518,7 @@ def forbidden_verdict(payload: Mapping, *, job: JobRead) -> ForbiddenVerdict:
             continue
         hit = {"field": _FORBIDDEN_SEGMENT_NAMES[index]}
         if index != len(cleaned) - 1:
-            hit["message"] = redact(text, job)
+            hit["message"] = redact(text, job).rstrip()
         hits.append(hit)
     if not hits:
         return ForbiddenVerdict("pass", ())

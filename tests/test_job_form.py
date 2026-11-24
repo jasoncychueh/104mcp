@@ -1088,6 +1088,12 @@ def test_forbidden_word_texts_keep_the_seven_segment_order_and_the_one_location_
     ex.equal("200 with a hit: the hit names the segment",
              list(verdict.hits), [{"field": "detail.description", "message": "SYNTH-HIT-DESC"}])
 
+    trailing = [""] * 7
+    trailing[1] = "SYNTH-HIT-DESC\n"
+    verdict = core.forbidden_verdict({"http_status": 200, "texts": trailing}, job=job)
+    ex.equal("a hit's trailing newline is not reported",
+             list(verdict.hits), [{"field": "detail.description", "message": "SYNTH-HIT-DESC"}])
+
     block_texts = [""] * 7
     block_texts[0] = "SYNTH-BLOCK-JOB"
     verdict = core.forbidden_verdict({"http_status": 400, "texts": block_texts}, job=job)

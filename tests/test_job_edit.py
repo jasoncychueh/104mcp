@@ -407,15 +407,15 @@ def _reread(changes=None, *, load_time=None, reg_id=None, extra=None):
 
 
 def _fb_clean():
-    return _json(200, [""] * 7)
+    return _json(200, {"data": [""] * 7, "metadata": {}})
 
 
 def _fb_warn(texts=None):
-    return _json(200, texts or ["SYNTH-WARN-HIT", "", "", "", "", "", ""])
+    return _json(200, {"data": texts or ["SYNTH-WARN-HIT", "", "", "", "", "", ""], "metadata": {}})
 
 
 def _fb_block(texts=None):
-    return _json(400, texts or ["SYNTH-BLOCK-HIT", "", "", "", "", "", ""])
+    return _json(400, {"data": texts or ["SYNTH-BLOCK-HIT", "", "", "", "", "", ""], "metadata": {}})
 
 
 def _write_ok():
@@ -1146,11 +1146,26 @@ async def test_T18_the_seventh_hit_names_only_its_segment_and_the_location_prefi
 
 
 @pytest.mark.asyncio
+async def test_T18b_a_measured_warn_body_reports_the_hit_without_its_trailing_newline(tmp_path, monkeypatch):
+    hit = "輸入內容含「限男性」，可能涉有就業歧視，請務必確認職務內容符合法律規範。\n"
+    body = {"data": ["", hit, "", "", "", "", ""], "metadata": {}}
+    script = [_list_ok([_list_row(J1)]), _read_ok(_read()), _json(200, body)]
+    result, _spy, _info = await _run(tmp_path, monkeypatch, "update_job", script, jobno=J1,
+                                     changes={"detail.description": NEW_DESC})
+    assert "preview" in result, result
+    hits = result["preview"]["forbidden_words"]
+    assert [item["field"] for item in hits] == ["detail.description"]
+    assert hits[0]["message"] == hit.rstrip("\n")
+    assert not hits[0]["message"].endswith("\n")
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("response", [
     pytest.param(TimeoutError("SYNTH-FORBIDDEN-TIMEOUT"), id="timeout"),
     pytest.param(_json(500, {"status": "SYNTH-ERROR", "message": "SYNTH-500"}), id="http-500"),
-    pytest.param(_json(200, [""] * 6), id="six-elements"),
-    pytest.param(_json(200, ["", 1, "", "", "", "", ""]), id="number-element"),
+    pytest.param(_json(200, {"data": [""] * 6, "metadata": {}}), id="six-elements"),
+    pytest.param(_json(200, {"data": ["", 1, "", "", "", "", ""], "metadata": {}}), id="number-element"),
+    pytest.param(_json(200, [""] * 7), id="bare-array"),
 ])
 async def test_T19_a_failed_or_unrecognised_forbidden_check_refuses_the_write(tmp_path, monkeypatch, response):
     script = [_list_ok([_list_row(J1)]), _read_ok(_read()), response]

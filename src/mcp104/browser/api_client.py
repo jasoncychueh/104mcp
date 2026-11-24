@@ -624,11 +624,13 @@ ENDPOINTS: dict[str, Endpoint] = {
         throttle_gated=True,
     ),
     # forbidden_words_check: the editor's check before a save (JE@401050, a
-    # JSON POST to an absolute auth-host URL). Front-end code is the only
-    # evidence. The response is a bare array of strings, one per submitted
-    # text, and 104 states its verdict in the HTTP status: 200 is pass or
-    # warn, 400 is block, both with the same body shape (JE@401050 `M`:
-    # `statusCode === BadRequest` is BLOCK). No envelope family can hand a 400
+    # JSON POST to an absolute auth-host URL). [M, 2026-11-24, read-only
+    # probe]: HTTP 200 for both pass and warn, body `{"data": [seven strings],
+    # "metadata": {}}`, one string per submitted text, empty = no hit; a hit
+    # string ends with "\n". 104 states its verdict in the HTTP status: 200 is
+    # pass or warn, 400 is block (JE@401050 `M`: `statusCode === BadRequest`
+    # is BLOCK). A 400 has not been observed: that it carries the same
+    # envelope is front-end code only. No envelope family can hand a 400
     # verdict to the tool, hence "text_check".
     "forbidden_words_check": Endpoint(
         key="forbidden_words_check",
@@ -1733,26 +1735,30 @@ def _classify_envelope(raw: RawResponse) -> Verdict:
 
 
 def _classify_text_check(raw: RawResponse) -> Verdict:
-    """Pure. The "text_check" family: a bare JSON array of strings, one per
-    checked text (empty string = no hit), whose verdict 104 carries in the
-    HTTP status — 200 for pass or warn, 400 for block, both with the same
-    body shape.
+    """Pure. The "text_check" family: `{"data": [strings], "metadata": {}}`,
+    one string per checked text (empty string = no hit). 104 carries its
+    verdict in the HTTP status — 200 for pass or warn, 400 for block.
+
+    The 200 body is measured (2026-11-24, no hit and warn hit). A 400 has not
+    been observed; that it carries the same envelope is front-end code only.
+    A bare array was never seen on the wire and is `malformed`.
 
     Neither envelope family can hand the 400 to the tool: family A and B
     read an object, and "envelope" files a 400 under `validation`. So HTTP
-    200 and 400 are both `ok` here when the body is the array, with the status
-    kept in the payload; a 400 whose body is an object is an ordinary
-    validation refusal. The expiry and 403 checks ran in the prologue.
+    200 and 400 are both `ok` here when `data` is a list of strings, with the
+    status kept in the payload; a 400 object without such a `data` is an
+    ordinary validation refusal. The expiry and 403 checks ran in the prologue.
     """
     if raw.status in (200, 400):
         if raw.parsed_json is None:
             return Verdict(False, kind="non_json", detail=raw.content_type or "")
         body = raw.parsed_json
-        if isinstance(body, list) and all(isinstance(item, str) for item in body):
-            return Verdict(True, payload={"http_status": raw.status, "texts": list(body)})
+        data = body.get("data") if isinstance(body, dict) else None
+        if isinstance(data, list) and all(isinstance(item, str) for item in data):
+            return Verdict(True, payload={"http_status": raw.status, "texts": list(data)})
         if raw.status == 400 and isinstance(body, dict):
             return Verdict(False, kind="validation", detail=_family_b_error_detail(body))
-        return Verdict(False, kind="malformed", detail="body is not an array of strings")
+        return Verdict(False, kind="malformed", detail='body is not {"data": [strings]}')
     if raw.status == 401:
         return Verdict(False, kind="expired")
     if raw.status == 404:

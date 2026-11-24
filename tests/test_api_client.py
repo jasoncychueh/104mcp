@@ -1881,15 +1881,20 @@ def test_text_check_family_keeps_the_http_400_verdict_and_guards_every_other_sha
     ok_texts = ["", "SYNTH-HIT", "", "", "", "", ""]
     obj_400 = {"status": "FAILED", "message": "SYNTH-REJECTED"}
     not_found = {"status": "DATA_NOT_FOUND"}
+    envelope = {"data": ok_texts, "metadata": {}}
     rows = [
-        ("200 string array", _raw(200, json_ct, json.dumps(ok_texts), ok_texts),
+        ("200 data envelope", _raw(200, json_ct, json.dumps(envelope), envelope),
          "ok", {"http_status": 200, "texts": ok_texts}),
-        ("400 string array", _raw(400, json_ct, json.dumps(ok_texts), ok_texts),
+        ("400 data envelope", _raw(400, json_ct, json.dumps(envelope), envelope),
          "ok", {"http_status": 400, "texts": ok_texts}),
+        ("200 bare string array", _raw(200, json_ct, json.dumps(ok_texts), ok_texts),
+         "malformed", None),
+        ("400 bare string array", _raw(400, json_ct, json.dumps(ok_texts), ok_texts),
+         "malformed", None),
+        ("200 data holding a number", _raw(200, json_ct, json.dumps({"data": ["", 1]}), {"data": ["", 1]}),
+         "malformed", None),
         ("400 object", _raw(400, json_ct, json.dumps(obj_400), obj_400), "validation", None),
         ("200 object", _raw(200, json_ct, json.dumps({"x": 1}), {"x": 1}), "malformed", None),
-        ("200 array holding a number", _raw(200, json_ct, json.dumps(["", 1]), ["", 1]),
-         "malformed", None),
         ("200 non-JSON", _raw(200, "text/html", "<html>SYNTH</html>", None), "non_json", None),
         ("401", _raw(401, json_ct, '{"message": "x"}', {"message": "x"}), "expired", None),
         ("403", _raw(403, "text/html", "<html>SYNTH forbidden</html>", None), "blocked", None),
