@@ -22,7 +22,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from types import MappingProxyType
-from typing import Literal
+from typing import Callable, Literal
 
 from mcp.server.fastmcp import Context, FastMCP
 
@@ -30,6 +30,7 @@ import mcp104.tools.discovery as discovery_mod
 from mcp104.browser.api_client import ENDPOINTS
 from mcp104.db.database import LINK_SOURCE_APPLICANT_ROW
 from mcp104.tools.helpers import (
+    BODY_SHOWN_CHARS,
     GuardAbort,
     MalformedResponseError,
     SessionUnavailable,
@@ -639,6 +640,39 @@ def write_failure_disposition(
     return "raise"
 
 
+_EMAIL_LIKE = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
+_PHONE_LIKE = re.compile(r"\+?\d[\d\-\s().]{5,}\d")
+_SCRUBBED = "［已遮蔽］"
+
+
+def write_abort_note(abort: GuardAbort, *, redact_text: Callable[[str], str] | None = None) -> str:
+    """What a write that aborted ambiguously says about itself, to follow "<noun>請求" in the
+    warning: a timeout is called a timeout and nothing else is; any other transport failure
+    gives the exception; a response gives its kind, HTTP status, content-type, Location,
+    elapsed time and the head of its body, so the next failure explains itself.
+
+    The body is 104's own text. Anything shaped like an e-mail address or a phone number is
+    blanked here, after `redact_text` (a tool's own redaction, e.g. a job's contact values) has
+    run on the whole kept text; only then is it cut to BODY_SHOWN_CHARS and its whitespace
+    collapsed."""
+    diag = abort.diagnostic
+    if diag is None:
+        return f"得到 104 無法辨識的回應（kind={abort.kind}）"
+    elapsed = f"{diag.elapsed_seconds:.1f} 秒"
+    if diag.status is None:
+        if diag.timed_out:
+            return f"逾時（{diag.transport_error}，等了 {elapsed}）"
+        return f"沒有收到 104 的回應（{diag.transport_error}，耗時 {elapsed}）"
+    text = redact_text(diag.body) if redact_text is not None else diag.body
+    text = _PHONE_LIKE.sub(_SCRUBBED, _EMAIL_LIKE.sub(_SCRUBBED, text))
+    head = " ".join(text.split())[:BODY_SHOWN_CHARS]
+    body = f"內容開頭「{head}」" if head else "內容是空的"
+    return (
+        f"得到 104 無法辨識的回應（kind={abort.kind}，HTTP {diag.status}，content-type {diag.content_type or '無'}，"
+        f"Location {diag.location or '無'}，耗時 {elapsed}，{body}）"
+    )
+
+
 def refresh_preflight(requested: Sequence[str], entries: Sequence[RefreshableJob], permit: bool) -> str | None:
     """The check before anything is written: None when the account may refresh and every
     requested jobno is on the refreshable list, otherwise the error text. A jobno not on
@@ -938,7 +972,7 @@ def register_job_tools(mcp: FastMCP) -> None:
                     if disposition == "reread_ambiguous":
                         # The PUT may have taken effect: only the list says. A timeout is
                         # the likeliest case of exactly that.
-                        warnings.append("更新請求（PUT）逾時或回應無法辨識，結果以重讀可更新清單為準")
+                        warnings.append(f"更新請求（PUT）{write_abort_note(e)}，結果以重讀可更新清單為準")
                     elif disposition == "reread_refused":
                         # Whether part of a refused batch took effect is unmeasured.
                         warnings.append(

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
+import time
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from functools import wraps
 from pathlib import Path
 from typing import AsyncIterator, Awaitable, Callable, Sequence
@@ -439,6 +442,39 @@ def require_login(func):
     return wrapper
 
 
+# What an abort keeps of the response text, and how much of it a tool shows once its own
+# redaction has run: the margin lets a redaction see a contact value that straddles the cut.
+BODY_KEPT_CHARS = 600
+BODY_SHOWN_CHARS = 300
+
+
+@dataclass(frozen=True)
+class AbortDiagnostic:
+    """What one failed request looked like on the wire, kept on the GuardAbort so a tool
+    that has to say "the answer was unrecognised" can say what the answer was.
+
+    `status` is None for a transport failure (no response arrived); `transport_error` is then
+    the exception's type name plus its text (a timeout's text is often empty, so the type
+    name is what says anything) and `timed_out` tells a timeout from any other transport
+    failure. `body` is the first BODY_KEPT_CHARS characters of the response text, decoded
+    leniently; it is 104's own text, so it is never logged, and a tool redacts it before
+    showing the first BODY_SHOWN_CHARS of it."""
+
+    status: int | None
+    content_type: str | None
+    location: str | None
+    elapsed_seconds: float
+    body: str
+    transport_error: str | None = None
+    timed_out: bool = False
+
+
+def _describe_exception(exc: BaseException) -> str:
+    text = str(exc)
+    name = type(exc).__name__
+    return f"{name}: {text}" if text else name
+
+
 class GuardAbort(Exception):
     """Base for "abort the tool call and return this payload" signals
     raised from within guarded_api's locked region — either by the guard
@@ -475,6 +511,10 @@ class GuardAbort(Exception):
     value, as 104 sent it) and the top-level `message` (when it is a string).
     Both are None for an abort that did not come from a 104 error envelope. A
     message inside a nested `error` object is not read here.
+
+    `diagnostic` is an AbortDiagnostic for an abort that came from an actual
+    response or a transport failure, and None for one raised before or beside a
+    request (throttle, a caller-side check, a projection of the payload).
     """
 
     def __init__(
@@ -484,12 +524,14 @@ class GuardAbort(Exception):
         code: str | None = None,
         envelope_detail: object = None,
         envelope_message: str | None = None,
+        diagnostic: AbortDiagnostic | None = None,
     ):
         self.payload = payload
         self.kind = kind
         self.code = code
         self.envelope_detail = envelope_detail
         self.envelope_message = envelope_message
+        self.diagnostic = diagnostic
         super().__init__(payload.get("error"))
 
 
@@ -794,6 +836,7 @@ async def _issue_one(
     # against 104 and still belongs in the rolling-window volume count
     # and the inter-call pacing anchor. Called once per sub-request in a
     # guarded_sequence burst, not once per tool call.
+    started = time.monotonic()
     try:
         # ── Dispatch point 2 of 4: which fetch ───────────────────────────
         if is_asset:
@@ -801,7 +844,9 @@ async def _issue_one(
         else:
             raw = await fetch(target, cookie_header=cookie_header, params=params, body=body)
     except Exception as exc:
-        log.error("_issue_one: request to %s failed: %s", target.key, exc)
+        elapsed = round(time.monotonic() - started, 1)
+        transport_error = _describe_exception(exc)
+        log.error("_issue_one: request to %s failed after %.1fs: %s", target.key, elapsed, transport_error)
         # A timeout/connection error says nothing about whether the
         # session itself is usable — the next call may succeed outright
         # — so this is ToolAbort, not SessionUnavailable: a transport
@@ -809,9 +854,24 @@ async def _issue_one(
         # contract (a future session-recovery handler may react to it,
         # e.g. by clearing cookies) must not misfire on a network blip
         # that has nothing to do with session health.
-        raise ToolAbort(ERROR_API_REQUEST_FAILED, kind="transport")
+        raise ToolAbort(
+            ERROR_API_REQUEST_FAILED,
+            kind="transport",
+            diagnostic=AbortDiagnostic(
+                status=None, content_type=None, location=None, elapsed_seconds=elapsed, body="",
+                transport_error=transport_error,
+                timed_out=isinstance(exc, (asyncio.TimeoutError, TimeoutError)),
+            ),
+        )
     finally:
         note_request(info.throttle, path=throttle_state_path)
+    diagnostic = AbortDiagnostic(
+        status=raw.status,
+        content_type=raw.content_type,
+        location=raw.location,
+        elapsed_seconds=round(time.monotonic() - started, 1),
+        body=raw.body[:BODY_KEPT_CHARS],
+    )
 
     # Must run before any shape inspection: a challenge page has no
     # measured shape resembling either family's success OR any of
@@ -824,7 +884,7 @@ async def _issue_one(
             "_issue_one: Cloudflare challenge detected for session %s calling %s (status=%s, Ray ID: %s)",
             session_id, target.key, raw.status, ray_id or "unknown",
         )
-        raise SessionUnavailable(ERROR_CHALLENGE, kind="challenge")
+        raise SessionUnavailable(ERROR_CHALLENGE, kind="challenge", diagnostic=diagnostic)
 
     # A redirect (not followed — see fetch()'s docstring) is handled
     # here, ahead of classify(), only for the auth-host check, which
@@ -850,7 +910,7 @@ async def _issue_one(
             )
             # An expiry signal, not a transport failure — must declare
             # "expired", not fall in with the transport kind above.
-            raise SessionUnavailable(ERROR_EXPIRED, kind="expired")
+            raise SessionUnavailable(ERROR_EXPIRED, kind="expired", diagnostic=diagnostic)
 
     # ── Dispatch point 3 of 4: which classify ────────────────────────────
     verdict = classify_asset(target, raw) if is_asset else classify(target, raw)
@@ -871,6 +931,7 @@ async def _issue_one(
                 payload, kind="blocked", code=_envelope_code(raw.parsed_json),
                 envelope_detail=_envelope_detail(raw.parsed_json),
                 envelope_message=_envelope_message(raw.parsed_json),
+                diagnostic=diagnostic,
             )
         # ── Dispatch point 4 of 4: which kind -> payload + abort class ───
         # The asset table handles only its own four kinds and delegates
@@ -895,6 +956,7 @@ async def _issue_one(
             error_payload, kind=verdict.kind, code=_envelope_code(raw.parsed_json),
             envelope_detail=_envelope_detail(raw.parsed_json),
             envelope_message=_envelope_message(raw.parsed_json),
+            diagnostic=diagnostic,
         )
 
     info.has_succeeded_api_call = True

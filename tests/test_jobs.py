@@ -2066,6 +2066,34 @@ async def test_an_unexpected_error_before_the_put_says_nothing_was_sent(
     assert "沒有送出職缺更新" in result["error"] and "results" not in result
 
 
+@pytest.mark.asyncio
+async def test_a_put_that_times_out_says_timeout_and_is_read_back(tmp_path, monkeypatch):
+    result, spy, _info = await _refresh(
+        tmp_path, monkeypatch, [_JOBNO_A],
+        [_refreshable_raw([_JOBNO_A]), TimeoutError(), _refreshable_raw([_JOBNO_A])],
+    )
+
+    assert _call_keys(spy) == ["list_refreshable_jobs", "refresh_jobs", "list_refreshable_jobs"]
+    note = next(w for w in result["warnings"] if "更新請求（PUT）" in w)
+    assert "逾時（TimeoutError，等了 " in note
+    assert "結果以重讀可更新清單為準" in note
+    assert "無法辨識" not in note
+
+
+@pytest.mark.asyncio
+async def test_a_put_answered_with_an_html_error_page_says_what_came_back_without_contact_text(tmp_path, monkeypatch):
+    page = _raw(502, "text/html", "<h1>Bad Gateway</h1> mail SYNTH@example.invalid  call 02-2345-6789 ref SYNTH-REF", None)
+    result, _spy, _info = await _refresh(
+        tmp_path, monkeypatch, [_JOBNO_A],
+        [_refreshable_raw([_JOBNO_A]), page, _refreshable_raw([_JOBNO_A])],
+    )
+
+    note = next(w for w in result["warnings"] if "更新請求（PUT）" in w)
+    assert "逾時" not in note
+    assert "無法辨識的回應（kind=unrecognised_status，HTTP 502，content-type text/html，Location 無，耗時 " in note
+    assert "內容開頭「<h1>Bad Gateway</h1> mail ［已遮蔽］ call ［已遮蔽］ ref SYNTH-REF」" in note
+
+
 # -- the PUT and the re-read ----------------------------------------------------------------
 
 @pytest.mark.asyncio

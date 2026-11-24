@@ -45,6 +45,7 @@ from mcp104.tools.jobs import (
     JobListAccount,
     JobListRow,
     parse_job_list,
+    write_abort_note,
     write_failure_disposition,
 )
 
@@ -551,7 +552,7 @@ def _reread_failure_warning(exc: GuardAbort | MalformedResponseError) -> str:
 def _write_note(disposition: str, abort: GuardAbort, verb: str) -> str:
     """The warning for a write that aborted but is read back anyway."""
     if disposition == "reread_ambiguous":
-        return f"{verb}請求逾時或回應無法辨識，結果以重讀職缺清單為準"
+        return f"{verb}請求{write_abort_note(abort)}，結果以重讀職缺清單為準"
     return f"104 拒絕了這批{verb}（{abort.payload.get('error')}）；一批裡是否有部分已生效未量測，結果以重讀職缺清單為準"
 
 

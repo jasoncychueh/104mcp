@@ -74,6 +74,7 @@ from mcp104.tools.jobs import (
     JobListRow,
     parse_job_list,
     permit_state,
+    write_abort_note,
     write_failure_disposition,
 )
 
@@ -432,7 +433,7 @@ async def _send_save(
     except GuardAbort as exc:
         if write_failure_disposition(exc, batch_size=1) == "raise":
             raise
-        run.warnings.append(f"{noun}請求逾時或回應無法辨識，結果以重讀為準")
+        run.warnings.append(f"{noun}請求{write_abort_note(exc, redact_text=run.redacted)}，結果以重讀為準")
         return None, None
     outcome = save_outcome(payload, action=action)
     job = run.job

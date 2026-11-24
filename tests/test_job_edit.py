@@ -27,6 +27,7 @@ Synthetic data and unmeasured responses (stated here, not inferred from any fixt
   minimum, and the 面議 floor (40000) is covered separately.
 """
 
+import asyncio
 import importlib
 import json
 import logging
@@ -1487,6 +1488,111 @@ async def test_T30_an_ambiguous_write_response_is_re_read_and_reported_from_the_
     assert len(_routes(spy)) == 5
     assert result["saved"] == "confirmed", result
     assert result["warnings"]
+
+
+def _save_failure_warning(result):
+    notes = [w for w in result["warnings"] if "請求" in w and "結果以重讀為準" in w]
+    assert len(notes) == 1, result["warnings"]
+    return notes[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [
+    pytest.param(TimeoutError("SYNTH-WRITE-TIMEOUT"), id="builtin-timeout"),
+    pytest.param(asyncio.TimeoutError(), id="asyncio-timeout-with-empty-text"),
+])
+async def test_a_timed_out_save_says_timeout_and_names_the_exception(tmp_path, monkeypatch, failure):
+    script = [_list_ok([_list_row(J1)]), _read_ok(_base_read()), _fb_clean(), failure,
+              _read_ok(_reread({"detail.description": NEW_DESC}))]
+    result, _spy, _info = await _run(tmp_path, monkeypatch, "update_job", script, jobno=J1,
+                                     changes={"detail.description": NEW_DESC}, confirm=True)
+    warning = _save_failure_warning(result)
+    assert "逾時" in warning
+    assert type(failure).__name__ in warning
+    assert "無法辨識" not in warning
+    assert "秒" in warning
+
+
+@pytest.mark.asyncio
+async def test_a_save_that_never_reached_104_does_not_claim_a_timeout(tmp_path, monkeypatch):
+    script = [_list_ok([_list_row(J1)]), _read_ok(_base_read()), _fb_clean(),
+              ConnectionResetError("SYNTH-RESET"),
+              _read_ok(_reread({"detail.description": NEW_DESC}))]
+    result, _spy, _info = await _run(tmp_path, monkeypatch, "update_job", script, jobno=J1,
+                                     changes={"detail.description": NEW_DESC}, confirm=True)
+    warning = _save_failure_warning(result)
+    assert "逾時" not in warning
+    assert "ConnectionResetError: SYNTH-RESET" in warning
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("response, kind, status, content_type, head", [
+    pytest.param(_raw(500, "text/html; charset=utf-8", "<html><body>SYNTH-500-PAGE\n  oops</body></html>", None),
+                 "unrecognised_status", "HTTP 500", "text/html; charset=utf-8", "<html><body>SYNTH-500-PAGE oops</body></html>",
+                 id="http-500-html"),
+    pytest.param(_raw(200, "text/plain", "SYNTH-PLAIN-BODY", None),
+                 "non_json", "HTTP 200", "text/plain", "SYNTH-PLAIN-BODY",
+                 id="http-200-not-json"),
+])
+async def test_an_unrecognised_save_response_says_what_it_was(
+    tmp_path, monkeypatch, response, kind, status, content_type, head
+):
+    script = [_list_ok([_list_row(J1)]), _read_ok(_base_read()), _fb_clean(), response,
+              _read_ok(_reread({"detail.description": NEW_DESC}))]
+    result, _spy, _info = await _run(tmp_path, monkeypatch, "update_job", script, jobno=J1,
+                                     changes={"detail.description": NEW_DESC}, confirm=True)
+    warning = _save_failure_warning(result)
+    assert "逾時" not in warning
+    assert "無法辨識的回應" in warning
+    assert f"kind={kind}" in warning
+    assert status in warning
+    assert f"content-type {content_type}" in warning
+    assert "Location 無" in warning
+    assert "耗時 0.0 秒" in warning
+    assert f"內容開頭「{head}」" in warning
+
+
+@pytest.mark.asyncio
+async def test_the_body_head_in_a_save_failure_warning_has_the_jobs_contact_values_redacted(tmp_path, monkeypatch):
+    # The contact name straddles the 300-character cut in the raw body: only redacting before the cut hides it.
+    padding = "x" * 285
+    body = f"<html>{padding} {CONTACT_NAME} and {CONTACT}ADDR and SYNTH-PUBLIC-TEXT</html>"
+    response = _raw(502, "text/html", body, None)
+    script = [_list_ok([_list_row(J1)]), _read_ok(_base_read()), _fb_clean(), response,
+              _read_ok(_reread({"detail.description": NEW_DESC}))]
+    result, _spy, _info = await _run(tmp_path, monkeypatch, "update_job", script, jobno=J1,
+                                     changes={"detail.description": NEW_DESC}, confirm=True)
+    warning = _save_failure_warning(result)
+    assert "SYNTHETIC-CONTACT" not in warning
+    assert PLACEHOLDER in warning
+    shown = warning.split("內容開頭「", 1)[1].rsplit("」", 1)[0]
+    assert len(shown) <= 300
+
+
+@pytest.mark.asyncio
+async def test_the_body_head_has_email_and_phone_shaped_text_blanked_even_when_the_job_does_not_know_it(
+    tmp_path, monkeypatch
+):
+    response = _raw(500, "text/html", "<p>mail stranger@example.invalid or call 0912-345-678 ref SYNTH-REF</p>", None)
+    script = [_list_ok([_list_row(J1)]), _read_ok(_base_read()), _fb_clean(), response,
+              _read_ok(_reread({"detail.description": NEW_DESC}))]
+    result, _spy, _info = await _run(tmp_path, monkeypatch, "update_job", script, jobno=J1,
+                                     changes={"detail.description": NEW_DESC}, confirm=True)
+    warning = _save_failure_warning(result)
+    assert "stranger@example.invalid" not in warning
+    assert "0912-345-678" not in warning
+    assert "SYNTH-REF" in warning
+
+
+@pytest.mark.asyncio
+async def test_a_failed_create_job_save_carries_the_same_diagnostic(tmp_path, monkeypatch):
+    response = _raw(500, "text/html", f"<html>SYNTH-CREATE-500 {CONTACT_NAME}</html>", None)
+    script = [_list_ok([_list_row(J1)]), _more_ok(), _read_ok(_base_read(insert=True), insert=True), _fb_clean(),
+              response, _list_ok([_list_row(J1)])]
+    result, _spy, _info = await _run(tmp_path, monkeypatch, "create_job", script, source_jobno=J1, confirm=True)
+    warning = _save_failure_warning(result)
+    assert "HTTP 500" in warning and "SYNTH-CREATE-500" in warning
+    assert CONTACT_NAME not in warning
 
 
 # ── T-31: the published input schemas ──────────────────────────────────────────

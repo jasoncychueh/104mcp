@@ -1549,6 +1549,69 @@ async def test_T74_a_transport_failure_carries_none_for_all_three_envelope_field
     assert getattr(exc_info.value, "envelope_message", None) is None
 
 
+@pytest.mark.asyncio
+async def test_a_transport_failure_carries_the_exception_type_even_when_its_text_is_empty(monkeypatch):
+    ctx, _info = _new_api_ctx_and_session()
+    _patch_fetch(monkeypatch, _SeqFetchSpy([TimeoutError()]))
+
+    with pytest.raises(GuardAbort) as exc_info:
+        async with guarded_sequence(ctx, slots_needed=1) as (request, _info2):
+            await request(ENDPOINTS["resolve_candidate_idno"], params=[])
+
+    diagnostic = exc_info.value.diagnostic
+    assert diagnostic.status is None and diagnostic.body == ""
+    assert diagnostic.transport_error == "TimeoutError"
+    assert diagnostic.timed_out is True
+    assert diagnostic.elapsed_seconds >= 0
+
+
+@pytest.mark.asyncio
+async def test_a_connection_failure_is_not_marked_as_a_timeout(monkeypatch):
+    ctx, _info = _new_api_ctx_and_session()
+    _patch_fetch(monkeypatch, _SeqFetchSpy([ConnectionResetError("SYNTH-RESET")]))
+
+    with pytest.raises(GuardAbort) as exc_info:
+        async with guarded_sequence(ctx, slots_needed=1) as (request, _info2):
+            await request(ENDPOINTS["resolve_candidate_idno"], params=[])
+
+    assert exc_info.value.diagnostic.transport_error == "ConnectionResetError: SYNTH-RESET"
+    assert exc_info.value.diagnostic.timed_out is False
+
+
+@pytest.mark.asyncio
+async def test_an_unrecognised_response_carries_status_content_type_location_and_the_body_head(monkeypatch):
+    ctx, _info = _new_api_ctx_and_session()
+    body = "SYNTH-PAGE " + "y" * 900
+    redirect = RawResponse(
+        status=302, location="https://vip.104.com.tw/SYNTH-ELSEWHERE", content_type="text/html",
+        body=body, body_bytes=body.encode("utf-8"), parsed_json=None,
+    )
+    _patch_fetch(monkeypatch, _SeqFetchSpy([redirect]))
+
+    with pytest.raises(GuardAbort) as exc_info:
+        async with guarded_sequence(ctx, slots_needed=1) as (request, _info2):
+            await request(ENDPOINTS["resolve_candidate_idno"], params=[])
+
+    diagnostic = exc_info.value.diagnostic
+    assert diagnostic.status == 302
+    assert diagnostic.content_type == "text/html"
+    assert diagnostic.location == "https://vip.104.com.tw/SYNTH-ELSEWHERE"
+    assert diagnostic.body == body[:600]
+    assert diagnostic.transport_error is None and diagnostic.timed_out is False
+
+
+@pytest.mark.asyncio
+async def test_an_abort_raised_before_any_request_has_no_diagnostic(monkeypatch):
+    ctx, _info = _new_api_ctx_and_session()
+    _patch_fetch(monkeypatch, _SeqFetchSpy([]))
+
+    with pytest.raises(GuardAbort) as exc_info:
+        async with guarded_sequence(ctx, slots_needed=1) as (request, _info2):
+            await request(ENDPOINTS["resolve_candidate_idno"], body={"SYNTH": "body-on-a-GET"})
+
+    assert exc_info.value.diagnostic is None
+
+
 # T-75 (interface): field projection on a template endpoint whose data_kind is not "object" is an
 # internal configuration error before any request; the one object-kind template endpoint still projects.
 

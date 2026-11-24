@@ -1006,6 +1006,26 @@ async def test_an_unrecognised_open_response_rereads_and_says_so(tmp_path, monke
     assert _routes(spy) == [JOB_LIST, REFUND, OPEN, JOB_LIST]
 
 
+@pytest.mark.asyncio
+async def test_a_close_write_that_times_out_says_timeout(tmp_path, monkeypatch):
+    result, _spy, _ = await _run(tmp_path, monkeypatch, "close_jobs",
+                                 _close_script([_on(J1)], write=TimeoutError(), reread=[_on(J1)]),
+                                 jobnos=[J1], reasons=[16], allow_pausing_company_ads=True)
+    note = next(w for w in _warnings(result) if "關閉請求" in w)
+    assert "逾時（TimeoutError，等了 " in note and "結果以重讀職缺清單為準" in note
+
+
+@pytest.mark.asyncio
+async def test_a_close_write_answered_with_a_page_says_what_it_got(tmp_path, monkeypatch):
+    page = _raw(500, "text/html", "<p>SYNTH-500 reach nobody@example.invalid</p>", None)
+    result, _spy, _ = await _run(tmp_path, monkeypatch, "close_jobs",
+                                 _close_script([_on(J1)], write=page, reread=[_on(J1)]),
+                                 jobnos=[J1], reasons=[16], allow_pausing_company_ads=True)
+    note = next(w for w in _warnings(result) if "關閉請求" in w)
+    assert "逾時" not in note
+    assert "HTTP 500" in note and "內容開頭「<p>SYNTH-500 reach ［已遮蔽］</p>」" in note
+
+
 # ── Reread: confirmation per job, order, failures (T-37, T-38, T-40..T-43) ──────
 
 
