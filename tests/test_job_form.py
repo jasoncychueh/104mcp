@@ -24,6 +24,7 @@ readings are:
     rule over the candidate codes and requires that at least one of them refuses it.
 """
 
+import copy
 import importlib
 
 import pytest
@@ -223,9 +224,13 @@ def _read(result):
     return _core().read_job(result)
 
 
-def _build(result, *, act="edit", jobno=JOBNO):
+def _build(result, *, act="edit", jobno=JOBNO, job_sort=None, automatic_reservation=False):
     core = _core()
-    return core.build_form(core.read_job(result), act=act, jobno=jobno)
+    return core.build_form(
+        core.read_job(result), act=act, jobno=jobno,
+        job_sort=core.JOB_SORT_EMPTY if job_sort is None else job_sort,
+        automatic_reservation=automatic_reservation,
+    )
 
 
 def _exact(form):
@@ -907,7 +912,8 @@ def test_check_and_apply_changes_refuse_each_rule_and_keep_the_changed_and_uncha
                                                            "detail.remote_work.description": "SYNTH-NEW-REMOTE"}))
     ex.equal("both remote changes are in changed_paths",
              set(applied.changed_paths), {"detail.remote_work.option", "detail.remote_work.description"})
-    form = _exact(core.build_form(applied.job, act="edit", jobno=JOBNO))
+    form = _exact(core.build_form(applied.job, act="edit", jobno=JOBNO, job_sort=core.JOB_SORT_EMPTY,
+                                      automatic_reservation=False))
     ex.equal("option 1 reaches the form", form.get("remote_work_option"), ["1"])
     ex.equal("description reaches the form", form.get("remote_work_description"), ["SYNTH-NEW-REMOTE"])
     ex.check()
@@ -1148,3 +1154,107 @@ def test_job_insert_and_job_update_shapes_both_read_and_the_copy_form_blanks_swi
     with pytest.raises(core.JobShapeError):
         _build(null_switch_update, act="edit")
     ex.check()
+
+
+# ── job_sort_booking: the edit save's jobSort, rebuilt from used-points/jobs ───────────
+
+# The answer 104 gave the real editor for a job on 2026-11-24, with a synthetic job number and
+# name, and the jobSort text that editor then sent in its save. The 42 allowBookingDates are
+# shortened to three: the builder reads none of them.
+WEB_JOBNO = "1000001"
+WEB_JOB_NAME = "合成職缺名稱"
+WEB_USED_POINTS = {
+    "data": [{
+        "jobNo": WEB_JOBNO,
+        "jobName": WEB_JOB_NAME,
+        "switch": "on",
+        "appearDate": 1795410499,
+        "bookingOpenDate": None,
+        "bookingCloseDate": None,
+        "bookingHistory": {"firstDate": 1672905641, "lastDate": 1761986234},
+        "allowBookingDates": [1795686332, 1795945532, 1796204732],
+        "bookingDates": [],
+        "automaticReservation": False,
+        "department": {"id": "1005425", "name": "合成部門", "code": ""},
+    }],
+    "metadata": {
+        "expiryDate": 1814112000,
+        "expectedPauseStartDate": None,
+        "expectedPauseEndDate": None,
+        "remainder": 42,
+    },
+}
+WEB_JOB_SORT = (
+    '{"expiryDate":1814112000,"expectedPauseStartDate":null,"expectedPauseEndDate":null,"remainder":42,'
+    '"data":[{"appearDate":1795410499,"autoCloseDate":null,"preOpenDate":null,"switch":"on",'
+    '"name":"合成職缺名稱","jobNo":"1000001","reserve":[]}]}'
+)
+
+
+def _used_points(**row_changes):
+    payload = copy.deepcopy(WEB_USED_POINTS)
+    payload["data"][0].update(row_changes)
+    return payload
+
+
+def test_job_sort_booking_reproduces_the_jobsort_the_web_editor_sent():
+    booking = _core().job_sort_booking(WEB_USED_POINTS, jobno=WEB_JOBNO)
+    assert booking.job_sort == WEB_JOB_SORT
+    assert booking.automatic_reservation is False
+    assert "\\u" not in booking.job_sort and WEB_JOB_NAME in booking.job_sort
+
+
+def test_job_sort_booking_carries_a_booked_job_through_renamed_keys():
+    payload = _used_points(bookingDates=[1795686332], bookingOpenDate=1795686332,
+                           bookingCloseDate=1795945532, automaticReservation=True)
+    booking = _core().job_sort_booking(payload, jobno=WEB_JOBNO)
+    assert booking.automatic_reservation is True
+    assert '"autoCloseDate":1795945532,"preOpenDate":1795686332' in booking.job_sort
+    assert '"reserve":[1795686332]' in booking.job_sort
+
+
+def _without(path):
+    payload = copy.deepcopy(WEB_USED_POINTS)
+    node = payload
+    keys = path.split(".")
+    for key in keys[:-1]:
+        node = node[int(key)] if isinstance(node, list) else node[key]
+    del node[keys[-1]]
+    return payload
+
+
+MALFORMED_USED_POINTS = [
+    pytest.param([], id="not-an-object"),
+    pytest.param({"data": WEB_USED_POINTS["data"]}, id="no-metadata"),
+    pytest.param({"data": WEB_USED_POINTS["data"], "metadata": []}, id="metadata-not-an-object"),
+    pytest.param({"metadata": WEB_USED_POINTS["metadata"]}, id="no-data"),
+    pytest.param({"data": {}, "metadata": WEB_USED_POINTS["metadata"]}, id="data-not-a-list"),
+    pytest.param({"data": [], "metadata": WEB_USED_POINTS["metadata"]}, id="data-empty"),
+    pytest.param({"data": WEB_USED_POINTS["data"] * 2, "metadata": WEB_USED_POINTS["metadata"]}, id="data-two-rows"),
+    pytest.param({"data": ["x"], "metadata": WEB_USED_POINTS["metadata"]}, id="row-not-an-object"),
+    pytest.param(_used_points(jobNo="1000002"), id="another-job"),
+    pytest.param(_used_points(jobNo=1000001), id="job-number-not-a-string"),
+    pytest.param(_used_points(bookingDates=None), id="booking-dates-not-a-list"),
+    pytest.param(_used_points(automaticReservation="false"), id="automatic-reservation-not-a-bool"),
+    pytest.param(_without("data.0.jobName"), id="no-job-name"),
+    pytest.param(_without("data.0.bookingCloseDate"), id="no-close-date"),
+    pytest.param(_without("metadata.remainder"), id="no-remainder"),
+    pytest.param(_without("metadata.expiryDate"), id="no-expiry"),
+]
+
+
+@pytest.mark.parametrize("payload", MALFORMED_USED_POINTS)
+def test_job_sort_booking_refuses_an_answer_that_is_not_exactly_this_job(payload):
+    with pytest.raises(MalformedResponseError):
+        _core().job_sort_booking(payload, jobno=WEB_JOBNO)
+
+
+def test_build_form_sends_the_given_booking_data_and_the_re_read_form_ignores_it():
+    core = _core()
+    booking = core.job_sort_booking(WEB_USED_POINTS, jobno=JOBNO)
+    form = _exact(_build(_baseline(), job_sort=booking.job_sort, automatic_reservation=True))
+    assert form["jobSort"] == [booking.job_sort]
+    assert form["automaticReservation"] == ["true"]
+    assert not core.compare_forms(
+        _build(_baseline(), job_sort=booking.job_sort), _build(_baseline()), changed=frozenset()
+    ).damaged

@@ -1850,7 +1850,12 @@ def test_T73_list_and_object_kinds_keep_their_shape_rules():
 # the declared interfaces only. The text_check rows follow classify()'s text_check rules.
 
 _JOB_EDIT_REFERER = "https://vip.104.com.tw/"
-_JOB_EDIT_WRITE_HEADERS = {"Referer": _JOB_EDIT_REFERER, "X-Requested-With": "XMLHttpRequest"}
+_JOB_EDIT_WRITE_HEADERS = {
+    "Referer": _JOB_EDIT_REFERER,
+    "X-Requested-With": "XMLHttpRequest",
+    "Origin": "https://vip.104.com.tw",
+    "Accept": "application/json, text/plain, */*",
+}
 
 
 # T-56 (interface): the four job-edit declarations, read by key.
@@ -1871,6 +1876,22 @@ def test_job_edit_declarations_carry_the_designed_host_method_path_family_and_he
         assert ep.body_encoding == body_encoding, key
         assert dict(ep.extra_headers) == headers, key
         assert ep.throttle_gated is True, key
+
+
+def test_job_used_points_is_a_throttled_family_b_get_on_the_auth_host_with_a_list_data():
+    ep = ENDPOINTS["job_used_points"]
+    assert (ep.host, ep.method, ep.path, ep.family) == ("auth", "GET", "/commodity-job-sort/used-points/jobs", "B")
+    assert ep.body_encoding is None
+    assert ep.family_b_shape.data_kind == "list"
+    assert ep.extra_headers == ()
+    assert ep.throttle_gated is True
+
+
+def test_job_used_points_sends_the_job_number_as_a_repeated_bracketed_key():
+    from mcp104.browser.api_client import build_url
+
+    url = build_url(ENDPOINTS["job_used_points"], [("jobNos[]", "1000001")])
+    assert url.endswith("/commodity-job-sort/used-points/jobs?jobNos[]=1000001") or "jobNos%5B%5D=1000001" in url
 
 
 # T-57 (interface): classify() on the text_check family hands the HTTP 400 verdict to the tool.

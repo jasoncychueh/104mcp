@@ -90,6 +90,15 @@ _ASSET_HOST = "asset"
 # constant value serves all of them. [M §6b.3h: "只給站台根目錄就夠"]
 REFERER_SITE_ROOT = "https://vip.104.com.tw/"
 
+# What the real editor's save request carried beyond the always-sent baseline
+# [M 2026-11-24 web capture]. Content-Type is never listed here (see `fetch`).
+_JOB_SAVE_HEADERS = (
+    ("Referer", REFERER_SITE_ROOT),
+    ("X-Requested-With", "XMLHttpRequest"),
+    ("Origin", "https://vip.104.com.tw"),
+    ("Accept", "application/json, text/plain, */*"),
+)
+
 # The only HTTP methods any Endpoint may declare — enforced in
 # Endpoint.__post_init__, not merely documented. DELETE is in the set for the
 # template delete alone. The two conversation DELETE routes recorded in
@@ -539,6 +548,24 @@ ENDPOINTS: dict[str, Endpoint] = {
         family_b_shape=FamilyBShape(data_kind="list", inner_key=None, sibling_keys=()),
         throttle_gated=True,
     ),
+    # job_used_points: the auto-sort service's booking data for jobs, which the
+    # editor reads when the page loads and sends back inside `jobSort` on save.
+    # [M 2026-11-24 web capture of a real save, research/captures/
+    # web_save_20261124T094528Z.json: GET with repeated `jobNos[]`, 200
+    # `{"data": [...], "metadata": {...}}`; the saved form's `jobSort` is
+    # rebuilt from this body byte for byte.] The route is read-only and
+    # answers family B.
+    "job_used_points": Endpoint(
+        key="job_used_points",
+        host="auth",
+        path="/commodity-job-sort/used-points/jobs",
+        method="GET",
+        body_encoding=None,
+        family="B",
+        extra_headers=(),
+        family_b_shape=FamilyBShape(data_kind="list", inner_key=None, sibling_keys=()),
+        throttle_gated=True,
+    ),
     # open_jobs: a form POST answering the old envelope (AJL@405100). The
     # Referer and X-Requested-With headers are NOT a measured requirement:
     # the tool reads ACCESS_DENIED on this route as "no permission", and on
@@ -651,8 +678,11 @@ ENDPOINTS: dict[str, Endpoint] = {
     # requirement: the tool reads ACCESS_DENIED on these routes as "no
     # permission", and on the vip routes that status was measured to mean
     # "Referer missing" (§6b.3h), so the headers the front end sends are sent
-    # here to keep the two readings from competing. new_job's `fast` is a
-    # query parameter (axios `params`, JE@358268) the caller supplies.
+    # here to keep the two readings from competing. Origin and Accept are what
+    # the real editor's save carried [M 2026-11-24 web capture]; they are sent
+    # for the same reason, not because the server was shown to require them.
+    # new_job's `fast` is a query parameter (axios `params`, JE@358268) the
+    # caller supplies.
     "update_job": Endpoint(
         key="update_job",
         host="auth",
@@ -660,7 +690,7 @@ ENDPOINTS: dict[str, Endpoint] = {
         method="POST",
         body_encoding="form",
         family="envelope",
-        extra_headers=(("Referer", REFERER_SITE_ROOT), ("X-Requested-With", "XMLHttpRequest")),
+        extra_headers=_JOB_SAVE_HEADERS,
         family_b_shape=None,
         throttle_gated=True,
     ),
@@ -671,7 +701,7 @@ ENDPOINTS: dict[str, Endpoint] = {
         method="POST",
         body_encoding="form",
         family="envelope",
-        extra_headers=(("Referer", REFERER_SITE_ROOT), ("X-Requested-With", "XMLHttpRequest")),
+        extra_headers=_JOB_SAVE_HEADERS,
         family_b_shape=None,
         throttle_gated=True,
     ),

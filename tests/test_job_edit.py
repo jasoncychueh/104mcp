@@ -69,6 +69,12 @@ CLOSE_DATE = "2026-12-01 00:00:00"
 DENIED = "SYNTH-DENIED-PERMIT"
 BUTTON_REASON = "SYNTH-BUTTON-REASON"
 JOB_SORT_EMPTY = '{"data":[{"reserve":[]}]}'
+# What an edit's save sends as jobSort for the job `_used_points_ok` describes.
+J1_JOB_SORT = (
+    '{"expiryDate":1814112000,"expectedPauseStartDate":null,"expectedPauseEndDate":null,"remainder":42,'
+    '"data":[{"appearDate":1795410499,"autoCloseDate":null,"preOpenDate":null,"switch":"on",'
+    '"name":"SYNTH-JOB-NAME-1000001","jobNo":"1000001","reserve":[]}]}'
+)
 
 CONTACT = "SYNTHETIC-CONTACT-"
 CONTACT_NAME = "SYNTHETIC-CONTACT-NAME"
@@ -91,6 +97,7 @@ JOB_UPDATE = ("GET", "/api/job/jobUpdate")
 JOB_MORE = ("GET", "/api/job/more")
 JOB_INSERT = ("GET", "/api/job/jobInsert")
 FORBIDDEN = ("POST", "/job-api/forbidden-words/check")
+USED_POINTS = ("GET", "/commodity-job-sort/used-points/jobs")
 UPDATE = ("POST", "/api/job/updateJob")
 NEW = ("POST", "/api/job/newJob")
 WRITES = (UPDATE, NEW)
@@ -405,6 +412,21 @@ def _reread(changes=None, *, load_time=None, reg_id=None, extra=None):
     for dotted, value in (extra or {}).items():
         _set(read, dotted, value)
     return read
+
+
+def _used_points_ok(jobno=J1, **row_changes):
+    """What used-points/jobs answers for one job (the shape the real editor's save was built
+    from, 2026-11-24 capture), with a synthetic name."""
+    row = {
+        "jobNo": jobno, "jobName": BASE_NAME, "switch": "on", "appearDate": 1795410499,
+        "bookingOpenDate": None, "bookingCloseDate": None,
+        "bookingHistory": {"firstDate": 1672905641, "lastDate": 1761986234},
+        "allowBookingDates": [1795686332, 1795945532], "bookingDates": [], "automaticReservation": False,
+        "department": {"id": "2001", "name": "SYNTH-DEPT-NAME", "code": ""},
+    }
+    row.update(row_changes)
+    return _json(200, {"data": [row], "metadata": {
+        "expiryDate": 1814112000, "expectedPauseStartDate": None, "expectedPauseEndDate": None, "remainder": 42}})
 
 
 def _fb_clean():
@@ -985,7 +1007,7 @@ async def test_T12_confirm_after_a_preview_starts_again_at_job_list_and_sends_th
     ctx, _info = await _new_session(tmp_path)
     script = [
         _list_ok([_list_row(J1)]), _read_ok(_read(wire={"additionalInfo.loadTime": LOAD_A})), _fb_clean(),
-        _list_ok([_list_row(J1)]), _read_ok(_read(wire={"additionalInfo.loadTime": LOAD_B})), _fb_clean(),
+        _list_ok([_list_row(J1)]), _read_ok(_read(wire={"additionalInfo.loadTime": LOAD_B})), _fb_clean(), _used_points_ok(),
         _write_ok(), _read_ok(_reread({"detail.description": NEW_DESC}, load_time=LOAD_B)),
     ]
     spy = _install(monkeypatch, script)
@@ -998,7 +1020,7 @@ async def test_T12_confirm_after_a_preview_starts_again_at_job_list_and_sends_th
 
     confirmed = await tool(ctx=ctx, jobno=J1, changes=changes, confirm=True)
     assert "error" not in confirmed, confirmed
-    assert _routes(spy)[3:] == [JOB_LIST, JOB_UPDATE, FORBIDDEN, UPDATE, JOB_UPDATE]
+    assert _routes(spy)[3:] == [JOB_LIST, JOB_UPDATE, FORBIDDEN, USED_POINTS, UPDATE, JOB_UPDATE]
     assert _form(_body(spy, UPDATE))["loadTime"] == [LOAD_B]
 
 
@@ -1108,20 +1130,20 @@ async def test_T16_a_warning_without_the_acknowledgement_is_refused_with_its_hit
 
 @pytest.mark.asyncio
 async def test_T17_a_warning_with_the_acknowledgement_is_sent_and_listed(tmp_path, monkeypatch):
-    script = [_list_ok([_list_row(J1)]), _read_ok(_read()), _fb_warn(), _write_ok(),
+    script = [_list_ok([_list_row(J1)]), _read_ok(_read()), _fb_warn(), _used_points_ok(), _write_ok(),
               _read_ok(_reread({"detail.description": NEW_DESC}))]
     result, spy, _info = await _run(tmp_path, monkeypatch, "update_job", script, jobno=J1,
                                     changes={"detail.description": NEW_DESC}, confirm=True,
                                     accept_forbidden_word_warnings=True)
     assert "error" not in result, result
-    assert len(_routes(spy)) == 5
+    assert len(_routes(spy)) == 6
     assert UPDATE in _routes(spy)
     assert "SYNTH-WARN-HIT" in _warnings_text(result)
 
 
 @pytest.mark.asyncio
 async def test_T17_an_acknowledgement_with_no_warning_says_the_value_was_not_used(tmp_path, monkeypatch):
-    script = [_list_ok([_list_row(J1)]), _read_ok(_read()), _fb_clean(), _write_ok(),
+    script = [_list_ok([_list_row(J1)]), _read_ok(_read()), _fb_clean(), _used_points_ok(), _write_ok(),
               _read_ok(_reread({"detail.description": NEW_DESC}))]
     result, spy, _info = await _run(tmp_path, monkeypatch, "update_job", script, jobno=J1,
                                     changes={"detail.description": NEW_DESC}, confirm=True,
@@ -1314,12 +1336,12 @@ async def test_T23_a_category_change_on_a_closed_job_needs_no_accept_progress_re
 @pytest.mark.asyncio
 async def test_T23_with_accept_progress_reset_the_category_change_is_sent(tmp_path, monkeypatch):
     changes = {"detail.jobcat": [{"no": JOBCAT_LEAF2}]}
-    script = [_list_ok([_list_row(J1)]), _read_ok(_read()), _fb_clean(), _write_ok(),
+    script = [_list_ok([_list_row(J1)]), _read_ok(_read()), _fb_clean(), _used_points_ok(), _write_ok(),
               _read_ok(_reread(changes))]
     result, spy, _info = await _run(tmp_path, monkeypatch, "update_job", script, jobno=J1,
                                     changes=changes, confirm=True, accept_progress_reset=True)
     assert "error" not in result, result
-    assert len(_routes(spy)) == 5
+    assert len(_routes(spy)) == 6
     assert UPDATE in _routes(spy)
 
 
@@ -1330,7 +1352,7 @@ async def test_T24_the_sent_form_carries_the_read_values_and_the_changed_need_em
     # Two runs, one with only the description changed and one that also changes need_emp. The
     # tool cannot send a zero-change body (a zero-change confirm is refused by design), so the
     # need_emp-only difference is the observable comparison available.
-    run_a_script = [_list_ok([_list_row(J1)]), _read_ok(_base_read()), _fb_clean(), _write_ok(),
+    run_a_script = [_list_ok([_list_row(J1)]), _read_ok(_base_read()), _fb_clean(), _used_points_ok(), _write_ok(),
                     _read_ok(_reread({"detail.description": NEW_DESC}))]
     result_a, spy_a, _info = await _run(tmp_path, monkeypatch, "update_job", run_a_script, jobno=J1,
                                         changes={"detail.description": NEW_DESC}, confirm=True)
@@ -1342,7 +1364,7 @@ async def test_T24_the_sent_form_carries_the_read_values_and_the_changed_need_em
     assert form_a["need_emp"] == ["3"]
     assert form_a["need_emp1"] == ["5"]
     assert form_a["need_emp_status"] == [""]
-    assert form_a["jobSort"] == [JOB_SORT_EMPTY]
+    assert form_a["jobSort"] == [J1_JOB_SORT]
     assert form_a["jobNo"] == [J1]
     assert form_a["switch"] == ["on"]
     assert form_a["job"] == [BASE_NAME]
@@ -1353,7 +1375,7 @@ async def test_T24_the_sent_form_carries_the_read_values_and_the_changed_need_em
     # 0 and 0 is the unlimited setting: need_emp and need_emp1 become "0" and need_emp_status "unlimit",
     # so exactly the three need_emp wire fields differ from run A.
     changed_both = {"detail.description": NEW_DESC, "detail.need_emp.low": 0, "detail.need_emp.high": 0}
-    run_b_script = [_list_ok([_list_row(J1)]), _read_ok(_base_read()), _fb_clean(), _write_ok(),
+    run_b_script = [_list_ok([_list_row(J1)]), _read_ok(_base_read()), _fb_clean(), _used_points_ok(), _write_ok(),
                     _read_ok(_reread(changed_both))]
     result_b, spy_b, _info = await _run(tmp_path, monkeypatch, "update_job", run_b_script, jobno=J1,
                                         changes=changed_both, confirm=True)
@@ -1369,19 +1391,19 @@ async def test_T24_the_sent_form_carries_the_read_values_and_the_changed_need_em
 
 @pytest.mark.asyncio
 async def test_T25_a_matching_re_read_is_confirmed_with_the_read_back_values(tmp_path, monkeypatch):
-    script = [_list_ok([_list_row(J1)]), _read_ok(_base_read()), _fb_clean(), _write_ok(),
+    script = [_list_ok([_list_row(J1)]), _read_ok(_base_read()), _fb_clean(), _used_points_ok(), _write_ok(),
               _read_ok(_reread({"detail.description": NEW_DESC}, load_time=LOAD_B, reg_id="SYNTH-REGID-B"))]
     result, spy, _info = await _run(tmp_path, monkeypatch, "update_job", script, jobno=J1,
                                     changes={"detail.description": NEW_DESC}, confirm=True)
     assert result["saved"] == "confirmed", result
-    assert len(_routes(spy)) == 5
+    assert len(_routes(spy)) == 6
     rows = _rows_by_field(result["changes"])
     assert rows["detail.description"]["read_back"] == NEW_DESC
 
 
 @pytest.mark.asyncio
 async def test_T26_a_change_that_did_not_apply_is_a_mismatch_naming_the_path(tmp_path, monkeypatch):
-    script = [_list_ok([_list_row(J1)]), _read_ok(_base_read()), _fb_clean(), _write_ok(),
+    script = [_list_ok([_list_row(J1)]), _read_ok(_base_read()), _fb_clean(), _used_points_ok(), _write_ok(),
               _read_ok(_reread({}))]
     result, _spy, _info = await _run(tmp_path, monkeypatch, "update_job", script, jobno=J1,
                                      changes={"detail.description": NEW_DESC}, confirm=True)
@@ -1393,7 +1415,7 @@ async def test_T26_a_change_that_did_not_apply_is_a_mismatch_naming_the_path(tmp
 @pytest.mark.asyncio
 async def test_T26_an_unchanged_field_that_moved_is_damage_and_the_contact_is_named_only(tmp_path, monkeypatch):
     reread = _reread({}, extra={"needCondition.education": [2], "contaction.contacter": CONTACT_NAME_B})
-    script = [_list_ok([_list_row(J1)]), _read_ok(_base_read()), _fb_clean(), _write_ok(), _read_ok(reread)]
+    script = [_list_ok([_list_row(J1)]), _read_ok(_base_read()), _fb_clean(), _used_points_ok(), _write_ok(), _read_ok(reread)]
     result, _spy, _info = await _run(tmp_path, monkeypatch, "update_job", script, jobno=J1,
                                      changes={"detail.description": NEW_DESC}, confirm=True)
     assert result["saved"] == "mismatch", result
@@ -1418,12 +1440,12 @@ async def test_T27_a_failed_or_unreadable_re_read_is_unconfirmed_without_a_read_
         read = _reread({"detail.description": NEW_DESC})
         read["synthExtra"] = "SYNTH-EXTRA"
         reread_response = _read_ok(read)
-    script = [_list_ok([_list_row(J1)]), _read_ok(_base_read()), _fb_clean(), _write_ok(), reread_response]
+    script = [_list_ok([_list_row(J1)]), _read_ok(_base_read()), _fb_clean(), _used_points_ok(), _write_ok(), reread_response]
     result, spy, _info = await _run(tmp_path, monkeypatch, "update_job", script, jobno=J1,
                                     changes={"detail.description": NEW_DESC}, confirm=True)
     assert result["saved"] == "unconfirmed", result
     assert result["warnings"]
-    assert len(_routes(spy)) == 5
+    assert len(_routes(spy)) == 6
     assert all("read_back" not in row for row in result["changes"])
 
 
@@ -1434,7 +1456,7 @@ async def test_T28_a_field_error_from_104_is_refused_with_the_failed_fields_and_
         error_field_map={"description": "職務說明有誤", "email": CONTACT + "MAIL@example.invalid 格式錯誤",
                          "apply_type_tel": "SYNTH-TEL 錯誤"},
     )
-    script = [_list_ok([_list_row(J1)]), _read_ok(_base_read()), _fb_clean(), bad]
+    script = [_list_ok([_list_row(J1)]), _read_ok(_base_read()), _fb_clean(), _used_points_ok(), bad]
     result, spy, _info = await _run(tmp_path, monkeypatch, "update_job", script, jobno=J1,
                                     changes={"detail.description": NEW_DESC}, confirm=True)
     assert _is_error(result)
@@ -1447,7 +1469,7 @@ async def test_T28_a_field_error_from_104_is_refused_with_the_failed_fields_and_
     assert "message" not in failed[1]
     assert failed[2]["label"] == "SYNTH-TEL 錯誤"
     assert "message" not in failed[2]
-    assert len(_routes(spy)) == 4
+    assert len(_routes(spy)) == 5
     assert CONTACT not in _dump(result)
 
 
@@ -1464,11 +1486,11 @@ async def test_T29_a_plain_refusal_from_104_is_an_error_with_no_re_read(tmp_path
                           "url": "", "data": None})
     else:
         bad = _envelope({}, status=status, message="SYNTH-104-REJECT")
-    script = [_list_ok([_list_row(J1)]), _read_ok(_base_read()), _fb_clean(), bad]
+    script = [_list_ok([_list_row(J1)]), _read_ok(_base_read()), _fb_clean(), _used_points_ok(), bad]
     result, spy, _info = await _run(tmp_path, monkeypatch, "update_job", script, jobno=J1,
                                     changes={"detail.description": NEW_DESC}, confirm=True)
     assert _is_error(result)
-    assert len(_routes(spy)) == 4
+    assert len(_routes(spy)) == 5
 
 
 @pytest.mark.asyncio
@@ -1481,11 +1503,11 @@ async def test_T29_a_plain_refusal_from_104_is_an_error_with_no_re_read(tmp_path
     pytest.param(_envelope({}, code="001001"), id="limit-code-001001"),
 ])
 async def test_T30_an_ambiguous_write_response_is_re_read_and_reported_from_the_re_read(tmp_path, monkeypatch, response):
-    script = [_list_ok([_list_row(J1)]), _read_ok(_base_read()), _fb_clean(), response,
+    script = [_list_ok([_list_row(J1)]), _read_ok(_base_read()), _fb_clean(), _used_points_ok(), response,
               _read_ok(_reread({"detail.description": NEW_DESC}))]
     result, spy, _info = await _run(tmp_path, monkeypatch, "update_job", script, jobno=J1,
                                     changes={"detail.description": NEW_DESC}, confirm=True)
-    assert len(_routes(spy)) == 5
+    assert len(_routes(spy)) == 6
     assert result["saved"] == "confirmed", result
     assert result["warnings"]
 
@@ -1502,7 +1524,7 @@ def _save_failure_warning(result):
     pytest.param(asyncio.TimeoutError(), id="asyncio-timeout-with-empty-text"),
 ])
 async def test_a_timed_out_save_says_timeout_and_names_the_exception(tmp_path, monkeypatch, failure):
-    script = [_list_ok([_list_row(J1)]), _read_ok(_base_read()), _fb_clean(), failure,
+    script = [_list_ok([_list_row(J1)]), _read_ok(_base_read()), _fb_clean(), _used_points_ok(), failure,
               _read_ok(_reread({"detail.description": NEW_DESC}))]
     result, _spy, _info = await _run(tmp_path, monkeypatch, "update_job", script, jobno=J1,
                                      changes={"detail.description": NEW_DESC}, confirm=True)
@@ -1515,7 +1537,7 @@ async def test_a_timed_out_save_says_timeout_and_names_the_exception(tmp_path, m
 
 @pytest.mark.asyncio
 async def test_a_save_that_never_reached_104_does_not_claim_a_timeout(tmp_path, monkeypatch):
-    script = [_list_ok([_list_row(J1)]), _read_ok(_base_read()), _fb_clean(),
+    script = [_list_ok([_list_row(J1)]), _read_ok(_base_read()), _fb_clean(), _used_points_ok(),
               ConnectionResetError("SYNTH-RESET"),
               _read_ok(_reread({"detail.description": NEW_DESC}))]
     result, _spy, _info = await _run(tmp_path, monkeypatch, "update_job", script, jobno=J1,
@@ -1537,7 +1559,7 @@ async def test_a_save_that_never_reached_104_does_not_claim_a_timeout(tmp_path, 
 async def test_an_unrecognised_save_response_says_what_it_was(
     tmp_path, monkeypatch, response, kind, status, content_type, head
 ):
-    script = [_list_ok([_list_row(J1)]), _read_ok(_base_read()), _fb_clean(), response,
+    script = [_list_ok([_list_row(J1)]), _read_ok(_base_read()), _fb_clean(), _used_points_ok(), response,
               _read_ok(_reread({"detail.description": NEW_DESC}))]
     result, _spy, _info = await _run(tmp_path, monkeypatch, "update_job", script, jobno=J1,
                                      changes={"detail.description": NEW_DESC}, confirm=True)
@@ -1558,7 +1580,7 @@ async def test_the_body_head_in_a_save_failure_warning_has_the_jobs_contact_valu
     padding = "x" * 285
     body = f"<html>{padding} {CONTACT_NAME} and {CONTACT}ADDR and SYNTH-PUBLIC-TEXT</html>"
     response = _raw(502, "text/html", body, None)
-    script = [_list_ok([_list_row(J1)]), _read_ok(_base_read()), _fb_clean(), response,
+    script = [_list_ok([_list_row(J1)]), _read_ok(_base_read()), _fb_clean(), _used_points_ok(), response,
               _read_ok(_reread({"detail.description": NEW_DESC}))]
     result, _spy, _info = await _run(tmp_path, monkeypatch, "update_job", script, jobno=J1,
                                      changes={"detail.description": NEW_DESC}, confirm=True)
@@ -1574,7 +1596,7 @@ async def test_the_body_head_has_email_and_phone_shaped_text_blanked_even_when_t
     tmp_path, monkeypatch
 ):
     response = _raw(500, "text/html", "<p>mail stranger@example.invalid or call 0912-345-678 ref SYNTH-REF</p>", None)
-    script = [_list_ok([_list_row(J1)]), _read_ok(_base_read()), _fb_clean(), response,
+    script = [_list_ok([_list_row(J1)]), _read_ok(_base_read()), _fb_clean(), _used_points_ok(), response,
               _read_ok(_reread({"detail.description": NEW_DESC}))]
     result, _spy, _info = await _run(tmp_path, monkeypatch, "update_job", script, jobno=J1,
                                      changes={"detail.description": NEW_DESC}, confirm=True)
@@ -1835,14 +1857,14 @@ def _privacy_scenarios():
     add("preview", "update_job", {"jobno": J1, "changes": {"detail.description": NEW_DESC}},
         [_list_ok([_list_row(J1)]), _read_ok(_base_read()), _fb_clean()], False)
     add("confirmed", "update_job", {"jobno": J1, "changes": {"detail.description": NEW_DESC}, "confirm": True},
-        [_list_ok([_list_row(J1)]), _read_ok(_base_read()), _fb_clean(), _write_ok(),
+        [_list_ok([_list_row(J1)]), _read_ok(_base_read()), _fb_clean(), _used_points_ok(), _write_ok(),
          _read_ok(_reread({"detail.description": NEW_DESC}))], False)
     add("mismatch-contact", "update_job", {"jobno": J1, "changes": {"detail.description": NEW_DESC}, "confirm": True},
-        [_list_ok([_list_row(J1)]), _read_ok(_base_read()), _fb_clean(), _write_ok(),
+        [_list_ok([_list_row(J1)]), _read_ok(_base_read()), _fb_clean(), _used_points_ok(), _write_ok(),
          _read_ok(_reread({"detail.description": NEW_DESC}, extra={"contaction.contacter": CONTACT_NAME_B}))], False)
     add("failed-message-carries-contact", "update_job",
         {"jobno": J1, "changes": {"detail.description": NEW_DESC}, "confirm": True},
-        [_list_ok([_list_row(J1)]), _read_ok(_base_read()), _fb_clean(),
+        [_list_ok([_list_row(J1)]), _read_ok(_base_read()), _fb_clean(), _used_points_ok(),
          _failed({"description": CONTACT + "EXT 不可用"}, {"description": "職務說明有誤"})], True)
     add("seventh-hit", "update_job", {"jobno": J1, "changes": {"detail.description": NEW_DESC}},
         [_list_ok([_list_row(J1)]), _read_ok(_base_read()),
@@ -1856,7 +1878,7 @@ def _privacy_scenarios():
          _json(403, {"status": "ACCESS_DENIED", "message": CONTACT + "PHONE 403"})], False)
     add("chinese-contact-name-in-104-text", "update_job",
         {"jobno": J1, "changes": {"detail.description": NEW_DESC}, "confirm": True},
-        [_list_ok([_list_row(J1)]), _read_ok(_read(wire={"contaction.contacter": CONTACT_CJK})), _fb_clean(),
+        [_list_ok([_list_row(J1)]), _read_ok(_read(wire={"contaction.contacter": CONTACT_CJK})), _fb_clean(), _used_points_ok(),
          _failed({"description": CONTACT_CJK + " 不可用"}, {"description": "職務說明有誤"})], True)
     return scenarios
 
@@ -1881,7 +1903,7 @@ async def test_T39_the_project_log_carries_no_contact_value_and_no_form_value(tm
                jobno=J1, changes={"detail.description": NEW_DESC})
     # A mismatch and a preview, which carry the description and the contacter through the core.
     await _run(tmp_path, monkeypatch, "update_job",
-               [_list_ok([_list_row(J1)]), _read_ok(_base_read()), _fb_clean(), _write_ok(),
+               [_list_ok([_list_row(J1)]), _read_ok(_base_read()), _fb_clean(), _used_points_ok(), _write_ok(),
                 _read_ok(_reread({"detail.description": NEW_DESC}, extra={"contaction.contacter": CONTACT_NAME_B}))],
                jobno=J1, changes={"detail.description": NEW_DESC}, confirm=True)
     await _run(tmp_path, monkeypatch, "update_job",
@@ -1918,15 +1940,15 @@ async def test_T40_every_return_has_one_of_the_closed_shapes_and_closed_saved_an
                                 _fb_clean()], source_jobno=J1))[0])
     # confirmed, mismatch, unconfirmed on update
     results.append((await _run(tmp_path, monkeypatch, "update_job",
-                               [_list_ok([_list_row(J1)]), _read_ok(_base_read()), _fb_clean(), _write_ok(),
+                               [_list_ok([_list_row(J1)]), _read_ok(_base_read()), _fb_clean(), _used_points_ok(), _write_ok(),
                                 _read_ok(_reread({"detail.description": NEW_DESC}))],
                                jobno=J1, changes={"detail.description": NEW_DESC}, confirm=True))[0])
     results.append((await _run(tmp_path, monkeypatch, "update_job",
-                               [_list_ok([_list_row(J1)]), _read_ok(_base_read()), _fb_clean(), _write_ok(),
+                               [_list_ok([_list_row(J1)]), _read_ok(_base_read()), _fb_clean(), _used_points_ok(), _write_ok(),
                                 _read_ok(_reread({}))],
                                jobno=J1, changes={"detail.description": NEW_DESC}, confirm=True))[0])
     results.append((await _run(tmp_path, monkeypatch, "update_job",
-                               [_list_ok([_list_row(J1)]), _read_ok(_base_read()), _fb_clean(), _write_ok(),
+                               [_list_ok([_list_row(J1)]), _read_ok(_base_read()), _fb_clean(), _used_points_ok(), _write_ok(),
                                 TimeoutError("SYNTH-REREAD")],
                                jobno=J1, changes={"detail.description": NEW_DESC}, confirm=True))[0])
     # created confirmed and unconfirmed
@@ -1946,7 +1968,7 @@ async def test_T40_every_return_has_one_of_the_closed_shapes_and_closed_saved_an
 async def test_T41_every_non_confirmed_outcome_says_do_not_resend_and_where_to_check(tmp_path, monkeypatch):
     mismatch, _s, _i = await _run(
         tmp_path, monkeypatch, "update_job",
-        [_list_ok([_list_row(J1)]), _read_ok(_base_read()), _fb_clean(), _write_ok(),
+        [_list_ok([_list_row(J1)]), _read_ok(_base_read()), _fb_clean(), _used_points_ok(), _write_ok(),
          _read_ok(_reread({}))],
         jobno=J1, changes={"detail.description": NEW_DESC}, confirm=True)
     assert mismatch["saved"] == "mismatch"
@@ -1954,7 +1976,7 @@ async def test_T41_every_non_confirmed_outcome_says_do_not_resend_and_where_to_c
 
     unconfirmed, _s, _i = await _run(
         tmp_path, monkeypatch, "update_job",
-        [_list_ok([_list_row(J1)]), _read_ok(_base_read()), _fb_clean(), _write_ok(), TimeoutError("SYNTH")],
+        [_list_ok([_list_row(J1)]), _read_ok(_base_read()), _fb_clean(), _used_points_ok(), _write_ok(), TimeoutError("SYNTH")],
         jobno=J1, changes={"detail.description": NEW_DESC}, confirm=True)
     assert unconfirmed["saved"] == "unconfirmed"
     assert "不要重送" in unconfirmed["message"] and "104 後台" in unconfirmed["message"]
@@ -1969,7 +1991,7 @@ async def test_T41_every_non_confirmed_outcome_says_do_not_resend_and_where_to_c
 
     confirmed, _s, _i = await _run(
         tmp_path, monkeypatch, "update_job",
-        [_list_ok([_list_row(J1)]), _read_ok(_base_read()), _fb_clean(), _write_ok(),
+        [_list_ok([_list_row(J1)]), _read_ok(_base_read()), _fb_clean(), _used_points_ok(), _write_ok(),
          _read_ok(_reread({"detail.description": NEW_DESC}))],
         jobno=J1, changes={"detail.description": NEW_DESC}, confirm=True)
     assert confirmed["saved"] == "confirmed"
@@ -1987,7 +2009,7 @@ async def test_T42_an_unexpected_error_after_the_write_is_unconfirmed_and_before
         raise RuntimeError("SYNTH-INTERNAL")
 
     # After the write (the post-write comparison fails): unconfirmed; the write was attempted.
-    script = [_list_ok([_list_row(J1)]), _read_ok(_base_read()), _fb_clean(), _write_ok(),
+    script = [_list_ok([_list_row(J1)]), _read_ok(_base_read()), _fb_clean(), _used_points_ok(), _write_ok(),
               _read_ok(_reread({"detail.description": NEW_DESC}))]
     with mock.patch("mcp104.tools.job_form.compare_forms", boom, create=True), \
             mock.patch("mcp104.tools.job_edit.compare_forms", boom, create=True):
@@ -2038,7 +2060,7 @@ async def test_T42_an_unexpected_error_after_the_write_is_unconfirmed_and_before
 ])
 async def test_T43_session_block_and_challenge_responses_stop_the_sequence_with_the_matching_error(tmp_path, monkeypatch, tool, index, bad):
     if tool == "update_job":
-        chain = [_list_ok([_list_row(J1)]), _read_ok(_base_read()), _fb_clean(), _write_ok(),
+        chain = [_list_ok([_list_row(J1)]), _read_ok(_base_read()), _fb_clean(), _used_points_ok(), _write_ok(),
                  _read_ok(_reread({"detail.description": NEW_DESC}))]
         kwargs = {"jobno": J1, "changes": {"detail.description": NEW_DESC}, "confirm": True}
     else:
@@ -2103,12 +2125,12 @@ async def test_T45_both_tools_are_registered_and_fit_the_description_budget():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("tool", TOOLS)
-async def test_T46_with_four_slots_free_a_confirmed_call_is_refused_at_entry(tmp_path, monkeypatch, tool):
-    # Four requests fit in the window. The confirmed update needs five and the confirmed create six,
+async def test_T46_with_five_slots_free_a_confirmed_call_is_refused_at_entry(tmp_path, monkeypatch, tool):
+    # Five requests fit in the window. The confirmed update and the confirmed create each need six,
     # so each is refused before any request is sent. One call per test: a session's sends are shared.
     kwargs = ({"jobno": J1, "changes": {"detail.description": NEW_DESC}, "confirm": True} if tool == "update_job"
               else {"source_jobno": J1, "changes": {"job_name": NEW_NAME}, "confirm": True})
-    result, spy, _info = await _run_with_slots_left(tmp_path, monkeypatch, tool, [], slots_left=4, **kwargs)
+    result, spy, _info = await _run_with_slots_left(tmp_path, monkeypatch, tool, [], slots_left=5, **kwargs)
     assert _is_error(result)
     assert "retry_after_seconds" in result
     assert spy.calls == []
@@ -2129,6 +2151,90 @@ async def test_T46_with_four_slots_free_a_preview_runs(tmp_path, monkeypatch, to
     result, spy, _info = await _run_with_slots_left(tmp_path, monkeypatch, tool, script, slots_left=4, **kwargs)
     assert "preview" in result, result
     assert len(_routes(spy)) == expected_requests
+
+
+# ── update_job reads the auto-sort booking data and sends it as jobSort ────────
+
+UPDATE_CHANGES = {"detail.description": NEW_DESC}
+
+
+def _confirm_script(used_points, *tail):
+    return [_list_ok([_list_row(J1)]), _read_ok(_base_read()), _fb_clean(), used_points, *tail]
+
+
+@pytest.mark.asyncio
+async def test_a_confirmed_update_sends_six_requests_in_order_and_saves_the_jobsort_the_builder_makes(
+    tmp_path, monkeypatch
+):
+    used_points = _used_points_ok(bookingDates=[1795686332], bookingCloseDate=1795945532,
+                                  automaticReservation=True)
+    script = _confirm_script(used_points, _write_ok(), _read_ok(_reread(UPDATE_CHANGES)))
+    result, spy, _info = await _run(tmp_path, monkeypatch, "update_job", script, jobno=J1,
+                                    changes=UPDATE_CHANGES, confirm=True)
+    assert result["saved"] == "confirmed", result
+    assert _routes(spy) == [JOB_LIST, JOB_UPDATE, FORBIDDEN, USED_POINTS, UPDATE, JOB_UPDATE]
+    assert _params(spy, USED_POINTS) == [[("jobNos[]", J1)]]
+    core = importlib.import_module("mcp104.tools.job_form")
+    booking = core.job_sort_booking(json.loads(used_points.body), jobno=J1)
+    form = _form(_body(spy, UPDATE))
+    assert form["jobSort"] == [booking.job_sort]
+    assert '"reserve":[1795686332]' in form["jobSort"][0]
+    assert form["automaticReservation"] == ["true"]
+
+
+@pytest.mark.asyncio
+async def test_the_reread_comparison_does_not_count_the_booking_data_as_damage(tmp_path, monkeypatch):
+    script = _confirm_script(_used_points_ok(), _write_ok(), _read_ok(_reread(UPDATE_CHANGES)))
+    result, _spy, _info = await _run(tmp_path, monkeypatch, "update_job", script, jobno=J1,
+                                     changes=UPDATE_CHANGES, confirm=True)
+    assert result["mismatched_fields"] == {"not_applied": [], "damaged": []}
+
+
+@pytest.mark.asyncio
+async def test_a_preview_does_not_read_the_booking_data(tmp_path, monkeypatch):
+    script = [_list_ok([_list_row(J1)]), _read_ok(_base_read()), _fb_clean()]
+    result, spy, _info = await _run(tmp_path, monkeypatch, "update_job", script, jobno=J1,
+                                    changes=UPDATE_CHANGES)
+    assert "preview" in result, result
+    assert _routes(spy) == [JOB_LIST, JOB_UPDATE, FORBIDDEN]
+
+
+MALFORMED_BOOKING = [
+    pytest.param(_json(200, {"data": [], "metadata": {}}), id="no-job"),
+    pytest.param(_json(200, {"data": [_used_points_ok().parsed_json["data"][0]] * 2,
+                             "metadata": _used_points_ok().parsed_json["metadata"]}), id="two-jobs"),
+    pytest.param(_used_points_ok(jobno=J2), id="another-job"),
+    pytest.param(_json(200, {"data": _used_points_ok().parsed_json["data"]}), id="no-metadata"),
+    pytest.param(_used_points_ok(bookingDates="x"), id="booking-dates-not-a-list"),
+    pytest.param(_json(200, {"data": {}, "metadata": {}}), id="data-not-a-list"),
+    pytest.param(_non_json(), id="non-json"),
+    pytest.param(_challenge(), id="challenge-page"),
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("answer", MALFORMED_BOOKING)
+async def test_an_unusable_booking_answer_stops_the_update_before_any_save(tmp_path, monkeypatch, answer):
+    result, spy, _info = await _run(tmp_path, monkeypatch, "update_job", _confirm_script(answer), jobno=J1,
+                                    changes=UPDATE_CHANGES, confirm=True)
+    assert _is_error(result), result
+    _assert_closed_shape(result)
+    assert _no_write(spy)
+    assert _routes(spy) == [JOB_LIST, JOB_UPDATE, FORBIDDEN, USED_POINTS]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [TimeoutError("SYNTH"), _expired(), _forbidden()],
+                         ids=["timeout", "expired", "forbidden"])
+async def test_a_failed_booking_read_is_an_error_naming_the_step_and_nothing_is_written(
+    tmp_path, monkeypatch, failure
+):
+    result, spy, _info = await _run(tmp_path, monkeypatch, "update_job", _confirm_script(failure), jobno=J1,
+                                    changes=UPDATE_CHANGES, confirm=True)
+    assert _is_error(result), result
+    assert "自動排序" in result["error"]
+    assert "沒有送出修改" in result["error"]
+    assert _no_write(spy)
 
 
 # ── T-61 .. T-71: the front-end state rules and the mapping's conversions ──────
@@ -2229,7 +2335,7 @@ async def test_T65_a_code_outside_the_table_is_refused_naming_the_field_before_a
 @pytest.mark.asyncio
 async def test_T66_codes_the_form_drops_are_named_then_do_not_count_as_damage(tmp_path, monkeypatch):
     read = _read(wire={"needCondition.education": [8, 64], "contaction.usingTypes": [1, 32]})
-    script = [_list_ok([_list_row(J1)]), _read_ok(read), _fb_clean(), _write_ok(),
+    script = [_list_ok([_list_row(J1)]), _read_ok(read), _fb_clean(), _used_points_ok(), _write_ok(),
               _read_ok(_reread({"detail.description": NEW_DESC}))]
     result, spy, _info = await _run(tmp_path, monkeypatch, "update_job", script, jobno=J1,
                                     changes={"detail.description": NEW_DESC}, confirm=True)
@@ -2248,7 +2354,7 @@ async def test_T66_codes_the_form_drops_are_named_then_do_not_count_as_damage(tm
 async def test_T67_a_moved_unsent_field_is_named_without_its_values_and_a_date_only_change_is_not(tmp_path, monkeypatch):
     moved = _reread({"detail.description": NEW_DESC},
                     extra={"detail.jobAddress.latitude": 25.0399, "department.name": "SYNTH-DEPT-MOVED"})
-    script = [_list_ok([_list_row(J1)]), _read_ok(_base_read()), _fb_clean(), _write_ok(), _read_ok(moved)]
+    script = [_list_ok([_list_row(J1)]), _read_ok(_base_read()), _fb_clean(), _used_points_ok(), _write_ok(), _read_ok(moved)]
     result, _spy, _info = await _run(tmp_path, monkeypatch, "update_job", script, jobno=J1,
                                      changes={"detail.description": NEW_DESC}, confirm=True)
     assert result["saved"] == "confirmed", result
@@ -2260,7 +2366,7 @@ async def test_T67_a_moved_unsent_field_is_named_without_its_values_and_a_date_o
 
     dates_only = _reread({"detail.description": NEW_DESC}, load_time=LOAD_B,
                          extra={"appearDate": "2026-11-20 09:00:00"})
-    script = [_list_ok([_list_row(J1)]), _read_ok(_base_read()), _fb_clean(), _write_ok(), _read_ok(dates_only)]
+    script = [_list_ok([_list_row(J1)]), _read_ok(_base_read()), _fb_clean(), _used_points_ok(), _write_ok(), _read_ok(dates_only)]
     result, _spy, _info = await _run(tmp_path, monkeypatch, "update_job", script, jobno=J1,
                                      changes={"detail.description": NEW_DESC}, confirm=True)
     assert result["saved"] == "confirmed", result
@@ -2274,7 +2380,7 @@ async def test_T68_a_category_and_a_major_are_sent_as_codes_and_previewed_with_t
     changes = {"detail.jobcat": [{"no": JOBCAT_LEAF2}], "need_condition.majors": [{"no": MAJOR_LEAF2}]}
     script = [
         _list_ok([_list_row(J1)]), _read_ok(_base_read()), _fb_clean(),
-        _list_ok([_list_row(J1)]), _read_ok(_base_read()), _fb_clean(), _write_ok(),
+        _list_ok([_list_row(J1)]), _read_ok(_base_read()), _fb_clean(), _used_points_ok(), _write_ok(),
         _read_ok(_reread(changes)),
     ]
     spy = _install(monkeypatch, script)

@@ -52,9 +52,8 @@ REDACTION_MARK = "［聯絡資料］"
 _ADDRESS_MARK = "ABC上班地點XYZ"
 _MARKED_ADDR_CODES = frozenset({"6003000000", "6003001000", "6003002000", "6003003000"})
 
-# What the editor sends as the auto-sort service's booking data when the job has no booking
-# to cancel or keep: no identity fields, an empty reservation list (JE@327850 serialises the
-# front end's own value down to this when there is nothing booked).
+# What a copy's save sends as the auto-sort service's booking data: no identity fields, an
+# empty reservation list (front-end code evidence only; unmeasured for a copy).
 JOB_SORT_EMPTY = '{"data":[{"reserve":[]}]}'
 
 _SALARY_ABOVE = 9999999
@@ -826,9 +825,78 @@ def _assert_complete(form: Mapping[str, FormValue], raw: Mapping) -> None:
         raise JobShapeError(tuple(missing))
 
 
-def build_form(job: JobRead, *, act: Literal["edit", "copy"], jobno: str) -> Form:
+@dataclass(frozen=True)
+class JobSortBooking:
+    """The auto-sort service's booking data for one job, as the editor sends it on an edit:
+    `job_sort` the JSON text of the form's `jobSort`, `automatic_reservation` the form's
+    `automaticReservation`."""
+
+    job_sort: str
+    automatic_reservation: bool
+
+
+_USED_POINTS_METADATA_KEYS = ("expiryDate", "expectedPauseStartDate", "expectedPauseEndDate", "remainder")
+_USED_POINTS_ROW_KEYS = (
+    "appearDate", "bookingCloseDate", "bookingOpenDate", "switch", "jobName", "jobNo",
+    "bookingDates", "automaticReservation",
+)
+
+
+def job_sort_booking(payload: object, *, jobno: str) -> JobSortBooking:
+    """What an edit's save sends as `jobSort` and `automaticReservation`, built from the
+    answer to `GET commodity-job-sort/used-points/jobs?jobNos[]=<jobno>` as the editor builds
+    it [M 2026-11-24 web capture, reproduced byte for byte]: the answer's `metadata` first, in
+    the editor's key order, then the one job under `data` with its keys renamed. Compact JSON,
+    non-ASCII kept as is. Raises MalformedResponseError, naming keys and never values, when
+    the answer is not exactly one job (the requested one) beside a `metadata` object that
+    carries every key used."""
+    if not isinstance(payload, Mapping):
+        raise MalformedResponseError("自動排序資料的回應不是物件")
+    metadata = payload.get("metadata")
+    if not isinstance(metadata, Mapping):
+        raise MalformedResponseError("自動排序資料的 metadata 缺失或非物件")
+    rows = payload.get("data")
+    if not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], Mapping):
+        raise MalformedResponseError("自動排序資料的 data 不是恰好一筆物件")
+    row = rows[0]
+    missing = [f"metadata.{key}" for key in _USED_POINTS_METADATA_KEYS if key not in metadata]
+    missing += [f"data[0].{key}" for key in _USED_POINTS_ROW_KEYS if key not in row]
+    if missing:
+        raise MalformedResponseError(f"自動排序資料缺少：{'、'.join(missing)}")
+    if row["jobNo"] != jobno:
+        raise MalformedResponseError("自動排序資料的 jobNo 與請求的職缺不同")
+    if not isinstance(row["bookingDates"], list):
+        raise MalformedResponseError("自動排序資料的 data[0].bookingDates 不是陣列")
+    if not isinstance(row["automaticReservation"], bool):
+        raise MalformedResponseError("自動排序資料的 data[0].automaticReservation 不是布林")
+    value = {
+        "expiryDate": metadata["expiryDate"],
+        "expectedPauseStartDate": metadata["expectedPauseStartDate"],
+        "expectedPauseEndDate": metadata["expectedPauseEndDate"],
+        "remainder": metadata["remainder"],
+        "data": [{
+            "appearDate": row["appearDate"],
+            "autoCloseDate": row["bookingCloseDate"],
+            "preOpenDate": row["bookingOpenDate"],
+            "switch": row["switch"],
+            "name": row["jobName"],
+            "jobNo": row["jobNo"],
+            "reserve": row["bookingDates"],
+        }],
+    }
+    return JobSortBooking(
+        job_sort=json.dumps(value, separators=(",", ":"), ensure_ascii=False),
+        automatic_reservation=row["automaticReservation"],
+    )
+
+
+def build_form(
+    job: JobRead, *, act: Literal["edit", "copy"], jobno: str, job_sort: str, automatic_reservation: bool
+) -> Form:
     """The whole form the editor sends on save, in the editor's order. `jobno` is the job
-    being edited, or for a copy the source job. A null `switch` (what a copy read carries)
+    being edited, or for a copy the source job. `job_sort` and `automatic_reservation` are
+    the auto-sort booking data the caller supplies (`job_sort_booking` for an edit,
+    `JOB_SORT_EMPTY` and False for a copy). A null `switch` (what a copy read carries)
     is sent as an empty string for a copy and refused for an edit: an edit's progress-reset
     consent is decided on `switch == "on"`, and a null would let it be skipped unnoticed."""
     if act not in ("edit", "copy"):
@@ -846,14 +914,14 @@ def build_form(job: JobRead, *, act: Literal["edit", "copy"], jobno: str) -> For
             form["document_status"] = 1
         form[key] = value
     scheduled = _get(raw, "scheduled_open_date")
-    form["jobSort"] = JOB_SORT_EMPTY
+    form["jobSort"] = job_sort
     form["loadTime"] = raw["additional_info"]["load_time"]
     form["jobNo"] = jobno
     form["switch"] = switch
     form["act"] = act
     form["checkOverDate"] = "2"
     form["d5"] = scheduled.replace("-", "/") if isinstance(scheduled, str) and scheduled else ""
-    form["automaticReservation"] = False
+    form["automaticReservation"] = automatic_reservation
     form["regId"] = _get(raw, "additional_info", "reg_id") or ""
     _assert_complete(form, raw)
     return form

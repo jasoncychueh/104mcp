@@ -49,8 +49,10 @@ from mcp104.tools.job_form import (
     CheckedChanges,
     ChangeError,
     ForbiddenVerdict,
+    JOB_SORT_EMPTY,
     JobRead,
     JobShapeError,
+    JobSortBooking,
     SaveOutcome,
     account_mode_violations,
     apply_changes,
@@ -63,6 +65,7 @@ from mcp104.tools.job_form import (
     forbidden_verdict,
     forbidden_word_texts,
     form_fields,
+    job_sort_booking,
     qs_pairs,
     read_job,
     redact,
@@ -324,6 +327,25 @@ async def _forbidden_check(request, form, job: JobRead, jobno: str, run: _Run) -
         raise _CheckAnswerMalformed(exc.detail) from exc
 
 
+async def _booking_data(request, jobno: str, run: _Run) -> JobSortBooking:
+    """Read the job's auto-sort booking data, which the editor sends back inside the save. A
+    failed request or an answer that is not exactly this job stops the call before anything
+    is written."""
+    try:
+        payload = await request(ENDPOINTS["job_used_points"], params=[("jobNos[]", jobno)])
+    except GuardAbort as exc:
+        stopped = dict(exc.payload)
+        stopped["error"] = f"讀取自動排序資料失敗，沒有送出{run.action}：{exc.payload.get('error')}"
+        raise GuardAbort(
+            stopped,
+            kind=exc.kind,
+            code=exc.code,
+            envelope_detail=exc.envelope_detail,
+            envelope_message=exc.envelope_message,
+        ) from exc
+    return job_sort_booking(payload, jobno=jobno)
+
+
 def _hit_text(hit: Mapping) -> str:
     message = hit.get("message")
     return f"禁用詞提醒（{hit['field']}）：{message}" if message else f"禁用詞提醒（{hit['field']}）"
@@ -547,11 +569,15 @@ async def _update_flow(request, run: _Run, jobno, checked: CheckedChanges, confi
                 "沒有送出修改"
             )
         }
-    form = build_form(applied.job, act="edit", jobno=jobno)
+    # The forbidden-word check reads only the form's texts; the booking data it carries here is
+    # a stand-in, replaced by the real one before anything is saved.
+    draft = build_form(
+        applied.job, act="edit", jobno=jobno, job_sort=JOB_SORT_EMPTY, automatic_reservation=False
+    )
     run.warnings.extend(_change_warnings(job, applied))
     rows = run.rows = _change_rows(job, applied)
 
-    verdict = await _forbidden_check(request, form, job, jobno, run)
+    verdict = await _forbidden_check(request, draft, job, jobno, run)
     if not confirm:
         return {
             "preview": {
@@ -566,6 +592,15 @@ async def _update_flow(request, run: _Run, jobno, checked: CheckedChanges, confi
         return refused
     run.warnings.extend(_forbidden_notes(verdict, accepted=accept_words))
 
+    booking = await _booking_data(request, jobno, run)
+    form = build_form(
+        applied.job,
+        act="edit",
+        jobno=jobno,
+        job_sort=booking.job_sort,
+        automatic_reservation=booking.automatic_reservation,
+    )
+
     _, error = await _send_save(request, "update_job", form, run, action="update", noun="儲存")
     if error is not None:
         return error
@@ -577,7 +612,15 @@ async def _update_flow(request, run: _Run, jobno, checked: CheckedChanges, confi
     try:
         read_back = read_job(await request(ENDPOINTS["get_job_detail"], params=read_params), jobno=jobno)
         comparison = compare_forms(
-            form, build_form(read_back, act="edit", jobno=jobno), changed=applied.changed_wire
+            form,
+            build_form(
+                read_back,
+                act="edit",
+                jobno=jobno,
+                job_sort=booking.job_sort,
+                automatic_reservation=booking.automatic_reservation,
+            ),
+            changed=applied.changed_wire,
         )
         unsent = compare_unsent(job, read_back, changed_paths=applied.changed_paths)
     except (GuardAbort, MalformedResponseError, JobShapeError) as exc:
@@ -707,7 +750,9 @@ async def _create_flow(request, run: _Run, source_jobno, checked: CheckedChanges
     if refusal is not None:
         return {"error": run.redacted(f"{refusal}。沒有送出新增")}
     applied = apply_changes(job, checked)
-    form = build_form(applied.job, act="copy", jobno=source_jobno)
+    form = build_form(
+        applied.job, act="copy", jobno=source_jobno, job_sort=JOB_SORT_EMPTY, automatic_reservation=False
+    )
     run.warnings.extend(_change_warnings(job, applied))
     rows = _change_rows(job, applied)
     job_name = str(form["job"])
@@ -769,9 +814,9 @@ Args:
     accept_forbidden_word_warnings: 104 的禁用詞「提醒」經真人確認後才給 true；「封鎖」不能略過。
     accept_progress_reset: 改開放中職缺的職務類別時必填 true（104 可能把招募進度累計歸零）。
 
-104 的編輯器整份重送表單：聯絡資料等不開放修改的欄位照原樣回送，不會出現在回傳裡。有加值廣告、自動關閉日、預約開啟日、「職務確認中」的職缺，或 104 網頁上沒有修改功能的帳號，請到 104 後台修改。欄位對映、禁用詞檢查與儲存路由都只有前端碼證據、未量測；是否生效只看重讀職缺編輯資料的全欄比對。
+104 的編輯器整份重送表單：聯絡資料等不開放修改的欄位照原樣回送，不會出現在回傳裡。有加值廣告、自動關閉日、預約開啟日、「職務確認中」的職缺，或 104 網頁上沒有修改功能的帳號，請到 104 後台修改。自動排序資料（jobSort）照 104 網頁儲存時送的內容組成（量測）；欄位對映與儲存回應只有前端碼證據、未量測；是否生效只看重讀職缺編輯資料的全欄比對。
 
-一次呼叫送出 5 個請求（職缺清單、讀職缺、禁用詞檢查、儲存、重讀），預覽 3 個。成功回傳 {"jobno","saved","changes","mismatched_fields","message","warnings"}（預覽回 {"preview","warnings"}）：saved 只有 confirmed（重讀後全部欄位一致）、mismatch（有欄位不一致；mismatched_fields.damaged 是沒要改的欄位卻變了，代表 104 損壞了職缺，請立刻到 104 後台檢查）、unconfirmed（無法重讀），照值判斷。不是 confirmed 時不要重送。其餘回傳 {"error": str}（節流拒絕另帶 retry_after_seconds；禁用詞另帶 forbidden_words；欄位錯誤另帶 failed_fields），沒有 saved。
+一次呼叫送出 6 個請求（職缺清單、讀職缺、禁用詞檢查、讀自動排序資料、儲存、重讀），預覽 3 個。成功回傳 {"jobno","saved","changes","mismatched_fields","message","warnings"}（預覽回 {"preview","warnings"}）：saved 只有 confirmed（重讀後全部欄位一致）、mismatch（有欄位不一致；mismatched_fields.damaged 是沒要改的欄位卻變了，代表 104 損壞了職缺，請立刻到 104 後台檢查）、unconfirmed（無法重讀），照值判斷。不是 confirmed 時不要重送。其餘回傳 {"error": str}（節流拒絕另帶 retry_after_seconds；禁用詞另帶 forbidden_words；欄位錯誤另帶 failed_fields），沒有 saved。
 """
 
 _CREATE_JOB_DESCRIPTION = """以一個既有職缺為底稿複製新增職缺（走 JSON API；寫入）。⚠ 儲存立刻生效、求職者看得到、無法撤回；只有新職缺的開關可能不是開放。先不帶 confirm 取得預覽，讓真人看過，再帶 confirm=true 送出。只支援從既有職缺複製，不能從空白表單新增。
@@ -812,7 +857,7 @@ def register_job_edit_tools(mcp: FastMCP) -> None:
 
         run = _Run(action="修改")
         try:
-            async with guarded_sequence(ctx, slots_needed=5 if confirm else 3) as (request, _info):
+            async with guarded_sequence(ctx, slots_needed=6 if confirm else 3) as (request, _info):
                 return await _update_flow(
                     request, run, jobno, checked, confirm, accept_forbidden_word_warnings, accept_progress_reset
                 )
