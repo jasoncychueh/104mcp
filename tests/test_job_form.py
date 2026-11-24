@@ -316,11 +316,26 @@ def test_build_form_applies_the_sentinels_the_javascript_fallbacks_and_the_above
     ex.equal("fallback with all three keys absent: negotiable_salary_low", f.get("negotiable_salary_low"), ["-1"])
     ex.equal("fallback with all three keys absent: negotiable_salary_high", f.get("negotiable_salary_high"), ["-1"])
 
+    # A non-negotiable job (salary type 50) whose read carries negotiable type 1 sends type 0:
+    # the web editor does, and sending 1 made 104 answer HTTP 500 (measured 2026-11-24).
+    r = _baseline()
+    r["detail"]["salary"] = {"salaryTypeId": 50, "salaryLow": 30000, "salaryHigh": 50000,
+                             "salaryOld": "SYNTH-OLD-SALARY"}
+    r["detail"]["negotiableSalary"] = {"type": 1, "salaryLow": -1, "salaryHigh": -1}
+    f = _exact(_build(r))
+    ex.equal("non-negotiable job: negotiable_salary_type is 0 whatever the read says",
+             f.get("negotiable_salary_type"), ["0"])
+    ex.equal("non-negotiable job: negotiable_salary_low", f.get("negotiable_salary_low"), ["-1"])
+    ex.equal("non-negotiable job: negotiable_salary_high", f.get("negotiable_salary_high"), ["-1"])
+
+    # A negotiable job keeps the read's type and amounts.
+    r["detail"]["salary"] = {"salaryTypeId": 10, "salaryLow": 0, "salaryHigh": 0,
+                             "salaryOld": "SYNTH-OLD-SALARY"}
     r["detail"]["negotiableSalary"] = {"type": 1, "salaryLow": 45000, "salaryHigh": 60000}
     f = _exact(_build(r))
-    ex.equal("real negotiable values pass through: type", f.get("negotiable_salary_type"), ["1"])
-    ex.equal("real negotiable values pass through: low", f.get("negotiable_salary_low"), ["45000"])
-    ex.equal("real negotiable values pass through: high", f.get("negotiable_salary_high"), ["60000"])
+    ex.equal("negotiable job keeps the read: type", f.get("negotiable_salary_type"), ["1"])
+    ex.equal("negotiable job keeps the read: low", f.get("negotiable_salary_low"), ["45000"])
+    ex.equal("negotiable job keeps the read: high", f.get("negotiable_salary_high"), ["60000"])
 
     # 面議 (salary_type_id 10): salary_low/high are sent as 0 and the negotiable fallbacks are 0.
     r = _baseline()
@@ -902,6 +917,13 @@ def test_check_and_apply_changes_refuse_each_rule_and_keep_the_changed_and_uncha
     _change_error(ex, "salary_low under 面議",
                   lambda: core.apply_changes(_read(salary_type_10), core.check_changes({"detail.salary.salary_low": 20000})),
                   "invalid")
+    not_negotiable = _baseline()
+    not_negotiable["detail"]["salary"] = {"salaryTypeId": 50, "salaryLow": 30000, "salaryHigh": 50000,
+                                          "salaryOld": "SYNTH-OLD-SALARY"}
+    not_negotiable["detail"]["negotiableSalary"] = {"type": 1, "salaryLow": -1, "salaryHigh": -1}
+    _change_error(ex, "negotiable type on a job that is not negotiable",
+                  lambda: core.apply_changes(_read(not_negotiable), core.check_changes({"detail.negotiable_salary.type": 2})),
+                  "invalid")
     role_1 = _baseline(role=1)
     _change_error(ex, "work_type under role 1",
                   lambda: core.apply_changes(_read(role_1), core.check_changes({"detail.work_type": [2]})),
@@ -1258,3 +1280,25 @@ def test_build_form_sends_the_given_booking_data_and_the_re_read_form_ignores_it
     assert not core.compare_forms(
         _build(_baseline(), job_sort=booking.job_sort), _build(_baseline()), changed=frozenset()
     ).damaged
+
+
+def test_re_read_of_a_non_negotiable_job_is_not_damage_though_the_server_keeps_negotiable_type_1():
+    core = _core()
+    result = _baseline()
+    result["detail"]["salary"] = {"salaryTypeId": 50, "salaryLow": 30000, "salaryHigh": 50000,
+                                  "salaryOld": "SYNTH-OLD-SALARY"}
+    result["detail"]["negotiableSalary"] = {"type": 1, "salaryLow": -1, "salaryHigh": -1}
+    before = _read(result)
+    applied = core.apply_changes(before, core.check_changes({"job_name": "SYNTH-NEW-NAME"}))
+    sent = core.build_form(applied.job, act="edit", jobno=JOBNO, job_sort=core.JOB_SORT_EMPTY,
+                           automatic_reservation=False)
+    assert _exact(sent)["negotiable_salary_type"] == ["0"]
+    # What the server stores is not what was sent: the read still says type 1.
+    re_read = copy.deepcopy(result)
+    re_read["jobName"] = "SYNTH-NEW-NAME"
+    read_back = core.build_form(_read(re_read), act="edit", jobno=JOBNO, job_sort=core.JOB_SORT_EMPTY,
+                                automatic_reservation=False)
+    comparison = core.compare_forms(sent, read_back, changed=applied.changed_wire)
+    assert comparison.damaged == ()
+    assert comparison.not_applied == ()
+

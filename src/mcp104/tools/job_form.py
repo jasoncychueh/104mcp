@@ -670,7 +670,9 @@ def form_fields(raw: Mapping) -> Form:
         f["salary_high"] = ""
     ns = _as_obj(detail["negotiable_salary"])
     # JavaScript `||`: 0, null and absent all become the fallback (JE@228697)
-    n_type = ns.get("type") or 0
+    # A non-negotiable job sends type 0 whatever the read says: the web editor does, and
+    # sending the read's 1 made 104 answer HTTP 500 SYSTEM_ERROR (measured 2026-11-24).
+    n_type = (ns.get("type") or 0) if negotiable else 0
     n_low = ns.get("salary_low") or (0 if negotiable else -1)
     n_high = ns.get("salary_high") or (0 if negotiable else -1)
     if negotiable:
@@ -1280,6 +1282,8 @@ def _no_effect_reason(path: str, raw: Mapping) -> str:
     if path in ("detail.salary.salary_low", "detail.salary.salary_high") and \
             _get(raw, "detail", "salary", "salary_type_id") == _NEGOTIABLE:
         return "面議時薪資範圍不會送出（104 前端送 0），面議金額請改 detail.negotiable_salary"
+    if path == "detail.negotiable_salary.type" and _get(raw, "detail", "salary", "salary_type_id") != _NEGOTIABLE:
+        return "不是面議的職缺不會送出面議薪資類型（104 前端送 0）"
     if path == "detail.work_type" and role != 2:
         return "只有兼職職缺會送出工作型態"
     if path in ("detail.shifts", "detail.work_time.interval", "need_condition.identities") and role == 3:
